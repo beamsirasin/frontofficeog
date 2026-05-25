@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ลำฮิมคือ SHABU BUFFET</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        /* บังคับปุ่มเพิ่มลดให้กดง่ายบนมือถือ */
+        .qty-btn { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; border-radius: 50%; user-select: none; }
+        input[type=number] { -moz-appearance: textfield; }
+        input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="lockScreen" class="fixed inset-0 bg-black bg-opacity-80 z-50 flex flex-col items-center justify-center text-white p-6 text-center hidden">
+        <h2 id="lockTitle" class="text-3xl font-bold mb-4">กำลังตรวจสอบโต๊ะ...</h2>
+        <p id="lockDesc" class="text-lg">กรุณารอสักครู่</p>
+    </div>
+
+    <header class="bg-gray-800 text-white p-4 sticky top-0 z-40 flex justify-between items-center shadow-md">
+        <h1 class="text-lg font-bold">ลำฮิมคือ SHABU BUFFET</h1>
+        <h2 class="text-lg font-bold bg-white text-gray-800 px-4 py-1 rounded">TABLE <span id="tableDisplay"></span></h2>
+    </header>
+
+    <div class="max-w-xl mx-auto p-4 pb-28">
+        
+        <div class="bg-gray-500 text-white text-center py-3 text-xl font-bold mb-2 shadow-md">หมู-เนื้อ</div>
+        <p class="text-red-500 text-sm font-bold mb-4">*สั่งได้สูงสุดรวมครั้งละ 5 จาน</p>
+        
+        <div class="space-y-3 mb-8">
+            <div class="flex justify-between items-center bg-white border p-3 rounded shadow-sm">
+                <div class="flex items-center gap-3">
+                    <img src="/images/1.png" class="w-16 h-16 object-cover rounded border">
+                    <div class="font-bold text-gray-800 text-sm">สันคอหมูสไลด์</div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button onclick="changeVal('porkLoin', -1)" class="qty-btn bg-gray-300 text-black">-</button>
+                    <input type="number" id="porkLoin" class="meat-input w-10 text-center text-xl font-bold bg-transparent" value="0" readonly>
+                    <button onclick="changeVal('porkLoin', 1)" class="qty-btn bg-gray-800 text-white">+</button>
+                </div>
+            </div>
+            
+            <div class="flex justify-between items-center bg-white border p-3 rounded shadow-sm">
+                <div class="flex items-center gap-3">
+                    <img src="/images/2.png" class="w-16 h-16 object-cover rounded border">
+                    <div class="font-bold text-gray-800 text-sm">หมูสามชั้นสไลด์</div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button onclick="changeVal('porkBelly', -1)" class="qty-btn bg-gray-300 text-black">-</button>
+                    <input type="number" id="porkBelly" class="meat-input w-10 text-center text-xl font-bold bg-transparent" value="0" readonly>
+                    <button onclick="changeVal('porkBelly', 1)" class="qty-btn bg-gray-800 text-white">+</button>
+                </div>
+            </div>
+
+            <div class="flex justify-between items-center bg-white border p-3 rounded shadow-sm">
+                <div class="flex items-center gap-3">
+                    <img src="/images/3.png" class="w-16 h-16 object-cover rounded border">
+                    <div class="font-bold text-gray-800 text-sm">เนื้อริบอายโคขุนสไลด์</div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button onclick="changeVal('beefRibeye', -1)" class="qty-btn bg-gray-300 text-black">-</button>
+                    <input type="number" id="beefRibeye" class="meat-input w-10 text-center text-xl font-bold bg-transparent" value="0" readonly>
+                    <button onclick="changeVal('beefRibeye', 1)" class="qty-btn bg-gray-800 text-white">+</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-gray-500 text-white text-center py-3 text-xl font-bold mb-2 shadow-md">กุ้ง-ปลาหมึก</div>
+        <p class="text-red-500 text-sm font-bold mb-4">*สั่งได้รายการละ 1 จาน ต่อครั้ง</p>
+        
+        <div class="space-y-3 mb-6">
+            <div class="flex justify-between items-center bg-white border p-3 rounded shadow-sm">
+                <div class="flex items-center gap-3">
+                    <img src="/images/4.png" class="w-16 h-16 object-cover rounded border">
+                    <div class="font-bold text-gray-800 text-sm">ปลาหมึก</div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button onclick="changeVal('squid', -1)" class="qty-btn bg-gray-300 text-black">-</button>
+                    <input type="number" id="squid" class="w-10 text-center text-xl font-bold bg-transparent" value="0" readonly>
+                    <button onclick="changeVal('squid', 1)" class="qty-btn bg-gray-800 text-white">+</button>
+                </div>
+            </div>
+            
+            <div class="flex justify-between items-center bg-white border p-3 rounded shadow-sm">
+                <div class="flex items-center gap-3">
+                    <img src="/images/5.png" class="w-16 h-16 object-cover rounded border">
+                    <div class="font-bold text-gray-800 text-sm">กุ้ง</div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button onclick="changeVal('shrimp', -1)" class="qty-btn bg-gray-300 text-black">-</button>
+                    <input type="number" id="shrimp" class="w-10 text-center text-xl font-bold bg-transparent" value="0" readonly>
+                    <button onclick="changeVal('shrimp', 1)" class="qty-btn bg-gray-800 text-white">+</button>
+                </div>
+            </div>
+        </div>
+        
+        <p class="text-red-500 text-xs text-center font-semibold mb-6">*อาหารที่สั่งส่งเข้าครัวแล้วจะยกเลิกไม่ได้ หากรอเกิน 10 นาที กรุณาเรียกพนักงาน</p>
+    </div>
+
+    <div class="fixed bottom-0 w-full bg-white border-t p-4 flex justify-center shadow-[0_-10px_20px_rgba(0,0,0,0.1)]">
+        <button onclick="submitOrder()" class="bg-gray-800 text-white font-bold text-xl py-4 px-12 rounded w-full max-w-md hover:bg-black transition-colors shadow-lg">ยืนยันการสั่งอาหาร</button>
+    </div>
+
+    <script>
+        const socket = io();
+        const urlParams = new URLSearchParams(window.location.search);
+        const tableNo = urlParams.get('table');
+        const token = urlParams.get('token');
+        document.getElementById('tableDisplay').innerText = tableNo || '-';
+
+        // ฟังชันก์เปลี่ยนจำนวน (เพิ่ม/ลด)
+        function changeVal(id, delta) {
+            let el = document.getElementById(id);
+            let newVal = parseInt(el.value) + delta;
+            
+            if (id === 'squid' || id === 'shrimp') {
+                if (newVal >= 0 && newVal <= 1) el.value = newVal;
+            } else {
+                let totalMeat = 0;
+                document.querySelectorAll('.meat-input').forEach(i => totalMeat += parseInt(i.value));
+                if (delta > 0 && totalMeat >= 5) return alert('หมูและเนื้อ สั่งรวมกันได้สูงสุด 5 จานครับ');
+                if (newVal >= 0 && newVal <= 5) el.value = newVal;
+            }
+        }
+
+        const lockScreen = document.getElementById('lockScreen');
+        if(!tableNo || !token) {
+            document.getElementById('lockTitle').innerText = "❌ ไม่สามารถสั่งอาหารได้";
+            lockScreen.classList.remove('hidden');
+        } else {
+            fetch('/api/tables').then(res => res.json()).then(tables => {
+                const myTable = tables.find(t => t.table_no == tableNo);
+                if(!myTable || !myTable.is_open || myTable.session_token !== token) {
+                    document.getElementById('lockTitle').innerText = "🚫 QR Code หมดอายุ";
+                    lockScreen.classList.remove('hidden');
+                } else if (!myTable.can_order) {
+                    showWaitScreen();
+                }
+            });
+        }
+
+        function showWaitScreen() {
+            document.getElementById('lockTitle').innerText = "⏳ กรุณารอสักครู่...";
+            document.getElementById('lockDesc').innerText = "คุณจะสามารถสั่งรอบต่อไปได้เมื่ออาหารรอบนี้เสิร์ฟเรียบร้อยแล้ว";
+            lockScreen.classList.remove('hidden');
+        }
+
+        socket.on('table_locked', (data) => { if(data.table == tableNo) showWaitScreen(); });
+        socket.on('table_unlocked', (data) => { if(data.table == tableNo) lockScreen.classList.add('hidden'); });
+        socket.on('table_closed', (data) => { if(data.table == tableNo) location.reload(); });
+        socket.on('order_error', (data) => { alert(data.message); location.reload(); });
+
+        function submitOrder() {
+            const items = {};
+            const fields = { porkLoin:'สันคอหมูสไลด์', porkBelly:'หมูสามชั้นสไลด์', beefRibeye:'เนื้อริบอายโคขุนสไลด์', squid:'ปลาหมึก', shrimp:'กุ้ง' };
+            for(let id in fields) {
+                let val = parseInt(document.getElementById(id).value);
+                if(val > 0) items[fields[id]] = val;
+            }
+            if(Object.keys(items).length === 0) return alert('กรุณาเลือกเมนูอย่างน้อย 1 รายการ');
+            socket.emit('send_order', { table: tableNo, token: token, items: items });
+            document.querySelectorAll('input[type="number"]').forEach(input => input.value = 0);
+        }
+    </script>
+</body>
+</html>
