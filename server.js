@@ -12,6 +12,8 @@ const io = new Server(server);
 app.use(express.static('public'));
 app.use(express.json());
 
+app.get('/dashboard', (req, res) => res.sendFile(__dirname + '/public/dashboard.html'));
+
 const db = new sqlite3.Database('./restaurant.db');
 db.serialize(() => {
     db.run("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, table_no TEXT, session_token TEXT, category TEXT, items TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
@@ -21,6 +23,8 @@ db.serialize(() => {
     // [อัปเดต] ลบโค้ด wait_status ที่สั่งออกทั้งหมด
     db.run("CREATE TABLE IF NOT EXISTS queues (id INTEGER PRIMARY KEY AUTOINCREMENT, q_number TEXT, pax INTEGER, pots TEXT, status TEXT, table_assigned TEXT, is_billed BOOLEAN, token TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
 
+    db.run("ALTER TABLE queues ADD COLUMN adults INTEGER DEFAULT 0", () => {});
+    db.run("ALTER TABLE queues ADD COLUMN children INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE tables ADD COLUMN adults INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE tables ADD COLUMN children INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE tables ADD COLUMN toddlers INTEGER DEFAULT 0", () => {});
@@ -123,13 +127,13 @@ app.get('/api/orders', (req, res) => {
 
 // ================== API ระบบคิว ==================
 app.post('/api/queue', (req, res) => {
-    const { pax, pots } = req.body;
+    const { pax, pots, adults = 0, children = 0 } = req.body;
     const token = crypto.randomBytes(6).toString('hex');
     db.serialize(() => {
         db.get("SELECT COUNT(*) as count FROM queues WHERE date(created_at, 'localtime') = date('now', 'localtime')", [], (err, row) => {
             const qNum = "Q" + ((row ? row.count : 0) + 1);
-            db.run("INSERT INTO queues (q_number, pax, pots, status, token) VALUES (?, ?, ?, 'waiting', ?)",
-                [qNum, pax, JSON.stringify(pots), token], function(err) {
+            db.run("INSERT INTO queues (q_number, pax, adults, children, pots, status, token) VALUES (?, ?, ?, ?, ?, 'waiting', ?)",
+                [qNum, pax, adults, children, JSON.stringify(pots), token], function(err) {
                 res.json({ success: true, q_number: qNum, token: token, created_at: new Date().toISOString() });
                 io.emit('queue_updated');
             });
@@ -155,9 +159,17 @@ app.post('/api/queue/update', (req, res) => {
 });
 
 // API สำหรับแก้ไขข้อมูลคิว
+app.delete('/api/queue/:id', (req, res) => {
+    db.run("DELETE FROM queues WHERE id = ?", [req.params.id], () => {
+        res.json({ success: true });
+        io.emit('queue_updated');
+    });
+});
+
 app.post('/api/queue/edit', (req, res) => {
-    const { id, pax, pots } = req.body;
-    db.run("UPDATE queues SET pax = ?, pots = ? WHERE id = ?", [pax, JSON.stringify(pots), id], () => {
+    const { id, pax, adults, children, pots } = req.body;
+    db.run("UPDATE queues SET pax = ?, adults = ?, children = ?, pots = ? WHERE id = ?",
+        [pax, adults || 0, children || 0, JSON.stringify(pots), id], () => {
         res.json({ success: true });
         io.emit('queue_updated');
     });
@@ -167,9 +179,14 @@ app.post('/api/queue/edit', (req, res) => {
 app.get('/q/:token', (req, res) => {
     const token = req.params.token;
     db.get("SELECT * FROM queues WHERE token = ? AND date(created_at, 'localtime') = date('now', 'localtime')", [token], (err, q) => {
-        if (!q) return res.send(`<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-gray-100 flex justify-center p-6"><div class="bg-white p-6 rounded shadow mt-10 text-center w-full max-w-sm"><h1 class="text-2xl font-bold text-red-600">❌ คิวนี้ไม่พบ หรือหมดอายุแล้ว</h1></div></body></html>`);
-        if (q.status === 'entered') return res.send(`<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-gray-100 flex justify-center p-6"><div class="bg-white p-8 rounded shadow mt-10 text-center w-full max-w-sm border-t-8 border-green-500"><img src="/logo.png" class="mx-auto w-20 h-20 mb-4 rounded-full shadow"><h1 class="text-3xl font-bold text-green-600 mb-4">✅ ถึงคิวของคุณแล้ว!</h1><p class="text-xl text-gray-700">เชิญเข้าโต๊ะหมายเลข</p><p class="text-6xl font-extrabold text-gray-900 my-4">${q.table_assigned || '-'}</p><p class="text-gray-500 text-sm">QR Code นี้ใช้เช็คคิวไม่ได้แล้ว</p></div></body></html>`);
-        if (q.status === 'cancelled') return res.send(`<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-gray-100 flex justify-center p-6"><div class="bg-white p-6 rounded shadow mt-10 text-center w-full max-w-sm"><h1 class="text-2xl font-bold text-gray-600">❌ คิวนี้ถูกยกเลิกเนื่องจากไม่อยู่</h1></div></body></html>`);
+        const mobileHead = `<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><script src="https://cdn.tailwindcss.com"></script><style>body{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);}</style>`;
+
+        if (!q) return res.send(`<html><head>${mobileHead}</head><body class="min-h-screen bg-gray-50 flex items-center justify-center px-4"><div class="bg-white w-full max-w-sm rounded-2xl shadow-md text-center py-10 px-6"><h1 class="text-2xl font-bold text-red-600">ไม่พบคิวนี้</h1><p class="text-gray-400 mt-2 text-sm">อาจหมดอายุหรือไม่มีในระบบ</p></div></body></html>`);
+
+        if (q.status === 'entered') return res.send(`<html><head>${mobileHead}</head><body class="min-h-screen bg-gray-50 flex items-center justify-center px-4"><div class="bg-white w-full max-w-sm rounded-2xl shadow-md text-center py-10 px-6"><h1 class="text-xl font-bold text-gray-600">QR Code นี้ใช้เช็คคิวไม่ได้แล้ว</h1></div></body></html>`);
+
+        if (q.status === 'cancelled') return res.send(`<html><head>${mobileHead}</head><body class="min-h-screen bg-gray-50 flex items-center justify-center px-4"><div class="bg-white w-full max-w-sm rounded-2xl shadow-md text-center py-10 px-6"><h1 class="text-2xl font-bold text-gray-700">คิวนี้ถูกยกเลิกแล้ว</h1></div></body></html>`);
+        if (q.status === 'skipped') return res.send(`<html><head>${mobileHead}</head><body class="min-h-screen bg-gray-50 flex items-center justify-center px-4"><div class="bg-white w-full max-w-sm rounded-2xl shadow-md text-center py-10 px-6"><h1 class="text-2xl font-bold text-gray-700">คิวของคุณถูกข้ามแล้ว</h1><p class="text-gray-400 text-sm mt-2">กรุณาติดต่อพนักงานเพื่อรับคิวใหม่</p></div></body></html>`);
 
         db.get("SELECT COUNT(*) as ahead FROM queues WHERE status = 'waiting' AND id < ? AND date(created_at, 'localtime') = date('now', 'localtime')", [q.id], (err, rowAhead) => {
             const ahead = rowAhead ? rowAhead.ahead : 0;
@@ -179,32 +196,57 @@ app.get('/q/:token', (req, res) => {
                 const currentCalled = calledRow ? calledRow.q_number : 'ยังไม่มีการเรียก';
                     
                 res.send(`
-                    <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script></head>
-                    <body class="bg-gray-100 flex flex-col items-center p-6 text-center">
-                        <div class="bg-white p-8 rounded-lg shadow-lg w-full max-w-sm mt-4">
-                            <img src="/logo.png" class="mx-auto w-24 h-24 mb-2 rounded-full shadow-md object-cover" onerror="this.style.display='none'">
-                            <h2 class="text-2xl font-bold text-gray-700">ลำฮิมคือ SHABU</h2>
-                            <p class="text-gray-500 mt-2 border-b pb-2">บัตรคิวของคุณ</p>
-                            <h1 class="text-6xl font-extrabold text-blue-600 my-4">${q.q_number}</h1>
-                            <p class="text-xl font-bold">จำนวน: ${q.pax} ท่าน</p>
-                            
-                            <div class="mt-4 p-3 bg-blue-50 rounded-lg text-blue-800 border border-blue-200 text-sm shadow-inner">
-                                <p class="font-bold text-gray-600">📢 คิวปัจจุบันที่เรียกเข้าโต๊ะล่าสุด</p>
-                                <p class="text-4xl font-black text-blue-700 mt-2">${currentCalled}</p>
+                    <html><head>${mobileHead}</head>
+                    <body class="bg-gray-100 min-h-screen flex flex-col items-center justify-start px-3 py-4">
+
+                        <div id="cancelConfirmModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 px-4">
+                            <div class="bg-white rounded-2xl shadow-2xl w-full max-w-xs overflow-hidden">
+                                <div class="px-6 py-6 text-center">
+                                    <p class="text-gray-800 font-semibold text-lg">ยืนยันยกเลิกคิว ${q.q_number} ใช่หรือไม่?</p>
+                                </div>
+                                <div class="flex border-t border-gray-100">
+                                    <button onclick="document.getElementById('cancelConfirmModal').classList.add('hidden')" class="flex-1 py-3.5 text-gray-500 font-bold hover:bg-gray-50 border-r border-gray-100">ยกเลิก</button>
+                                    <button onclick="doCancel()" class="flex-1 py-3.5 text-red-600 font-bold hover:bg-red-50">ตกลง</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-white w-full max-w-sm rounded-2xl shadow-md overflow-hidden">
+                            <div class="flex flex-col items-center pt-6 pb-4 px-4 border-b bg-white">
+                                <img src="/images/logo.png" class="w-20 h-20 rounded-full shadow-md object-cover mb-2" onerror="this.style.display='none'">
+                                <p class="text-gray-400 text-sm">บัตรคิวของคุณ</p>
                             </div>
 
-                            <div class="mt-4 p-4 bg-yellow-100 rounded text-yellow-800 border border-yellow-300">
-                                <p class="text-lg font-bold">รออีก <span class="text-2xl mx-1">${ahead}</span> คิว</p>
+                            <div class="py-5 text-center border-b px-4">
+                                <h1 class="text-7xl font-black text-blue-600 leading-none">${q.q_number}</h1>
+                                <p class="text-lg font-bold text-gray-700 mt-2">จำนวน: ${q.pax} ท่าน</p>
+                                ${(q.adults > 0 || q.children > 0) ? `<div class="flex justify-center gap-3 mt-1">${q.adults > 0 ? `<span class="bg-blue-100 text-blue-700 px-3 py-0.5 rounded-full text-sm font-bold">ผู้ใหญ่ ${q.adults}</span>` : ''}${q.children > 0 ? `<span class="bg-gray-100 text-gray-600 px-3 py-0.5 rounded-full text-sm font-bold">เด็ก ${q.children}</span>` : ''}</div>` : ''}
                             </div>
-                            
-                            <div class="mt-6 text-left bg-gray-50 p-4 rounded border text-sm text-gray-700">
-                                <p class="font-bold border-b pb-2 mb-2">รายละเอียดหม้อซุป</p>
-                                ${JSON.parse(q.pots).map((p, i) => `<p class="py-1">หม้อ ${i+1}: ${p.soup1} & ${p.soup2}</p>`).join('')}
+
+                            <div class="px-4 pt-4 space-y-3">
+                                <div class="p-3 bg-blue-50 rounded-xl border border-blue-200 text-center">
+                                    <p class="text-xs font-bold text-gray-500 mb-1">คิวปัจจุบันที่เรียกเข้าโต๊ะล่าสุด</p>
+                                    <p class="text-4xl font-black text-blue-700">${currentCalled}</p>
+                                </div>
+                                <div class="p-3 bg-yellow-50 rounded-xl border border-yellow-200 text-center">
+                                    <p class="text-lg font-bold text-yellow-800">รออีก <span class="text-2xl font-black mx-1">${ahead}</span> คิว</p>
+                                </div>
                             </div>
-                            <p class="text-xs text-gray-400 mt-6 animate-pulse">กำลังอัปเดตสถานะแบบเรียลไทม์...</p>
+
+                            <p class="text-xs text-gray-400 text-center mt-3 animate-pulse">กำลังอัปเดตสถานะแบบเรียลไทม์...</p>
+
+                            <div class="p-4">
+                                <button onclick="document.getElementById('cancelConfirmModal').classList.remove('hidden')" class="w-full bg-red-50 text-red-500 font-bold py-3 rounded-xl text-sm border border-red-300 active:scale-95 transition-transform">ยกเลิกคิวของฉัน</button>
+                            </div>
                         </div>
                         <script src="/socket.io/socket.io.js"></script>
-                        <script>const socket = io(); socket.on('queue_updated', () => location.reload());</script>
+                        <script>
+                            const socket = io();
+                            socket.on('queue_updated', () => location.reload());
+                            function doCancel() {
+                                fetch('/api/queue/update', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:${q.id},status:'cancelled'})}).then(()=>location.reload());
+                            }
+                        </script>
                     </body></html>
                 `);
             });

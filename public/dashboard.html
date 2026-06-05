@@ -10,86 +10,134 @@
     <style>
         .late { color: #ef4444; font-weight: bold; animation: blink 1s linear infinite; }
         @keyframes blink { 50% { opacity: 0.5; } }
+        @page { size: 58mm auto; margin: 0mm; }
         @media print {
             body * { visibility: hidden; }
             #printArea, #printArea * { visibility: visible; }
-            #printArea { position: absolute; left: 0; top: 0; width: 58mm; padding: 0; margin: 0; color: black; text-align: center; font-family: monospace; }
+            #printArea { position: fixed; left: 0; top: 0; width: 58mm; padding: 0; margin: 0; color: black; text-align: center; font-family: monospace; overflow: visible; }
         }
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #4b5563; border-radius: 4px; }
+        .numpad-btn { background: #f3f4f6; border: 1px solid #d1d5db; border-radius: 8px; padding: 14px 0; font-size: 22px; font-weight: 700; color: #1f2937; cursor: pointer; transition: background 0.1s, transform 0.1s; user-select: none; }
+        .numpad-btn:active { background: #dbeafe; transform: scale(0.93); }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen flex flex-col">
 
     <div id="loginScreen" class="fixed inset-0 bg-gray-900 z-[100] flex flex-col items-center justify-center text-white">
-        <h2 class="text-3xl font-bold mb-6">🔒 เข้าสู่ระบบจัดการร้าน</h2>
+        <h2 class="text-3xl font-bold mb-6">เข้าสู่ระบบจัดการร้าน</h2>
         <input type="text" id="adminUser" placeholder="Username" class="text-black text-center text-2xl p-3 rounded mb-4 w-64 focus:outline-none focus:ring-4 focus:ring-blue-500" onkeypress="if(event.key === 'Enter') document.getElementById('adminPin').focus()">
         <input type="password" id="adminPin" placeholder="Password" class="text-black text-center text-2xl p-3 rounded mb-4 w-64 focus:outline-none focus:ring-4 focus:ring-blue-500" onkeypress="if(event.key === 'Enter') checkLogin()">
         <button onclick="checkLogin()" class="bg-blue-600 hover:bg-blue-500 px-8 py-3 rounded font-bold text-xl w-64 shadow-lg transition-transform active:scale-95">เข้าสู่ระบบ</button>
-        <p id="loginError" class="text-red-500 mt-4 hidden font-bold text-lg bg-white px-4 py-1 rounded shadow">❌ Username หรือ Password ไม่ถูกต้อง</p>
+        <p id="loginError" class="text-red-500 mt-4 hidden font-bold text-lg bg-white px-4 py-1 rounded shadow">Username หรือ Password ไม่ถูกต้อง</p>
     </div>
 
     <nav class="bg-gray-800 text-white p-4 flex justify-center flex-wrap gap-4 no-print shadow-md">
-        <button onclick="switchTab('kitchen')" id="btn-kitchen" class="px-6 py-2 rounded bg-blue-600 font-bold hover:bg-blue-500">👨‍🍳 หน้าจอครัว</button>
-        <button onclick="switchTab('stats')" id="btn-stats" class="px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600">📊 สถิติยอดเสิร์ฟ</button>
-        <button onclick="switchTab('queue')" id="btn-queue" class="px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600">📝 จัดการคิว</button>
-        <button onclick="switchTab('tables')" id="btn-tables" class="px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600">🍽️ จัดการโต๊ะ</button>
-        <button id="usbPrinterBtn" onclick="connectUSBPrinter()" class="px-6 py-2 rounded bg-gray-600 font-bold hover:bg-gray-500 border border-gray-400 hidden">🔌 เชื่อมต่อเครื่องปริ้น</button>
+        <button onclick="switchTab('kitchen')" id="btn-kitchen" class="px-6 py-2 rounded bg-blue-600 font-bold hover:bg-blue-500">หน้าจอครัว</button>
+        <button onclick="switchTab('stats')" id="btn-stats" class="px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600">สถิติยอดเสิร์ฟ</button>
+        <button onclick="switchTab('queue')" id="btn-queue" class="px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600">จัดการคิว</button>
+        <button onclick="switchTab('tables')" id="btn-tables" class="px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600">จัดการโต๊ะ</button>
+        <button id="usbPrinterBtn" onclick="connectUSBPrinter()" class="px-6 py-2 rounded bg-gray-600 font-bold hover:bg-gray-500 border border-gray-400 hidden">เชื่อมต่อเครื่องปริ้น</button>
     </nav>
 
     <div id="tab-queue" class="hidden flex-1 p-6 max-w-7xl mx-auto w-full">
-        <div class="bg-white p-6 rounded-lg shadow-md w-full border-t-4 border-blue-500 mb-6">
-            <h2 class="text-2xl font-bold mb-4 border-b pb-2 text-gray-800">➕ สร้างคิวใหม่</h2>
-            <div class="flex flex-col md:flex-row gap-4 items-start">
-                <div class="w-full md:w-1/4">
-                    <label class="block text-gray-700 font-bold mb-2">จำนวนลูกค้า (ท่าน):</label>
-                    <input type="number" id="qPax" class="w-full border-2 p-3 text-xl font-bold rounded focus:ring-blue-500 text-center" value="1" min="1">
-                </div>
-                <div class="w-full md:w-2/4">
-                    <label class="block text-gray-700 font-bold mb-2">เลือกน้ำซุป (2 แบบต่อหม้อ):</label>
-                    <div id="qPotsContainer" class="space-y-3">
-                        <div class="pot-item bg-blue-50 p-3 rounded border border-blue-200">
-                            <p class="text-sm font-bold text-blue-800 mb-2">หม้อที่ 1</p>
-                            <div class="flex gap-2">
-                                <select class="soup1 w-1/2 border-2 p-2 rounded font-bold text-gray-700">
-                                    <option value="ยังไม่เลือกน้ำซุป">ยังไม่เลือกน้ำซุป</option><option value="น้ำดำ">น้ำดำ</option><option value="น้ำใส">น้ำใส</option><option value="หมาล่า">หมาล่า</option>
-                                </select>
-                                <select class="soup2 w-1/2 border-2 p-2 rounded font-bold text-gray-700">
-                                    <option value="ยังไม่เลือกน้ำซุป">ยังไม่เลือกน้ำซุป</option><option value="น้ำใส">น้ำใส</option><option value="น้ำดำ">น้ำดำ</option><option value="หมาล่า">หมาล่า</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-                    <button onclick="addPot()" class="mt-3 w-full bg-blue-100 text-blue-700 font-bold py-2 rounded border border-blue-300 hover:bg-blue-200 shadow-sm">+ เพิ่มหม้อ</button>
-                </div>
-                <div class="w-full md:w-1/4 self-stretch flex flex-col justify-end">
-                    <button onclick="submitQueue()" class="w-full h-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded text-xl shadow-lg transition-transform active:scale-95">บันทึกคิว</button>
-                </div>
-            </div>
-        </div>
-
         <div class="bg-white rounded-lg shadow-md overflow-hidden border-t-4 border-gray-700">
-            <div class="p-4 bg-gray-100 flex flex-wrap justify-between items-center border-b">
-                <h2 class="text-2xl font-bold text-gray-800">📋 รายการคิวประจำวัน</h2>
+            <div class="p-4 bg-gray-100 flex flex-wrap justify-between items-center border-b gap-2">
+                <div class="flex items-center gap-3">
+                    <h2 class="text-2xl font-bold text-gray-800">รายการคิวประจำวัน</h2>
+                    <button onclick="openCreateQueueModal()" class="bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold px-4 py-2 rounded-lg text-sm shadow transition-transform">สร้างคิวใหม่</button>
+                </div>
+                <div id="queueSummaryBadges" class="flex flex-wrap gap-2 justify-center text-sm font-bold"></div>
                 <div class="flex items-center gap-2">
                     <label class="font-bold text-gray-700">เลือกวันที่:</label>
                     <input type="date" id="queueHistoryDate" class="border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500" onchange="loadQueueHistory()">
                 </div>
             </div>
-            <div class="overflow-x-auto">
+            <div>
                 <table class="w-full text-left border-collapse">
                     <thead>
-                        <tr class="bg-gray-200 text-gray-700 text-sm">
-                            <th class="p-3 border-b text-center w-20">เวลา</th>
-                            <th class="p-3 border-b text-center w-20">คิว</th>
-                            <th class="p-3 border-b text-center w-24">จำนวน (ท่าน)</th>
-                            <th class="p-3 border-b">รายการหม้อซุป</th>
-                            <th class="p-3 border-b text-center w-48">สถานะคิว / โต๊ะ / บิล</th>
-                            <th class="p-3 border-b text-center w-48">จัดการรายการ</th>
+                        <tr class="bg-gray-200 text-gray-700 text-xs">
+                            <th class="px-2 py-2 border-b text-center w-16">เวลา</th>
+                            <th class="px-2 py-2 border-b text-center w-16">คิว</th>
+                            <th class="px-2 py-2 border-b text-center w-16">จำนวน</th>
+                            <th class="px-2 py-2 border-b">หม้อซุป</th>
+                            <th class="px-2 py-2 border-b text-center w-36">สถานะ</th>
+                            <th class="px-2 py-2 border-b text-center w-56">จัดการ</th>
                         </tr>
                     </thead>
                     <tbody id="queueHistoryBody"><tr><td colspan="6" class="text-center p-6 text-gray-500">กำลังโหลดข้อมูล...</td></tr></tbody>
                 </table>
+            </div>
+            <div class="p-4 border-t bg-gray-50">
+                <button onclick="openCreateQueueModal()" class="w-full bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold py-4 rounded-lg text-xl shadow-lg transition-transform">สร้างคิวใหม่</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="createQueueModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl relative flex flex-col">
+            <div class="flex items-center justify-between px-6 py-4 border-b">
+                <h2 class="text-2xl font-bold text-gray-800">สร้างคิวใหม่</h2>
+                <button onclick="closeCreateQueueModal()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+            </div>
+            <div class="flex flex-1 min-h-0">
+                <!-- Left: pax display + soup selection -->
+                <div class="flex-1 p-5 space-y-4 border-r overflow-y-auto">
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-2">จำนวนลูกค้า:</label>
+                        <div class="flex gap-2">
+                            <div class="flex-1 text-center">
+                                <p class="text-xs font-bold text-gray-500 mb-1">ผู้ใหญ่</p>
+                                <div id="qPaxAdultsDisplay" onclick="setActiveNumpad('adults')" class="w-full border-2 border-blue-400 bg-blue-50 p-3 text-2xl font-bold rounded text-center cursor-pointer select-none">0</div>
+                            </div>
+                            <div class="flex-1 text-center">
+                                <p class="text-xs font-bold text-gray-500 mb-1">เด็ก</p>
+                                <div id="qPaxChildrenDisplay" onclick="setActiveNumpad('children')" class="w-full border-2 border-gray-300 bg-white p-3 text-2xl font-bold rounded text-center cursor-pointer select-none hover:border-blue-300">0</div>
+                            </div>
+                        </div>
+                        <input type="hidden" id="qPaxAdults" value="0">
+                        <input type="hidden" id="qPaxChildren" value="0">
+                        <input type="hidden" id="qPax" value="0">
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-2">เลือกน้ำซุป (2 แบบต่อหม้อ):</label>
+                        <div id="qPotsContainer" class="space-y-3">
+                            <div class="pot-item bg-blue-50 p-3 rounded border border-blue-200">
+                                <p class="text-sm font-bold text-blue-800 mb-2">หม้อที่ 1</p>
+                                <div class="flex gap-2">
+                                    <select class="soup1 w-1/2 border-2 p-2 rounded font-bold text-gray-700">
+                                        <option value="ยังไม่เลือกน้ำซุป">ยังไม่เลือกน้ำซุป</option><option value="น้ำดำ">น้ำดำ</option><option value="น้ำใส">น้ำใส</option><option value="หมาล่า">หมาล่า</option>
+                                    </select>
+                                    <select class="soup2 w-1/2 border-2 p-2 rounded font-bold text-gray-700">
+                                        <option value="ยังไม่เลือกน้ำซุป">ยังไม่เลือกน้ำซุป</option><option value="น้ำใส">น้ำใส</option><option value="น้ำดำ">น้ำดำ</option><option value="หมาล่า">หมาล่า</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <button onclick="addPot()" class="mt-3 w-full bg-blue-100 text-blue-700 font-bold py-2 rounded border border-blue-300 hover:bg-blue-200 shadow-sm">+ เพิ่มหม้อ</button>
+                    </div>
+                </div>
+                <!-- Right: numpad always visible -->
+                <div id="numpadPanel" class="w-56 p-4 bg-gray-50 flex flex-col gap-2 rounded-tr-xl">
+                    <div id="numpadDisplay" class="text-center text-4xl font-black text-blue-700 bg-white rounded-lg py-3 border-2 border-blue-300 shadow-inner" data-raw="">0</div>
+                    <div class="grid grid-cols-3 gap-2">
+                        <button onclick="numpadPress('1')" class="numpad-btn">1</button>
+                        <button onclick="numpadPress('2')" class="numpad-btn">2</button>
+                        <button onclick="numpadPress('3')" class="numpad-btn">3</button>
+                        <button onclick="numpadPress('4')" class="numpad-btn">4</button>
+                        <button onclick="numpadPress('5')" class="numpad-btn">5</button>
+                        <button onclick="numpadPress('6')" class="numpad-btn">6</button>
+                        <button onclick="numpadPress('7')" class="numpad-btn">7</button>
+                        <button onclick="numpadPress('8')" class="numpad-btn">8</button>
+                        <button onclick="numpadPress('9')" class="numpad-btn">9</button>
+                        <button onclick="numpadPress('clear')" class="numpad-btn" style="background:#fee2e2;color:#dc2626;">C</button>
+                        <button onclick="numpadPress('0')" class="numpad-btn">0</button>
+                        <button onclick="numpadPress('back')" class="numpad-btn" style="background:#f3f4f6;">⌫</button>
+                    </div>
+                </div>
+            </div>
+            <div class="px-5 py-4 border-t rounded-b-xl">
+                <button onclick="submitQueue()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-lg text-xl shadow-lg transition-transform active:scale-95">บันทึกคิว</button>
             </div>
         </div>
     </div>
@@ -99,43 +147,101 @@
             <button onclick="document.getElementById('queueQrModal').classList.add('hidden')" class="absolute top-2 right-4 text-gray-500 text-2xl">&times;</button>
             <h2 class="text-2xl font-bold mb-4 border-b pb-2 text-gray-800">คิว <span id="queueQrNum" class="text-blue-600"></span></h2>
             <img id="queueQrImgDisplay" src="" class="mx-auto w-48 h-48 border p-2 rounded mb-4">
-            <a id="queueQrLink" href="#" target="_blank" class="text-blue-600 underline font-bold hover:text-blue-800 block mb-4">🔗 เปิดหน้าเช็คคิวในเบราว์เซอร์</a>
+            <a id="queueQrLink" href="#" target="_blank" class="text-blue-600 underline font-bold hover:text-blue-800 block mb-4">เปิดหน้าเช็คคิวในเบราว์เซอร์</a>
         </div>
     </div>
 
-    <div id="queueActionModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div class="bg-white p-6 rounded-lg shadow-xl w-96 relative">
-            <button onclick="closeQueueModal()" class="absolute top-2 right-4 text-gray-500 text-2xl">&times;</button>
-            <h2 class="text-2xl font-bold mb-4 border-b pb-2 text-gray-800">เรียกคิว <span id="queueModalQNum" class="text-blue-600"></span> เข้าโต๊ะ</h2>
-            <div class="mb-4">
-                <label class="block font-bold text-gray-700 mb-2">เลือกหมายเลขโต๊ะ:</label>
-                <select id="queueModalTable" class="w-full border-2 p-3 rounded text-xl font-bold"></select>
+    <div id="queueActionModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm relative flex flex-col">
+            <div class="flex items-center justify-between px-6 py-4 border-b">
+                <h2 class="text-2xl font-bold text-gray-800">เรียกคิว <span id="queueModalQNum" class="text-blue-600"></span> เข้าโต๊ะ</h2>
+                <button onclick="closeQueueModal()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
             </div>
-            <div class="mb-6 bg-yellow-50 p-3 rounded border border-yellow-200 flex items-center gap-3 cursor-pointer">
-                <input type="checkbox" id="queueModalBilled" class="w-6 h-6 cursor-pointer">
-                <label for="queueModalBilled" class="font-bold text-gray-800 text-lg cursor-pointer">💸 ลูกค้าออกบิลแล้ว</label>
+            <div class="px-6 py-5 space-y-4">
+                <div>
+                    <label class="block font-bold text-gray-700 mb-2">โต๊ะที่เลือก:</label>
+                    <button onclick="openTablePicker()" id="tablePickerBtn" class="w-full border-2 border-dashed border-gray-300 bg-gray-50 hover:bg-gray-100 text-gray-500 font-bold py-4 rounded-xl text-lg transition active:scale-95">
+                        กดเพื่อเลือกโต๊ะ
+                    </button>
+                </div>
+                <div class="bg-yellow-50 p-3 rounded-lg border border-yellow-200 flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" id="queueModalBilled" class="w-6 h-6 cursor-pointer">
+                    <label for="queueModalBilled" class="font-bold text-gray-800 text-lg cursor-pointer">ลูกค้าออกบิลแล้ว</label>
+                </div>
             </div>
-            <button onclick="confirmQueueEnter()" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded text-xl shadow">✅ ยืนยันให้เข้าโต๊ะ</button>
+            <div class="px-6 pb-6">
+                <button onclick="confirmQueueEnter()" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 rounded-lg text-xl shadow-lg transition-transform active:scale-95">ยืนยันให้เข้าโต๊ะ</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="tablePickerModal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[60] p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl relative flex flex-col max-h-[90vh]">
+            <div class="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+                <h2 class="text-xl font-bold text-gray-800">เลือกโต๊ะ</h2>
+                <button onclick="closeTablePicker()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+            </div>
+            <div class="px-5 py-4 overflow-y-auto flex-1">
+                <div id="tablePickerLegend" class="flex gap-4 text-xs font-bold text-gray-500 mb-3">
+                    <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded-full bg-green-500"></span> เปิดอยู่</span>
+                    <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded-full bg-gray-300"></span> ว่าง</span>
+                </div>
+                <div id="queueTableGrid" class="grid grid-cols-4 sm:grid-cols-5 gap-3"></div>
+            </div>
         </div>
     </div>
     
-    <div id="queueEditModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div class="bg-white p-6 rounded-lg shadow-xl w-full max-w-lg relative">
-            <button onclick="document.getElementById('queueEditModal').classList.add('hidden')" class="absolute top-2 right-4 text-gray-500 text-2xl">&times;</button>
-            <h2 class="text-2xl font-bold mb-4 border-b pb-2 text-gray-800">✏️ แก้ไขคิว <span id="editQueueNum" class="text-blue-600"></span></h2>
-            
-            <div class="mb-4">
-                <label class="block text-gray-700 font-bold mb-2">จำนวนลูกค้า (ท่าน):</label>
-                <input type="number" id="editQPax" class="w-full border-2 p-3 text-xl font-bold rounded focus:ring-blue-500 text-center" min="1">
+    <div id="queueEditModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl relative flex flex-col">
+            <div class="flex items-center justify-between px-6 py-4 border-b">
+                <h2 class="text-2xl font-bold text-gray-800">แก้ไขคิว <span id="editQueueNum" class="text-blue-600"></span></h2>
+                <button onclick="document.getElementById('queueEditModal').classList.add('hidden')" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
             </div>
-            
-            <div class="mb-4">
-                <label class="block text-gray-700 font-bold mb-2">น้ำซุป:</label>
-                <div id="editQPotsContainer" class="space-y-3 max-h-60 overflow-y-auto p-2 border bg-gray-50 rounded"></div>
-                <button onclick="addEditPot()" class="mt-3 w-full bg-blue-100 text-blue-700 font-bold py-2 rounded border border-blue-300 hover:bg-blue-200 shadow-sm">+ เพิ่มหม้อ</button>
+            <div class="flex flex-1 min-h-0">
+                <div class="flex-1 p-5 space-y-4 border-r overflow-y-auto">
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-2">จำนวนลูกค้า:</label>
+                        <div class="flex gap-2">
+                            <div class="flex-1 text-center">
+                                <p class="text-xs font-bold text-gray-500 mb-1">ผู้ใหญ่</p>
+                                <div id="editQPaxAdultsDisplay" onclick="setEditActiveNumpad('adults')" class="w-full border-2 border-blue-400 bg-blue-50 p-3 text-2xl font-bold rounded text-center cursor-pointer select-none">0</div>
+                            </div>
+                            <div class="flex-1 text-center">
+                                <p class="text-xs font-bold text-gray-500 mb-1">เด็ก</p>
+                                <div id="editQPaxChildrenDisplay" onclick="setEditActiveNumpad('children')" class="w-full border-2 border-gray-300 bg-white p-3 text-2xl font-bold rounded text-center cursor-pointer select-none hover:border-blue-300">0</div>
+                            </div>
+                        </div>
+                        <input type="hidden" id="editQPaxAdults" value="0">
+                        <input type="hidden" id="editQPaxChildren" value="0">
+                        <input type="hidden" id="editQPax" value="0">
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-2">เลือกน้ำซุป (2 แบบต่อหม้อ):</label>
+                        <div id="editQPotsContainer" class="space-y-3"></div>
+                        <button onclick="addEditPot()" class="mt-3 w-full bg-blue-100 text-blue-700 font-bold py-2 rounded border border-blue-300 hover:bg-blue-200 shadow-sm">+ เพิ่มหม้อ</button>
+                    </div>
+                </div>
+                <div class="w-56 p-4 bg-gray-50 flex flex-col gap-2 rounded-tr-xl">
+                    <div id="editNumpadDisplay" class="text-center text-4xl font-black text-blue-700 bg-white rounded-lg py-3 border-2 border-blue-300 shadow-inner" data-raw="">0</div>
+                    <div class="grid grid-cols-3 gap-2">
+                        <button onclick="editNumpadPress('1')" class="numpad-btn">1</button>
+                        <button onclick="editNumpadPress('2')" class="numpad-btn">2</button>
+                        <button onclick="editNumpadPress('3')" class="numpad-btn">3</button>
+                        <button onclick="editNumpadPress('4')" class="numpad-btn">4</button>
+                        <button onclick="editNumpadPress('5')" class="numpad-btn">5</button>
+                        <button onclick="editNumpadPress('6')" class="numpad-btn">6</button>
+                        <button onclick="editNumpadPress('7')" class="numpad-btn">7</button>
+                        <button onclick="editNumpadPress('8')" class="numpad-btn">8</button>
+                        <button onclick="editNumpadPress('9')" class="numpad-btn">9</button>
+                        <button onclick="editNumpadPress('clear')" class="numpad-btn" style="background:#fee2e2;color:#dc2626;">C</button>
+                        <button onclick="editNumpadPress('0')" class="numpad-btn">0</button>
+                        <button onclick="editNumpadPress('back')" class="numpad-btn" style="background:#f3f4f6;">⌫</button>
+                    </div>
+                </div>
             </div>
-            
-            <button onclick="confirmEditQueue()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded text-xl shadow mt-2">💾 บันทึกการแก้ไข</button>
+            <div class="px-5 py-4 border-t rounded-b-xl">
+                <button onclick="confirmEditQueue()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-lg text-xl shadow-lg transition-transform active:scale-95">บันทึกการแก้ไข</button>
+            </div>
         </div>
     </div>
 
@@ -144,7 +250,7 @@
         <div class="bg-gray-700 text-white text-center py-2 text-2xl font-bold mb-4 rounded shadow">รายการรอเสิร์ฟ</div>
         <div id="orderList" class="flex flex-wrap gap-4 mb-8"></div>
         <div class="border-t border-gray-600 pt-6 mt-6">
-            <div class="bg-gray-800 text-blue-300 text-center py-2 text-xl font-bold mb-4 rounded shadow border border-gray-600">🍽️ โต๊ะที่กำลังเปิดอยู่ & สรุปรายการอาหารที่สั่งทั้งหมด</div>
+            <div class="bg-gray-800 text-blue-300 text-center py-2 text-xl font-bold mb-4 rounded shadow border border-gray-600">โต๊ะที่กำลังเปิดอยู่ & สรุปรายการอาหารที่สั่งทั้งหมด</div>
             <div id="activeTablesSummary" class="flex flex-wrap gap-4 items-start"></div>
         </div>
     </div>
@@ -154,7 +260,7 @@
         <div id="tableGrid" class="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-9 gap-4"></div>
         <div class="mt-12 border-t border-gray-300 pt-6">
             <div class="flex flex-wrap justify-between items-center mb-4 gap-4">
-                <h2 class="text-2xl font-bold text-gray-800">📋 ประวัติการเปิด-ปิดโต๊ะ (รอบวัน)</h2>
+                <h2 class="text-2xl font-bold text-gray-800">ประวัติการเปิด-ปิดโต๊ะ (รอบวัน)</h2>
                 <div class="flex items-center gap-2">
                     <label class="font-bold text-gray-700">เลือกวันที่:</label>
                     <input type="date" id="historyDate" class="border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500" onchange="loadDailyHistory()">
@@ -178,7 +284,7 @@
 
     <div id="tab-stats" class="hidden flex-1 p-6">
         <div class="flex flex-wrap justify-between items-center mb-4 gap-4 max-w-xl mx-auto">
-            <h2 class="text-2xl font-bold text-gray-800">📊 สถิติยอดเสิร์ฟ</h2>
+            <h2 class="text-2xl font-bold text-gray-800">สถิติยอดเสิร์ฟ</h2>
             <div class="flex items-center gap-2">
                 <label class="font-bold text-gray-700">เลือกวันที่:</label>
                 <input type="date" id="statsDate" class="border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500" onchange="loadStats()">
@@ -200,7 +306,7 @@
                 <p class="text-sm text-gray-500 text-center mb-3">โต๊ะนี้ว่างอยู่ — กรอกจำนวนลูกค้า:</p>
                 <div class="space-y-3 mb-4">
                     <div class="flex items-center justify-between bg-gray-50 p-3 rounded-lg border border-gray-200">
-                        <span class="font-bold text-gray-700 text-lg">👤 ผู้ใหญ่</span>
+                        <span class="font-bold text-gray-700 text-lg">ผู้ใหญ่</span>
                         <div class="flex items-center gap-3">
                             <button onclick="adjustPax('adults',-1)" class="w-10 h-10 bg-gray-200 hover:bg-gray-300 active:scale-95 rounded-full text-2xl font-bold text-gray-700 flex items-center justify-center">−</button>
                             <span id="paxAdults" class="text-2xl font-bold w-8 text-center">0</span>
@@ -208,7 +314,7 @@
                         </div>
                     </div>
                     <div class="flex items-center justify-between bg-gray-50 p-3 rounded-lg border border-gray-200">
-                        <span class="font-bold text-gray-700 text-lg">🧒 เด็ก</span>
+                        <span class="font-bold text-gray-700 text-lg">เด็ก</span>
                         <div class="flex items-center gap-3">
                             <button onclick="adjustPax('children',-1)" class="w-10 h-10 bg-gray-200 hover:bg-gray-300 active:scale-95 rounded-full text-2xl font-bold text-gray-700 flex items-center justify-center">−</button>
                             <span id="paxChildren" class="text-2xl font-bold w-8 text-center">0</span>
@@ -216,7 +322,7 @@
                         </div>
                     </div>
                     <div class="flex items-center justify-between bg-gray-50 p-3 rounded-lg border border-gray-200">
-                        <span class="font-bold text-gray-700 text-lg">👶 เด็กเล็ก</span>
+                        <span class="font-bold text-gray-700 text-lg">เด็กเล็ก</span>
                         <div class="flex items-center gap-3">
                             <button onclick="adjustPax('toddlers',-1)" class="w-10 h-10 bg-gray-200 hover:bg-gray-300 active:scale-95 rounded-full text-2xl font-bold text-gray-700 flex items-center justify-center">−</button>
                             <span id="paxToddlers" class="text-2xl font-bold w-8 text-center">0</span>
@@ -224,7 +330,7 @@
                         </div>
                     </div>
                 </div>
-                <button onclick="openTableAction()" class="w-full bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700 text-lg shadow">✅ เปิดโต๊ะ (สร้าง QR)</button>
+                <button onclick="openTableAction()" class="w-full bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700 text-lg shadow">เปิดโต๊ะ (สร้าง QR)</button>
             </div>
             <div id="modalOpen" class="hidden space-y-4">
                 <div class="bg-orange-50 border border-orange-200 rounded-lg overflow-hidden">
@@ -234,7 +340,7 @@
                     </div>
                     <div id="modalPaxEditArea" class="hidden p-4 space-y-4 border-t border-orange-200">
                         <div class="flex items-center justify-between">
-                            <span class="font-bold text-gray-700 text-lg">👤 ผู้ใหญ่</span>
+                            <span class="font-bold text-gray-700 text-lg">ผู้ใหญ่</span>
                             <div class="flex items-center gap-4">
                                 <button onclick="adjustEditPax('adults',-1)" class="w-12 h-12 bg-gray-200 hover:bg-gray-300 active:scale-95 rounded-full text-2xl font-bold text-gray-700 flex items-center justify-center shadow">−</button>
                                 <span id="editPaxAdults" class="text-3xl font-bold w-10 text-center">0</span>
@@ -242,7 +348,7 @@
                             </div>
                         </div>
                         <div class="flex items-center justify-between">
-                            <span class="font-bold text-gray-700 text-lg">🧒 เด็ก</span>
+                            <span class="font-bold text-gray-700 text-lg">เด็ก</span>
                             <div class="flex items-center gap-4">
                                 <button onclick="adjustEditPax('children',-1)" class="w-12 h-12 bg-gray-200 hover:bg-gray-300 active:scale-95 rounded-full text-2xl font-bold text-gray-700 flex items-center justify-center shadow">−</button>
                                 <span id="editPaxChildren" class="text-3xl font-bold w-10 text-center">0</span>
@@ -250,7 +356,7 @@
                             </div>
                         </div>
                         <div class="flex items-center justify-between">
-                            <span class="font-bold text-gray-700 text-lg">👶 เด็กเล็ก</span>
+                            <span class="font-bold text-gray-700 text-lg">เด็กเล็ก</span>
                             <div class="flex items-center gap-4">
                                 <button onclick="adjustEditPax('toddlers',-1)" class="w-12 h-12 bg-gray-200 hover:bg-gray-300 active:scale-95 rounded-full text-2xl font-bold text-gray-700 flex items-center justify-center shadow">−</button>
                                 <span id="editPaxToddlers" class="text-3xl font-bold w-10 text-center">0</span>
@@ -259,12 +365,12 @@
                         </div>
                         <div class="flex gap-2 pt-1">
                             <button onclick="togglePaxEdit(false)" class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 py-3 rounded-lg font-bold">ยกเลิก</button>
-                            <button onclick="saveTablePax()" class="flex-1 bg-orange-500 hover:bg-orange-600 text-white py-3 rounded-lg font-bold">💾 บันทึก</button>
+                            <button onclick="saveTablePax()" class="flex-1 bg-orange-500 hover:bg-orange-600 text-white py-3 rounded-lg font-bold">บันทึก</button>
                         </div>
                     </div>
                 </div>
                 <button onclick="toggleQrPanel()" id="qrToggleBtn" class="w-full bg-gray-700 hover:bg-gray-600 text-white py-2 rounded font-bold text-sm flex items-center justify-center gap-2">
-                    <span>📱 แสดง Link &amp; QR Code</span>
+                    <span>แสดง Link &amp; QR Code</span>
                     <span id="qrToggleArrow" class="transition-transform">▼</span>
                 </button>
                 <div id="modalQrPanel" class="hidden space-y-3">
@@ -279,9 +385,21 @@
                     <ul id="modalHistory" class="text-sm mt-2 text-gray-700 max-h-40 overflow-y-auto"></ul>
                 </div>
                 <div class="flex gap-2">
-                    <button onclick="reprintQR()" class="flex-1 bg-blue-500 text-white py-2 rounded font-bold">🖨️ ปริ้น QR ใหม่</button>
-                    <button onclick="closeTableAction()" class="flex-1 bg-red-600 text-white py-2 rounded font-bold">❌ ปิดโต๊ะ</button>
+                    <button onclick="reprintQR()" class="flex-1 bg-blue-500 text-white py-2 rounded font-bold">ปริ้น QR ใหม่</button>
+                    <button onclick="closeTableAction()" class="flex-1 bg-red-600 text-white py-2 rounded font-bold">ปิดโต๊ะ</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="confirmModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[200] px-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+            <div class="px-6 py-6 text-center">
+                <p id="confirmMessage" class="text-gray-800 font-semibold text-lg leading-snug"></p>
+            </div>
+            <div class="flex border-t border-gray-100">
+                <button onclick="confirmCancel()" class="flex-1 py-3.5 text-gray-500 font-bold hover:bg-gray-50 transition border-r border-gray-100">ยกเลิก</button>
+                <button onclick="confirmOk()" class="flex-1 py-3.5 text-blue-600 font-bold hover:bg-blue-50 transition">ตกลง</button>
             </div>
         </div>
     </div>
@@ -324,9 +442,9 @@
         function updatePaxBadges() {
             const t = currentTableSelection;
             const parts = [];
-            if(t.adults) parts.push(`👤 ผู้ใหญ่ ${t.adults}`);
-            if(t.children) parts.push(`🧒 เด็ก ${t.children}`);
-            if(t.toddlers) parts.push(`👶 เด็กเล็ก ${t.toddlers}`);
+            if(t.adults) parts.push(`ผู้ใหญ่ ${t.adults}`);
+            if(t.children) parts.push(`เด็ก ${t.children}`);
+            if(t.toddlers) parts.push(`เด็กเล็ก ${t.toddlers}`);
             document.getElementById('modalPaxBadges').innerHTML = parts.length > 0
                 ? parts.map(p => `<span class="bg-white border border-orange-300 px-3 py-1 rounded-full">${p}</span>`).join('')
                 : '<span class="text-gray-400 text-sm">ไม่ได้ระบุจำนวนลูกค้า</span>';
@@ -359,19 +477,22 @@
         const PRINTER_WIDTH_DOTS = 384; // 58mm @ 203 DPI
 
         (function initUsbButton() {
-            if (navigator.usb) {
-                document.getElementById('usbPrinterBtn').classList.remove('hidden');
-                navigator.usb.addEventListener('disconnect', () => {
+            if (!navigator.usb) return;
+            document.getElementById('usbPrinterBtn').classList.remove('hidden');
+            navigator.usb.addEventListener('disconnect', (e) => {
+                if (usbDevice && e.device === usbDevice) {
                     usbDevice = null; usbEndpoint = null;
                     updatePrinterStatus(false);
-                });
-            }
+                }
+            });
+            // Auto-reconnect to previously authorized printer on page load
+            navigator.usb.getDevices().then(devices => {
+                if (devices.length > 0) connectToDevice(devices[0]);
+            });
         })();
 
-        async function connectUSBPrinter() {
-            if (!navigator.usb) { alert('เบราว์เซอร์นี้ไม่รองรับ WebUSB กรุณาใช้ Chrome'); return; }
+        async function connectToDevice(device) {
             try {
-                const device = await navigator.usb.requestDevice({ filters: [] });
                 await device.open();
                 if (device.configuration === null) await device.selectConfiguration(1);
                 const iface = device.configuration.interfaces.find(i => i.alternate.interfaceClass === 0x07)
@@ -382,6 +503,16 @@
                 usbDevice = device; usbEndpoint = ep;
                 updatePrinterStatus(true);
             } catch (e) {
+                if (e.name !== 'NotFoundError') console.warn('เชื่อมต่อเครื่องปริ้นไม่สำเร็จ: ' + e.message);
+            }
+        }
+
+        async function connectUSBPrinter() {
+            if (!navigator.usb) { alert('เบราว์เซอร์นี้ไม่รองรับ WebUSB กรุณาใช้ Chrome'); return; }
+            try {
+                const device = await navigator.usb.requestDevice({ filters: [] });
+                await connectToDevice(device);
+            } catch (e) {
                 if (e.name !== 'NotFoundError') alert('เชื่อมต่อไม่สำเร็จ: ' + e.message);
             }
         }
@@ -390,10 +521,10 @@
             const btn = document.getElementById('usbPrinterBtn');
             if (!btn) return;
             if (connected) {
-                btn.textContent = '🖨️ เครื่องปริ้น: เชื่อมต่อแล้ว';
+                btn.textContent = 'เครื่องปริ้น: เชื่อมต่อแล้ว';
                 btn.className = 'px-6 py-2 rounded bg-green-600 font-bold hover:bg-green-500 border border-green-400';
             } else {
-                btn.textContent = '🔌 เชื่อมต่อเครื่องปริ้น';
+                btn.textContent = 'เชื่อมต่อเครื่องปริ้น';
                 btn.className = 'px-6 py-2 rounded bg-gray-600 font-bold hover:bg-gray-500 border border-gray-400';
             }
         }
@@ -450,7 +581,20 @@
                 catch(e) { alert('ปริ้นไม่สำเร็จ: ' + e.message); }
                 el.classList.add('hidden');
             } else {
-                setTimeout(() => { window.print(); el.classList.add('hidden'); }, 100);
+                const canvas = await html2canvas(el, { scale: 3, backgroundColor: '#ffffff', useCORS: true, logging: false });
+                const dataUrl = canvas.toDataURL('image/png');
+                el.classList.add('hidden');
+                const win = window.open('', '_blank', 'width=300,height=700');
+                win.document.write(`<!DOCTYPE html><html><head>
+                <style>
+                    @page { size: 58mm auto; margin: 0; }
+                    body { margin: 0; padding: 0; }
+                    img { display: block; width: 58mm; }
+                </style></head><body>
+                <img src="${dataUrl}">
+                <script>window.onload=function(){setTimeout(function(){window.print();window.close();},200);}<\/script>
+                </body></html>`);
+                win.document.close();
             }
         }
         // ==============================================================
@@ -476,8 +620,6 @@
             document.getElementById('historyDate').value = dateStr; document.getElementById('statsDate').value = dateStr; 
             document.getElementById('queueHistoryDate').value = dateStr;
             
-            const qTableSelect = document.getElementById('queueModalTable');
-            for(let i=1; i<=27; i++) { qTableSelect.innerHTML += `<option value="${i}">โต๊ะ ${i}</option>`; }
 
             loadKitchenActiveTables();
             loadQueueHistory(); 
@@ -515,8 +657,8 @@
                 </div>
                 <div class="flex-grow mb-4">${itemsHtml}</div>
                 <div class="flex mt-auto gap-2">
-                    <button onclick="updateOrder(${order.id}, '${order.table_no}', 'served')" class="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded font-bold shadow-md text-xl">✅ เสิร์ฟแล้ว</button>
-                    <button onclick="if(confirm('ยืนยันยกเลิกออเดอร์นี้ใช่หรือไม่?')) updateOrder(${order.id}, '${order.table_no}', 'cancelled')" class="w-16 bg-red-600 hover:bg-red-700 text-white py-3 rounded font-bold shadow-md text-xl">❌</button>
+                    <button onclick="updateOrder(${order.id}, '${order.table_no}', 'served')" class="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded font-bold shadow-md text-xl">เสิร์ฟแล้ว</button>
+                    <button onclick="showConfirm('ยืนยันยกเลิกออเดอร์นี้ใช่หรือไม่?', () => updateOrder(${order.id}, '${order.table_no}', 'cancelled'))" class="w-16 bg-red-600 hover:bg-red-700 text-white py-3 rounded font-bold shadow-md text-xl">X</button>
                 </div>
             `;
             document.getElementById('orderList').append(div);
@@ -572,7 +714,7 @@
                 document.getElementById('qrToggleArrow').style.transform = '';
 
                 const orderUrl = `${window.location.origin}/?table=${table.table_no}&token=${table.session_token}`;
-                document.getElementById('modalLinkBox').innerHTML = `<a href="${orderUrl}" target="_blank" class="text-blue-600 underline font-semibold text-lg hover:text-blue-800">🔗 กดเพื่อเปิดหน้าสั่งอาหารโต๊ะ ${table.table_no}</a>`;
+                document.getElementById('modalLinkBox').innerHTML = `<a href="${orderUrl}" target="_blank" class="text-blue-600 underline font-semibold text-lg hover:text-blue-800">กดเพื่อเปิดหน้าสั่งอาหารโต๊ะ ${table.table_no}</a>`;
                 document.getElementById('modalQrDisplay').src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(orderUrl)}`;
                 fetch(`/api/table-history/${table.table_no}`).then(res => res.json()).then(orders => {
                     const historyUl = document.getElementById('modalHistory'); historyUl.innerHTML = ''; let totals = {};
@@ -605,7 +747,7 @@
                 }
             });
         }
-        function closeTableAction() { if(confirm(`ยืนยันการปิดโต๊ะ ${currentTableSelection.table_no} ใช่หรือไม่?`)) { fetch('/api/close-table', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ table: currentTableSelection.table_no }) }).then(() => closeModal()); } }
+        function closeTableAction() { showConfirm(`ยืนยันการปิดโต๊ะ ${currentTableSelection.table_no} ใช่หรือไม่?`, () => { fetch('/api/close-table', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ table: currentTableSelection.table_no }) }).then(() => closeModal()); }); }
         
         function reprintQR() { 
             const url = `${window.location.origin}/?table=${currentTableSelection.table_no}&token=${currentTableSelection.session_token}`;
@@ -658,6 +800,113 @@
         }
         socket.on('stats_updated', loadStats);
 
+        let _confirmCb = null;
+        function showConfirm(message, onConfirm) {
+            document.getElementById('confirmMessage').innerText = message;
+            _confirmCb = onConfirm;
+            document.getElementById('confirmModal').classList.remove('hidden');
+        }
+        function confirmOk() {
+            document.getElementById('confirmModal').classList.add('hidden');
+            if (_confirmCb) _confirmCb();
+            _confirmCb = null;
+        }
+        function confirmCancel() {
+            document.getElementById('confirmModal').classList.add('hidden');
+            _confirmCb = null;
+        }
+
+        function deleteQueue(id, qNum) {
+            showConfirm(`ยืนยันลบคิว ${qNum} ออกจากระบบ?`, () => {
+                fetch(`/api/queue/${id}`, { method: 'DELETE' }).then(() => loadQueueHistory());
+            });
+        }
+
+        function toggleQueueMenu(id) {
+            const menu = document.getElementById(`queueMenu-${id}`);
+            const isHidden = menu.classList.contains('hidden');
+            document.querySelectorAll('[id^="queueMenu-"]').forEach(m => m.classList.add('hidden'));
+            if (isHidden) menu.classList.remove('hidden');
+        }
+        document.addEventListener('click', () => {
+            document.querySelectorAll('[id^="queueMenu-"]').forEach(m => m.classList.add('hidden'));
+        });
+
+        function openCreateQueueModal() {
+            document.getElementById('qPaxAdults').value = 0;
+            document.getElementById('qPaxChildren').value = 0;
+            document.getElementById('qPax').value = 0;
+            document.getElementById('qPaxAdultsDisplay').innerText = '0';
+            document.getElementById('qPaxChildrenDisplay').innerText = '0';
+            const nd = document.getElementById('numpadDisplay');
+            nd.dataset.raw = '';
+            nd.innerText = '0';
+            activeNumpadField = 'adults';
+            setActiveNumpad('adults');
+            document.getElementById('qPotsContainer').innerHTML = `
+                <div class="pot-item bg-blue-50 p-3 rounded border border-blue-200">
+                    <p class="text-sm font-bold text-blue-800 mb-2">หม้อที่ 1</p>
+                    <div class="flex gap-2">
+                        <select class="soup1 w-1/2 border-2 p-2 rounded font-bold text-gray-700"><option value="ยังไม่เลือกน้ำซุป">ยังไม่เลือกน้ำซุป</option><option value="น้ำดำ">น้ำดำ</option><option value="น้ำใส">น้ำใส</option><option value="หมาล่า">หมาล่า</option></select>
+                        <select class="soup2 w-1/2 border-2 p-2 rounded font-bold text-gray-700"><option value="ยังไม่เลือกน้ำซุป">ยังไม่เลือกน้ำซุป</option><option value="น้ำใส">น้ำใส</option><option value="น้ำดำ">น้ำดำ</option><option value="หมาล่า">หมาล่า</option></select>
+                    </div>
+                </div>`;
+            document.getElementById('createQueueModal').classList.remove('hidden');
+        }
+        function closeCreateQueueModal() {
+            document.getElementById('createQueueModal').classList.add('hidden');
+        }
+
+        // ================== Numpad ==================
+        let activeNumpadField = 'adults';
+        function setActiveNumpad(field) {
+            activeNumpadField = field;
+            const nd = document.getElementById('numpadDisplay');
+            nd.dataset.raw = '';
+            nd.innerText = '0';
+            const aDisp = document.getElementById('qPaxAdultsDisplay');
+            const cDisp = document.getElementById('qPaxChildrenDisplay');
+            if (field === 'adults') {
+                aDisp.className = 'w-full border-2 border-blue-400 bg-blue-50 p-3 text-2xl font-bold rounded text-center cursor-pointer select-none';
+                cDisp.className = 'w-full border-2 border-gray-300 bg-white p-3 text-2xl font-bold rounded text-center cursor-pointer select-none hover:border-blue-300';
+            } else {
+                cDisp.className = 'w-full border-2 border-blue-400 bg-blue-50 p-3 text-2xl font-bold rounded text-center cursor-pointer select-none';
+                aDisp.className = 'w-full border-2 border-gray-300 bg-white p-3 text-2xl font-bold rounded text-center cursor-pointer select-none hover:border-blue-300';
+            }
+        }
+        function toggleNumpad() { /* numpad always visible in create modal */ }
+        function numpadPress(val) {
+            const nd = document.getElementById('numpadDisplay');
+            let raw = nd.dataset.raw || '';
+            if (val === 'clear') {
+                raw = '';
+            } else if (val === 'back') {
+                raw = raw.slice(0, -1);
+            } else {
+                raw = raw + val;
+                if (raw.length > 3) raw = raw.slice(0, 3);
+            }
+            nd.dataset.raw = raw;
+            const shown = raw === '' ? '0' : String(parseInt(raw));
+            nd.innerText = shown;
+            const num = parseInt(raw) || 0;
+            if (activeNumpadField === 'adults') {
+                document.getElementById('qPaxAdults').value = num;
+                document.getElementById('qPaxAdultsDisplay').innerText = shown;
+            } else {
+                document.getElementById('qPaxChildren').value = num;
+                document.getElementById('qPaxChildrenDisplay').innerText = shown;
+            }
+            const a = parseInt(document.getElementById('qPaxAdults').value) || 0;
+            const c = parseInt(document.getElementById('qPaxChildren').value) || 0;
+            document.getElementById('qPax').value = a + c;
+        }
+        function confirmNumpad() {
+            const a = parseInt(document.getElementById('qPaxAdults').value) || 0;
+            const c = parseInt(document.getElementById('qPaxChildren').value) || 0;
+            document.getElementById('qPax').value = a + c;
+        }
+
         // ================== ระบบจัดการคิว ==================
         function addPot() {
             const container = document.getElementById('qPotsContainer');
@@ -682,28 +931,22 @@
         }
 
         function submitQueue() {
-            const pax = document.getElementById('qPax').value;
+            const adults = parseInt(document.getElementById('qPaxAdults').value) || 0;
+            const children = parseInt(document.getElementById('qPaxChildren').value) || 0;
+            const pax = adults + children;
             const pots = [];
             document.querySelectorAll('.pot-item').forEach(el => {
                 pots.push({ soup1: el.querySelector('.soup1').value, soup2: el.querySelector('.soup2').value });
             });
-            fetch('/api/queue', { 
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pax, pots }) 
+            fetch('/api/queue', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pax, adults, children, pots })
             })
             .then(res => res.json())
             .then(data => {
                 if(data.success) {
+                    closeCreateQueueModal();
                     loadQueueHistory();
-                    document.getElementById('qPax').value = 1;
-                    document.getElementById('qPotsContainer').innerHTML = `
-                        <div class="pot-item bg-blue-50 p-3 rounded border border-blue-200">
-                            <p class="text-sm font-bold text-blue-800 mb-2">หม้อที่ 1</p>
-                            <div class="flex gap-2">
-                                <select class="soup1 w-1/2 border-2 p-2 rounded font-bold text-gray-700"><option value="ยังไม่เลือกน้ำซุป">ยังไม่เลือกน้ำซุป</option><option value="น้ำดำ">น้ำดำ</option><option value="น้ำใส">น้ำใส</option><option value="หมาล่า">หมาล่า</option></select>
-                                <select class="soup2 w-1/2 border-2 p-2 rounded font-bold text-gray-700"><option value="ยังไม่เลือกน้ำซุป">ยังไม่เลือกน้ำซุป</option><option value="น้ำใส">น้ำใส</option><option value="น้ำดำ">น้ำดำ</option><option value="หมาล่า">หมาล่า</option></select>
-                            </div>
-                        </div>
-                    `;
+                    printQueueSlip(data.q_number, pax, encodeURIComponent(JSON.stringify(pots)), data.token, data.created_at);
                 }
             });
         }
@@ -715,27 +958,21 @@
             const now = new Date(createdAt || Date.now());
             const timeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
             const dateStr = `${now.getDate().toString().padStart(2,'0')}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getFullYear()}`;
-            let potsHtml = '';
-            pots.forEach((p, i) => { potsHtml += `<p style="font-size:10px;font-weight:700;margin:2px 0;">หม้อ ${i+1}: ${p.soup1} &amp; ${p.soup2}</p>`; });
             doPrint(el => { el.innerHTML = `
-                <div style="padding:6px 0 6px;">
-                    <img src="/images/logo.png" alt="Logo" style="display:block;margin:0 auto;width:140px;height:140px;object-fit:contain;" onerror="this.style.display='none'">
+                <div style="height:50px;overflow:hidden;display:flex;justify-content:center;">
+                    <img src="/images/logo.png" alt="Logo" style="width:115px;height:115px;margin-top:-34px;" onerror="this.style.display='none'">
                 </div>
-                <div style="border-top:1px solid black;border-bottom:1px solid black;padding:3px 0;margin:0 0 6px;">
-                    <p style="font-size:11px;font-weight:900;letter-spacing:4px;margin:0;">◆ บัตรคิว ◆</p>
+                <div style="height:4px;"></div>
+                <div style="height:26px;display:flex;align-items:flex-end;justify-content:center;padding-bottom:1px;font-size:16px;font-weight:900;letter-spacing:3px;">บัตรคิว</div>
+                <div style="height:20px;line-height:20px;font-size:11px;font-weight:600;">${dateStr} &nbsp; ${timeStr}</div>
+                <div style="height:80px;display:flex;align-items:flex-start;justify-content:center;padding-top:4px;">
+                    <span style="font-size:60px;font-weight:900;line-height:1;">${qNum}</span>
                 </div>
-                <p style="font-size:10px;margin:0 0 4px;">${dateStr} &nbsp;|&nbsp; ${timeStr} น.</p>
-                <div style="border-top:2px solid black;border-bottom:2px solid black;padding:6px 0;margin:0 0 8px;">
-                    <p style="font-size:72px;font-weight:900;line-height:1;margin:0;">${qNum}</p>
-                    <p style="font-size:14px;font-weight:700;margin:5px 0 0;">จำนวน &nbsp; ${pax} &nbsp; ท่าน</p>
+                <div style="height:20px;"></div>
+                <div style="height:160px;display:flex;align-items:center;justify-content:center;">
+                    <img src="${qrSrc}" alt="QR" style="width:155px;height:155px;">
                 </div>
-                <div style="text-align:left;padding:5px 10px;border:1px dashed black;margin:0 4px 8px;border-radius:2px;">
-                    <p style="font-size:10px;font-weight:900;text-align:center;margin:0 0 5px;letter-spacing:1px;">หม้อซุป</p>
-                    ${potsHtml}
-                </div>
-                <p style="font-size:11px;font-weight:700;margin:0 0 4px;">สแกน QR เพื่อเช็คคิว</p>
-                <img src="${qrSrc}" alt="QR" style="display:block;margin:0 auto 6px;width:165px;height:165px;">
-                <div style="border-top:1px dashed black;margin:4px 8px 0;"></div>
+                <div style="height:7px;"></div>
             `; });
         }
 
@@ -748,25 +985,133 @@
         }
 
         let currentQueueId = null;
-        function openQueueActionModal(id, qNum) {
+        let selectedQueueTableNo = null;
+        let tablePickerMode = 'new'; // 'new' | 'reassign'
+        let reassignQueueContext = null;
+        function openQueueActionModal(id, qNum, preAssignedTable) {
             currentQueueId = id;
+            const specialTypes = ['รอโต๊ะใหญ่', 'รอโต๊ะเชื่อม'];
+            const hasTable = preAssignedTable && preAssignedTable !== 'null' && preAssignedTable !== '' && !specialTypes.includes(preAssignedTable);
+            selectedQueueTableNo = hasTable ? preAssignedTable : null;
             document.getElementById('queueModalQNum').innerText = qNum;
             document.getElementById('queueModalBilled').checked = false;
+            const btn = document.getElementById('tablePickerBtn');
+            if (hasTable) {
+                btn.textContent = `โต๊ะ ${preAssignedTable}`;
+                btn.className = 'w-full border-2 border-blue-400 bg-blue-50 text-blue-700 font-bold py-4 rounded-xl text-xl transition active:scale-95 shadow';
+            } else {
+                btn.textContent = 'กดเพื่อเลือกโต๊ะ';
+                btn.className = 'w-full border-2 border-dashed border-gray-300 bg-gray-50 hover:bg-gray-100 text-gray-500 font-bold py-4 rounded-xl text-lg transition active:scale-95';
+            }
             document.getElementById('queueActionModal').classList.remove('hidden');
         }
-        function closeQueueModal() { document.getElementById('queueActionModal').classList.add('hidden'); }
+        function openTablePicker() {
+            tablePickerMode = 'new';
+            fetch('/api/tables').then(res => res.json()).then(tables => {
+                const grid = document.getElementById('queueTableGrid');
+                grid.innerHTML = '';
+                tables.forEach(t => {
+                    const btn = document.createElement('button');
+                    btn.dataset.tableNo = t.table_no;
+                    const isSelected = t.table_no == selectedQueueTableNo;
+                    btn.className = `py-4 rounded-xl text-lg font-bold shadow transition active:scale-95
+                        ${t.is_open ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}
+                        ${isSelected ? 'ring-4 ring-blue-500 ring-offset-2 scale-105' : ''}`;
+                    btn.innerText = `โต๊ะ ${t.table_no}`;
+                    btn.onclick = () => selectQueueTable(t.table_no, t.is_open);
+                    grid.appendChild(btn);
+                });
+                document.getElementById('tablePickerModal').classList.remove('hidden');
+            });
+        }
+        function openTablePickerForReassign(queueId, status, isBilled) {
+            tablePickerMode = 'reassign';
+            reassignQueueContext = { id: queueId, status, isBilled };
+            fetch('/api/tables').then(res => res.json()).then(tables => {
+                const grid = document.getElementById('queueTableGrid');
+                grid.innerHTML = '';
+                tables.forEach(t => {
+                    const btn = document.createElement('button');
+                    btn.className = `py-4 rounded-xl text-lg font-bold shadow transition active:scale-95
+                        ${t.is_open ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`;
+                    btn.innerText = `โต๊ะ ${t.table_no}`;
+                    btn.onclick = () => selectQueueTable(t.table_no, t.is_open);
+                    grid.appendChild(btn);
+                });
+                document.getElementById('tablePickerModal').classList.remove('hidden');
+            });
+        }
+        function selectQueueTable(tableNo, isOpen) {
+            if ((tablePickerMode === 'reassign' || tablePickerMode === 'preassign_type') && reassignQueueContext) {
+                const ctx = reassignQueueContext;
+                fetch('/api/queue/update', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: ctx.id, status: ctx.status, table_assigned: tableNo, is_billed: ctx.isBilled })
+                }).then(() => { closeTablePicker(); loadQueueHistory(); });
+                tablePickerMode = 'new';
+                reassignQueueContext = null;
+                return;
+            }
+            selectedQueueTableNo = tableNo;
+            const pickerBtn = document.getElementById('tablePickerBtn');
+            pickerBtn.textContent = `โต๊ะ ${tableNo}`;
+            pickerBtn.className = `w-full border-2 font-bold py-4 rounded-xl text-xl transition active:scale-95 shadow
+                ${isOpen ? 'border-green-500 bg-green-50 text-green-700' : 'border-blue-400 bg-blue-50 text-blue-700'}`;
+            closeTablePicker();
+        }
+        function closeTablePicker() {
+            document.getElementById('tablePickerModal').classList.add('hidden');
+            document.getElementById('tablePickerLegend').classList.remove('hidden');
+            document.getElementById('queueTableGrid').className = 'grid grid-cols-4 sm:grid-cols-5 gap-3';
+        }
+        function openPreassignPicker(queueId) {
+            tablePickerMode = 'preassign_type';
+            reassignQueueContext = { id: queueId, status: 'waiting', isBilled: false };
+            document.getElementById('tablePickerLegend').classList.remove('hidden');
+            const grid = document.getElementById('queueTableGrid');
+            grid.className = 'grid grid-cols-4 sm:grid-cols-5 gap-3';
+            fetch('/api/tables').then(res => res.json()).then(tables => {
+                grid.innerHTML = `
+                    <button onclick="selectPreassignType('รอโต๊ะใหญ่')" class="col-span-2 py-5 rounded-xl text-xl font-bold shadow-lg transition active:scale-95 bg-orange-100 text-orange-700 border-2 border-orange-300 hover:bg-orange-200">รอโต๊ะใหญ่</button>
+                    <button onclick="selectPreassignType('รอโต๊ะเชื่อม')" class="col-span-2 py-5 rounded-xl text-xl font-bold shadow-lg transition active:scale-95 bg-orange-100 text-orange-700 border-2 border-orange-300 hover:bg-orange-200">รอโต๊ะเชื่อม</button>
+                    <div class="col-span-4 sm:col-span-5 border-t border-gray-200 my-1"></div>
+                `;
+                tables.forEach(t => {
+                    const btn = document.createElement('button');
+                    btn.className = `py-4 rounded-xl text-lg font-bold shadow transition active:scale-95
+                        ${t.is_open ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`;
+                    btn.innerText = `โต๊ะ ${t.table_no}`;
+                    btn.onclick = () => selectQueueTable(t.table_no, t.is_open);
+                    grid.appendChild(btn);
+                });
+                document.getElementById('tablePickerModal').classList.remove('hidden');
+            });
+        }
+        function selectPreassignType(type) {
+            const ctx = reassignQueueContext;
+            fetch('/api/queue/update', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: ctx.id, status: 'waiting', table_assigned: type, is_billed: false })
+            }).then(() => { loadQueueHistory(); });
+            tablePickerMode = 'new';
+            reassignQueueContext = null;
+            closeTablePicker();
+        }
+        function closeQueueModal() {
+            document.getElementById('queueActionModal').classList.add('hidden');
+            closeTablePicker();
+        }
         function confirmQueueEnter() {
-            const table = document.getElementById('queueModalTable').value;
             const isBilled = document.getElementById('queueModalBilled').checked;
             fetch('/api/queue/update', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: currentQueueId, status: 'entered', table_assigned: table, is_billed: isBilled })
+                body: JSON.stringify({ id: currentQueueId, status: 'entered', table_assigned: selectedQueueTableNo, is_billed: isBilled })
             }).then(() => { closeQueueModal(); });
         }
         function cancelQueue(id, qNum) {
-            if(confirm(`ยืนยันข้ามคิว ${qNum} (เพราะลูกค้าไม่อยู่ร้าน) ใช่หรือไม่?`)) {
-                fetch('/api/queue/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, status: 'cancelled' }) });
-            }
+            showConfirm(`ยืนยันข้ามคิว ${qNum} ใช่หรือไม่?`, () => {
+                fetch('/api/queue/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, status: 'skipped' }) });
+            });
         }
         function updateQueueBill(id, status, tableAssigned, isChecked) {
              fetch('/api/queue/update', {
@@ -775,11 +1120,66 @@
             });
         }
 
+        // ================== Edit Numpad ==================
+        let editActiveNumpadField = 'adults';
+        function setEditActiveNumpad(field) {
+            editActiveNumpadField = field;
+            const nd = document.getElementById('editNumpadDisplay');
+            nd.dataset.raw = '';
+            nd.innerText = '0';
+            const aDisp = document.getElementById('editQPaxAdultsDisplay');
+            const cDisp = document.getElementById('editQPaxChildrenDisplay');
+            if (field === 'adults') {
+                aDisp.className = 'w-full border-2 border-blue-400 bg-blue-50 p-3 text-2xl font-bold rounded text-center cursor-pointer select-none';
+                cDisp.className = 'w-full border-2 border-gray-300 bg-white p-3 text-2xl font-bold rounded text-center cursor-pointer select-none hover:border-blue-300';
+            } else {
+                cDisp.className = 'w-full border-2 border-blue-400 bg-blue-50 p-3 text-2xl font-bold rounded text-center cursor-pointer select-none';
+                aDisp.className = 'w-full border-2 border-gray-300 bg-white p-3 text-2xl font-bold rounded text-center cursor-pointer select-none hover:border-blue-300';
+            }
+        }
+        function editNumpadPress(val) {
+            const nd = document.getElementById('editNumpadDisplay');
+            let raw = nd.dataset.raw || '';
+            if (val === 'clear') {
+                raw = '';
+            } else if (val === 'back') {
+                raw = raw.slice(0, -1);
+            } else {
+                raw = raw + val;
+                if (raw.length > 3) raw = raw.slice(0, 3);
+            }
+            nd.dataset.raw = raw;
+            const shown = raw === '' ? '0' : String(parseInt(raw));
+            nd.innerText = shown;
+            const num = parseInt(raw) || 0;
+            if (editActiveNumpadField === 'adults') {
+                document.getElementById('editQPaxAdults').value = num;
+                document.getElementById('editQPaxAdultsDisplay').innerText = shown;
+            } else {
+                document.getElementById('editQPaxChildren').value = num;
+                document.getElementById('editQPaxChildrenDisplay').innerText = shown;
+            }
+            const a = parseInt(document.getElementById('editQPaxAdults').value) || 0;
+            const c = parseInt(document.getElementById('editQPaxChildren').value) || 0;
+            document.getElementById('editQPax').value = a + c;
+        }
+
         // ================== ระบบแก้ไขข้อมูลคิว ==================
-        function openEditQueueModal(id, qNum, pax, potsStr) {
+        function openEditQueueModal(id, qNum, pax, potsStr, adults, children) {
             currentQueueId = id;
+            adults = parseInt(adults) || 0;
+            children = parseInt(children) || 0;
             document.getElementById('editQueueNum').innerText = qNum;
-            document.getElementById('editQPax').value = pax;
+            document.getElementById('editQPaxAdults').value = adults;
+            document.getElementById('editQPaxChildren').value = children;
+            document.getElementById('editQPax').value = adults + children;
+            document.getElementById('editQPaxAdultsDisplay').innerText = adults;
+            document.getElementById('editQPaxChildrenDisplay').innerText = children;
+            editActiveNumpadField = 'adults';
+            setEditActiveNumpad('adults');
+            const nd = document.getElementById('editNumpadDisplay');
+            nd.dataset.raw = String(adults);
+            nd.innerText = String(adults);
             
             const pots = JSON.parse(decodeURIComponent(potsStr));
             const container = document.getElementById('editQPotsContainer');
@@ -833,66 +1233,102 @@
         }
 
         function confirmEditQueue() {
-            const pax = document.getElementById('editQPax').value;
+            const adults = parseInt(document.getElementById('editQPaxAdults').value) || 0;
+            const children = parseInt(document.getElementById('editQPaxChildren').value) || 0;
+            const pax = adults + children;
             const pots = [];
             document.querySelectorAll('.edit-pot-item').forEach(el => {
                 pots.push({ soup1: el.querySelector('.edit-soup1').value, soup2: el.querySelector('.edit-soup2').value });
             });
-            fetch('/api/queue/edit', { 
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, 
-                body: JSON.stringify({ id: currentQueueId, pax: pax, pots: pots }) 
-            }).then(() => { document.getElementById('queueEditModal').classList.add('hidden'); });
+            fetch('/api/queue/edit', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: currentQueueId, pax, adults, children, pots })
+            }).then(() => {
+                document.getElementById('queueEditModal').classList.add('hidden');
+                loadQueueHistory();
+            });
         }
 
         function loadQueueHistory() {
             const date = document.getElementById('queueHistoryDate').value; if(!date) return;
             fetch(`/api/queue-history?date=${date}`).then(res => res.json()).then(history => {
                 const tbody = document.getElementById('queueHistoryBody'); tbody.innerHTML = '';
+
+                const total = history.length;
+                const entered = history.filter(q => q.status === 'entered').length;
+                const skipped = history.filter(q => q.status === 'skipped').length;
+                const cancelled = history.filter(q => q.status === 'cancelled').length;
+                const waiting = history.filter(q => q.status === 'waiting').length;
+                document.getElementById('queueSummaryBadges').innerHTML = total === 0 ? '' : `
+                    <span class="bg-gray-200 text-gray-700 px-3 py-1 rounded-full">ทั้งหมด ${total} คิว</span>
+                    <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full">รอ ${waiting}</span>
+                    <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full">เข้าแล้ว ${entered}</span>
+                    <span class="bg-orange-100 text-orange-600 px-3 py-1 rounded-full">ข้าม ${skipped}</span>
+                    <span class="bg-red-100 text-red-700 px-3 py-1 rounded-full">ยกเลิก ${cancelled}</span>
+                `;
+
                 if(history.length === 0) return tbody.innerHTML = '<tr><td colspan="6" class="text-center p-6 text-gray-500 font-bold bg-white">ไม่มีประวัติคิวในวันที่เลือก</td></tr>';
                 
                 history.forEach(q => {
                     const time = new Date(q.created_at).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'});
-                    let potsHtml = q.pots.map((p,i) => `<div class="text-xs bg-gray-100 p-1 rounded mb-1 border border-gray-200">หม้อ ${i+1}: <span class="font-bold">${p.soup1}</span> & <span class="font-bold">${p.soup2}</span></div>`).join('');
+                    let potsHtml = q.pots.map((p,i) => `<div class="text-xs text-gray-600 leading-tight">หม้อ ${i+1}: <span class="font-semibold text-gray-800">${p.soup1}</span> &amp; <span class="font-semibold text-gray-800">${p.soup2}</span></div>`).join('');
                     
                     let statusHtml = '';
                     let actionHtml = '';
 
                     if(q.status === 'entered') {
-                        statusHtml = `<div class="bg-green-100 text-green-800 p-2 rounded text-center mb-1 font-bold text-sm">✅ โต๊ะ ${q.table_assigned}</div>
+                        const tableLabel = q.table_assigned && q.table_assigned !== 'null' ? `โต๊ะ ${q.table_assigned}` : 'โต๊ะ -';
+                        statusHtml = `<div onclick="openTablePickerForReassign(${q.id}, '${q.status}', ${!!q.is_billed})" class="bg-green-100 text-green-800 p-2 rounded text-center mb-1 font-bold text-sm cursor-pointer hover:bg-green-200 active:scale-95 transition select-none">${tableLabel}</div>
                                       <label class="flex items-center justify-center gap-1 cursor-pointer text-xs font-bold ${q.is_billed ? 'text-green-600' : 'text-gray-500'}">
                                         <input type="checkbox" onchange="updateQueueBill(${q.id}, '${q.status}', '${q.table_assigned}', this.checked)" ${q.is_billed ? 'checked' : ''} class="w-4 h-4">
                                         ออกบิลแล้ว
                                       </label>`;
                         actionHtml = `<div class="text-center text-gray-400 text-xs mt-2 font-bold">- สำเร็จ -</div>`;
                     } else if(q.status === 'cancelled') {
-                        statusHtml = '<span class="text-red-600 font-bold text-xs bg-red-50 p-2 rounded block text-center border border-red-200">❌ ไม่อยู่ (ระบบเอาออกจากลิสต์เช็ค)</span>';
+                        statusHtml = '<span class="text-red-600 font-bold text-xs bg-red-50 p-2 rounded block text-center border border-red-200">ยกเลิกแล้ว</span>';
+                        actionHtml = '-';
+                    } else if(q.status === 'skipped') {
+                        statusHtml = '<span class="text-red-600 font-bold text-xs bg-red-50 p-2 rounded block text-center border border-red-200">ข้าม</span>';
                         actionHtml = '-';
                     } else {
-                        statusHtml = '<span class="text-blue-600 font-bold text-sm block text-center mt-2">⏳ รอคิวปกติ</span>';
+                        const specialTypes = ['รอโต๊ะใหญ่', 'รอโต๊ะเชื่อม'];
+                        if (q.table_assigned && q.table_assigned !== 'null') {
+                            const label = specialTypes.includes(q.table_assigned) ? q.table_assigned : `รอเข้าโต๊ะ ${q.table_assigned}`;
+                            statusHtml = `<div onclick="openPreassignPicker(${q.id})" class="bg-orange-100 text-orange-700 p-2 rounded text-center font-bold text-sm cursor-pointer hover:bg-orange-200 active:scale-95 transition select-none border border-orange-300">${label}</div>`;
+                        } else {
+                            statusHtml = `<div onclick="openPreassignPicker(${q.id})" class="text-blue-600 font-bold text-sm block text-center mt-1 cursor-pointer hover:underline select-none">รอคิวปกติ</div>`;
+                        }
                         
                         const potsString = encodeURIComponent(JSON.stringify(q.pots));
                         
                         actionHtml = `
-                            <div class="flex flex-col gap-1 w-full">
-                                <div class="flex gap-1">
-                                    <button onclick="printQueueSlip('${q.q_number}', ${q.pax}, '${potsString}', '${q.token}', '${q.created_at}')" class="flex-1 bg-gray-200 hover:bg-gray-300 text-black py-1.5 px-1 rounded text-xs font-bold border border-gray-400 shadow-sm whitespace-nowrap text-center">🖨️ ปริ้น</button>
-                                    <button onclick="showQueueQr('${q.q_number}', '${q.token}')" class="flex-1 bg-blue-100 hover:bg-blue-200 text-blue-700 py-1.5 px-1 rounded text-xs font-bold border border-blue-300 shadow-sm whitespace-nowrap text-center">🔗 QR</button>
-                                    <button onclick="openEditQueueModal(${q.id}, '${q.q_number}', ${q.pax}, '${potsString}')" class="flex-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-700 py-1.5 px-1 rounded text-xs font-bold border border-yellow-300 shadow-sm whitespace-nowrap text-center">✏️ แก้ไข</button>
+                            <div class="flex items-center gap-1">
+                                <button onclick="openQueueActionModal(${q.id}, '${q.q_number}', '${q.table_assigned || ''}')" class="flex-1 bg-green-500 hover:bg-green-600 text-white font-bold py-1.5 rounded text-xs shadow-sm whitespace-nowrap text-center">เรียกเข้าโต๊ะ</button>
+                                <button onclick="cancelQueue(${q.id}, '${q.q_number}')" class="flex-1 bg-red-100 hover:bg-red-200 text-red-600 font-bold py-1.5 rounded text-xs shadow-sm whitespace-nowrap text-center">ข้ามคิว</button>
+                                <div class="relative flex-shrink-0">
+                                    <button onclick="event.stopPropagation(); toggleQueueMenu(${q.id})" class="bg-gray-200 hover:bg-gray-300 text-gray-600 w-8 h-8 rounded-lg text-base font-bold border border-gray-300 shadow-sm flex items-center justify-center">⋮</button>
+                                    <div id="queueMenu-${q.id}" class="hidden absolute right-0 bottom-full mb-1 bg-white border border-gray-200 rounded-xl shadow-xl z-[200] w-32 overflow-hidden">
+                                        <button onclick="printQueueSlip('${q.q_number}', ${q.pax}, '${potsString}', '${q.token}', '${q.created_at}')" class="w-full text-left px-3 py-2 text-xs font-bold hover:bg-gray-50 border-b border-gray-100">ปริ้น</button>
+                                        <button onclick="showQueueQr('${q.q_number}', '${q.token}')" class="w-full text-left px-3 py-2 text-xs font-bold hover:bg-blue-50 text-blue-700 border-b border-gray-100">QR</button>
+                                        <button onclick="openEditQueueModal(${q.id}, '${q.q_number}', ${q.pax}, '${potsString}', ${q.adults || 0}, ${q.children || 0})" class="w-full text-left px-3 py-2 text-xs font-bold hover:bg-yellow-50 text-yellow-700">แก้ไข</button>
+                                    </div>
                                 </div>
-                                <button onclick="openQueueActionModal(${q.id}, '${q.q_number}')" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 rounded text-xs shadow-sm whitespace-nowrap text-center mt-1">✅ เรียกเข้าโต๊ะ</button>
-                                <button onclick="cancelQueue(${q.id}, '${q.q_number}')" class="w-full bg-red-100 hover:bg-red-200 text-red-600 font-bold py-1 rounded text-xs shadow-sm whitespace-nowrap text-center">❌ ลูกค้าไม่อยู่</button>
                             </div>
                         `;
                     }
 
+                    const paxDisplay = (q.adults > 0 || q.children > 0)
+                        ? `<div class="flex flex-col items-center gap-0.5">${q.adults > 0 ? `<span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-black text-sm leading-tight whitespace-nowrap">ผญ ${q.adults}</span>` : ''}${q.children > 0 ? `<span class="bg-gray-100 text-gray-600 px-2 py-0.5 rounded font-black text-sm leading-tight whitespace-nowrap">ด ${q.children}</span>` : ''}</div>`
+                        : `<span class="bg-gray-200 text-gray-800 px-2 py-0.5 rounded font-bold text-sm">${q.pax}</span>`;
+
                     tbody.innerHTML += `
                         <tr class="border-b hover:bg-gray-50 bg-white">
-                            <td class="p-3 text-center text-gray-600 text-sm">${time}</td>
-                            <td class="p-3 text-center"><span class="${q.status === 'waiting' ? 'text-blue-600 text-2xl' : 'text-gray-700 text-lg'} font-black">${q.q_number}</span></td>
-                            <td class="p-3 text-center"><span class="bg-gray-200 text-gray-800 px-2.5 py-1 rounded-md font-bold text-sm">${q.pax}</span></td>
-                            <td class="p-3">${potsHtml}</td>
-                            <td class="p-3 align-middle">${statusHtml}</td>
-                            <td class="p-3 align-middle">${actionHtml}</td>
+                            <td class="px-2 py-1.5 text-center text-gray-600 text-xs">${time}</td>
+                            <td class="px-2 py-1.5 text-center"><span class="${q.status === 'waiting' ? 'text-blue-600 text-xl' : 'text-gray-700 text-base'} font-black">${q.q_number}</span></td>
+                            <td class="px-2 py-1.5 text-center">${paxDisplay}</td>
+                            <td class="px-2 py-1.5">${potsHtml}</td>
+                            <td class="px-2 py-1.5 align-middle">${statusHtml}</td>
+                            <td class="px-2 py-1.5 align-middle">${actionHtml}</td>
                         </tr>
                     `;
                 });
