@@ -21,20 +21,27 @@ db.serialize(() => {
     // [อัปเดต] ลบโค้ด wait_status ที่สั่งออกทั้งหมด
     db.run("CREATE TABLE IF NOT EXISTS queues (id INTEGER PRIMARY KEY AUTOINCREMENT, q_number TEXT, pax INTEGER, pots TEXT, status TEXT, table_assigned TEXT, is_billed BOOLEAN, token TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
 
+    db.run("ALTER TABLE tables ADD COLUMN adults INTEGER DEFAULT 0", () => {});
+    db.run("ALTER TABLE tables ADD COLUMN children INTEGER DEFAULT 0", () => {});
+    db.run("ALTER TABLE tables ADD COLUMN toddlers INTEGER DEFAULT 0", () => {});
+    db.run("ALTER TABLE session_history ADD COLUMN adults INTEGER DEFAULT 0", () => {});
+    db.run("ALTER TABLE session_history ADD COLUMN children INTEGER DEFAULT 0", () => {});
+    db.run("ALTER TABLE session_history ADD COLUMN toddlers INTEGER DEFAULT 0", () => {});
+
     for(let i=1; i<=27; i++) {
         db.run("INSERT OR IGNORE INTO tables (table_no, is_open, can_order) VALUES (?, false, true)", [i.toString()]);
     }
 });
 
 app.post('/api/open-table', async (req, res) => {
-    const { table } = req.body;
+    const { table, adults = 0, children = 0, toddlers = 0 } = req.body;
     const token = crypto.randomBytes(4).toString('hex');
     const url = `http://143.14.11.57/?table=${table}&token=${token}`;
     try {
         const qrImage = await QRCode.toDataURL(url);
-        db.run("UPDATE tables SET is_open = true, can_order = true, session_token = ? WHERE table_no = ?", [token, table], () => {
-            db.run("INSERT INTO session_history (table_no, session_token, opened_at) VALUES (?, ?, datetime('now', 'localtime'))", [table, token], () => {
-                res.json({ success: true, table: table, qr: qrImage, url: url, token: token });
+        db.run("UPDATE tables SET is_open = true, can_order = true, session_token = ?, adults = ?, children = ?, toddlers = ? WHERE table_no = ?", [token, adults, children, toddlers, table], () => {
+            db.run("INSERT INTO session_history (table_no, session_token, opened_at, adults, children, toddlers) VALUES (?, ?, datetime('now', 'localtime'), ?, ?, ?)", [table, token, adults, children, toddlers], () => {
+                res.json({ success: true, table: table, qr: qrImage, url: url, token: token, adults, children, toddlers });
                 io.emit('table_updated');
             });
         });
@@ -58,6 +65,12 @@ app.post('/api/close-table', (req, res) => {
 });
 
 app.get('/api/tables', (req, res) => { db.all("SELECT * FROM tables", [], (err, rows) => res.json(rows)); });
+
+app.post('/api/update-table-pax', (req, res) => {
+    const { table, adults = 0, children = 0, toddlers = 0 } = req.body;
+    db.run("UPDATE tables SET adults = ?, children = ?, toddlers = ? WHERE table_no = ?",
+        [adults, children, toddlers, table], () => res.json({ success: true }));
+});
 
 app.get('/api/table-history/:table', (req, res) => {
     db.get("SELECT session_token FROM tables WHERE table_no = ?", [req.params.table], (err, table) => {
@@ -112,12 +125,14 @@ app.get('/api/orders', (req, res) => {
 app.post('/api/queue', (req, res) => {
     const { pax, pots } = req.body;
     const token = crypto.randomBytes(6).toString('hex');
-    db.get("SELECT COUNT(*) as count FROM queues WHERE date(created_at, 'localtime') = date('now', 'localtime')", [], (err, row) => {
-        const qNum = "Q" + ((row ? row.count : 0) + 1);
-        db.run("INSERT INTO queues (q_number, pax, pots, status, token) VALUES (?, ?, ?, 'waiting', ?)", 
-            [qNum, pax, JSON.stringify(pots), token], function(err) {
-            res.json({ success: true, q_number: qNum, token: token, created_at: new Date().toISOString() });
-            io.emit('queue_updated');
+    db.serialize(() => {
+        db.get("SELECT COUNT(*) as count FROM queues WHERE date(created_at, 'localtime') = date('now', 'localtime')", [], (err, row) => {
+            const qNum = "Q" + ((row ? row.count : 0) + 1);
+            db.run("INSERT INTO queues (q_number, pax, pots, status, token) VALUES (?, ?, ?, 'waiting', ?)",
+                [qNum, pax, JSON.stringify(pots), token], function(err) {
+                res.json({ success: true, q_number: qNum, token: token, created_at: new Date().toISOString() });
+                io.emit('queue_updated');
+            });
         });
     });
 });
@@ -200,9 +215,8 @@ app.get('/q/:token', (req, res) => {
 io.on('connection', (socket) => {
     socket.on('send_order', (data) => {
         const { table, token, items } = data;
-        db.get("SELECT is_open, session_token FROM tables WHERE table_no = ?", [table], (err, row) => {
-            if (!row || !row.is_open || row.session_token !== token) return socket.emit('order_error', { message: 'QR Code นี้หมดอายุแล้ว' });
-            db.run("UPDATE tables SET can_order = false WHERE table_no = ?", [table]);
+        db.run("UPDATE tables SET can_order = false WHERE table_no = ? AND can_order = true AND is_open = true AND session_token = ?", [table, token], function(err) {
+            if (this.changes === 0) return socket.emit('order_error', { message: 'QR Code นี้หมดอายุแล้ว หรืออยู่ระหว่างรับออเดอร์' });
             io.emit('table_locked', { table: table });
             let meatItems = {}, seaItems = {};
             const meatList = ['สันคอหมูสไลด์', 'หมูสามชั้นสไลด์', 'เนื้อริบอายโคขุนสไลด์'];
