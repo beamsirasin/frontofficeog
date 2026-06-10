@@ -190,11 +190,13 @@ app.get('/q/:token', (req, res) => {
 
         db.get("SELECT COUNT(*) as ahead FROM queues WHERE status = 'waiting' AND id < ? AND date(created_at, 'localtime') = date('now', 'localtime')", [q.id], (err, rowAhead) => {
             const ahead = rowAhead ? rowAhead.ahead : 0;
-            
+            const pots = JSON.parse(q.pots || '[]');
+            const potsHtml = pots.map((p, i) => `<div class="flex items-center justify-center gap-1 text-sm text-gray-700 py-0.5"><span class="text-gray-400 text-xs">หม้อ ${i+1}:</span> <span class="font-bold">${p.soup1}</span> <span class="text-gray-300">&</span> <span class="font-bold">${p.soup2}</span></div>`).join('');
+
             // ค้นหาคิวที่เข้าล่าสุด
             db.get("SELECT q_number FROM queues WHERE status = 'entered' AND date(created_at, 'localtime') = date('now', 'localtime') ORDER BY id DESC LIMIT 1", [], (err, calledRow) => {
                 const currentCalled = calledRow ? calledRow.q_number : 'ยังไม่มีการเรียก';
-                    
+
                 res.send(`
                     <html><head>${mobileHead}</head>
                     <body class="bg-gray-100 min-h-screen flex flex-col items-center justify-start px-3 py-4">
@@ -221,6 +223,7 @@ app.get('/q/:token', (req, res) => {
                                 <h1 class="text-7xl font-black text-blue-600 leading-none">${q.q_number}</h1>
                                 <p class="text-lg font-bold text-gray-700 mt-2">จำนวน: ${q.pax} ท่าน</p>
                                 ${(q.adults > 0 || q.children > 0) ? `<div class="flex justify-center gap-3 mt-1">${q.adults > 0 ? `<span class="bg-blue-100 text-blue-700 px-3 py-0.5 rounded-full text-sm font-bold">ผู้ใหญ่ ${q.adults}</span>` : ''}${q.children > 0 ? `<span class="bg-gray-100 text-gray-600 px-3 py-0.5 rounded-full text-sm font-bold">เด็ก ${q.children}</span>` : ''}</div>` : ''}
+                                ${potsHtml ? `<div class="mt-3 bg-gray-50 rounded-xl border border-gray-200 px-4 py-2 inline-block text-left"><p class="text-xs font-bold text-gray-400 text-center mb-1">น้ำซุปที่เลือก</p>${potsHtml}</div>` : ''}
                             </div>
 
                             <div class="px-4 pt-4 space-y-3">
