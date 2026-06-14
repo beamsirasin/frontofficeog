@@ -105,6 +105,12 @@
                         <input type="hidden" id="qPaxChildren" value="0">
                         <input type="hidden" id="qPax" value="0">
                     </div>
+                    <div class="flex gap-3">
+                        <button type="button" id="qFlagForeign" onclick="toggleFlag('qFlagForeign','qIsForeign')" class="flex-1 py-2.5 px-3 rounded-lg font-bold text-sm border-2 border-gray-300 bg-white text-gray-500 transition select-none active:scale-95">ต่างชาติ</button>
+                        <button type="button" id="qFlagSeparate" onclick="toggleFlag('qFlagSeparate','qIsSeparateTable')" class="flex-1 py-2.5 px-3 rounded-lg font-bold text-sm border-2 border-gray-300 bg-white text-gray-500 transition select-none active:scale-95">แยกโต๊ะ</button>
+                        <input type="hidden" id="qIsForeign" value="0">
+                        <input type="hidden" id="qIsSeparateTable" value="0">
+                    </div>
                     <div>
                         <label class="block text-gray-700 font-bold mb-2">เลือกน้ำซุป (2 แบบต่อหม้อ):</label>
                         <div id="qPotsContainer" class="space-y-3">
@@ -216,6 +222,12 @@
                         <input type="hidden" id="editQPaxAdults" value="0">
                         <input type="hidden" id="editQPaxChildren" value="0">
                         <input type="hidden" id="editQPax" value="0">
+                    </div>
+                    <div class="flex gap-3">
+                        <button type="button" id="editFlagForeign" onclick="toggleFlag('editFlagForeign','editIsForeign')" class="flex-1 py-2.5 px-3 rounded-lg font-bold text-sm border-2 border-gray-300 bg-white text-gray-500 transition select-none active:scale-95">ต่างชาติ</button>
+                        <button type="button" id="editFlagSeparate" onclick="toggleFlag('editFlagSeparate','editIsSeparateTable')" class="flex-1 py-2.5 px-3 rounded-lg font-bold text-sm border-2 border-gray-300 bg-white text-gray-500 transition select-none active:scale-95">แยกโต๊ะ</button>
+                        <input type="hidden" id="editIsForeign" value="0">
+                        <input type="hidden" id="editIsSeparateTable" value="0">
                     </div>
                     <div>
                         <label class="block text-gray-700 font-bold mb-2">เลือกน้ำซุป (2 แบบต่อหม้อ):</label>
@@ -866,6 +878,10 @@
             nd.innerText = '0';
             activeNumpadField = 'adults';
             setActiveNumpad('adults');
+            document.getElementById('qIsForeign').value = '0';
+            document.getElementById('qIsSeparateTable').value = '0';
+            updateFlagBtn(document.getElementById('qFlagForeign'), 'qFlagForeign', false);
+            updateFlagBtn(document.getElementById('qFlagSeparate'), 'qFlagSeparate', false);
             document.getElementById('qPotsContainer').innerHTML = `
                 <div class="pot-item bg-blue-50 p-3 rounded border border-blue-200">
                     <p class="text-sm font-bold text-blue-800 mb-2">หม้อที่ 1</p>
@@ -930,6 +946,27 @@
             document.getElementById('qPax').value = a + c;
         }
 
+        // ================== Flag Toggle Helpers ==================
+        function updateFlagBtn(btn, btnId, isOn) {
+            if (isOn) {
+                const isForeign = btnId.includes('Foreign');
+                btn.style.background = isForeign ? '#fbbf24' : '#a855f7';
+                btn.style.color = 'white';
+                btn.style.borderColor = isForeign ? '#f59e0b' : '#9333ea';
+            } else {
+                btn.style.background = '';
+                btn.style.color = '#6b7280';
+                btn.style.borderColor = '#d1d5db';
+            }
+        }
+        function toggleFlag(btnId, hiddenId) {
+            const hidden = document.getElementById(hiddenId);
+            const btn = document.getElementById(btnId);
+            const isNowOn = hidden.value !== '1';
+            hidden.value = isNowOn ? '1' : '0';
+            updateFlagBtn(btn, btnId, isNowOn);
+        }
+
         // ================== ระบบจัดการคิว ==================
         function addPot() {
             const container = document.getElementById('qPotsContainer');
@@ -957,12 +994,14 @@
             const adults = parseInt(document.getElementById('qPaxAdults').value) || 0;
             const children = parseInt(document.getElementById('qPaxChildren').value) || 0;
             const pax = adults + children;
+            const is_foreign = document.getElementById('qIsForeign').value === '1' ? 1 : 0;
+            const is_separate_table = document.getElementById('qIsSeparateTable').value === '1' ? 1 : 0;
             const pots = [];
             document.querySelectorAll('.pot-item').forEach(el => {
                 pots.push({ soup1: el.querySelector('.soup1').value, soup2: el.querySelector('.soup2').value });
             });
             fetch('/api/queue', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pax, adults, children, pots })
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pax, adults, children, pots, is_foreign, is_separate_table })
             })
             .then(res => res.json())
             .then(data => {
@@ -1186,7 +1225,7 @@
         }
 
         // ================== ระบบแก้ไขข้อมูลคิว ==================
-        function openEditQueueModal(id, qNum, pax, potsStr, adults, children) {
+        function openEditQueueModal(id, qNum, pax, potsStr, adults, children, isForeign, isSeparateTable) {
             currentQueueId = id;
             adults = parseInt(adults) || 0;
             children = parseInt(children) || 0;
@@ -1201,6 +1240,10 @@
             const nd = document.getElementById('editNumpadDisplay');
             nd.dataset.raw = String(adults);
             nd.innerText = String(adults);
+            document.getElementById('editIsForeign').value = isForeign ? '1' : '0';
+            document.getElementById('editIsSeparateTable').value = isSeparateTable ? '1' : '0';
+            updateFlagBtn(document.getElementById('editFlagForeign'), 'editFlagForeign', !!isForeign);
+            updateFlagBtn(document.getElementById('editFlagSeparate'), 'editFlagSeparate', !!isSeparateTable);
             
             const pots = JSON.parse(decodeURIComponent(potsStr));
             const container = document.getElementById('editQPotsContainer');
@@ -1257,13 +1300,15 @@
             const adults = parseInt(document.getElementById('editQPaxAdults').value) || 0;
             const children = parseInt(document.getElementById('editQPaxChildren').value) || 0;
             const pax = adults + children;
+            const is_foreign = document.getElementById('editIsForeign').value === '1' ? 1 : 0;
+            const is_separate_table = document.getElementById('editIsSeparateTable').value === '1' ? 1 : 0;
             const pots = [];
             document.querySelectorAll('.edit-pot-item').forEach(el => {
                 pots.push({ soup1: el.querySelector('.edit-soup1').value, soup2: el.querySelector('.edit-soup2').value });
             });
             fetch('/api/queue/edit', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: currentQueueId, pax, adults, children, pots })
+                body: JSON.stringify({ id: currentQueueId, pax, adults, children, pots, is_foreign, is_separate_table })
             }).then(() => {
                 document.getElementById('queueEditModal').classList.add('hidden');
                 loadQueueHistory();
@@ -1294,6 +1339,10 @@
                     const time = new Date(q.created_at).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'});
                     let potsHtml = q.pots.map((p,i) => `<div class="leading-snug py-0.5 flex items-center gap-1 flex-wrap"><span class="text-xs text-gray-400">หม้อ ${i+1}:</span> ${soupBadge(p.soup1)} <span class="text-gray-300 text-xs">&</span> ${soupBadge(p.soup2)}</div>`).join('');
                     const potsString = encodeURIComponent(JSON.stringify(q.pots));
+                    const flagBadges = [
+                        q.is_foreign ? `<span class="inline-flex items-center bg-yellow-100 text-yellow-700 border border-yellow-300 px-2 py-0.5 rounded-full text-xs font-bold">ต่างชาติ</span>` : '',
+                        q.is_separate_table ? `<span class="inline-flex items-center bg-purple-100 text-purple-700 border border-purple-300 px-2 py-0.5 rounded-full text-xs font-bold">แยกโต๊ะ</span>` : ''
+                    ].filter(Boolean).join('');
 
                     let statusHtml = '';
                     let actionHtml = '';
@@ -1339,7 +1388,7 @@
                         ? `<div class="flex flex-col items-center gap-1">${q.adults > 0 ? `<span class="bg-blue-100 text-blue-700 px-2 py-1 rounded font-black text-base leading-tight whitespace-nowrap">ผญ ${q.adults}</span>` : ''}${q.children > 0 ? `<span class="bg-gray-100 text-gray-600 px-2 py-1 rounded font-black text-base leading-tight whitespace-nowrap">ด ${q.children}</span>` : ''}</div>`
                         : `<span class="bg-gray-200 text-gray-800 px-3 py-1 rounded font-bold text-base">${q.pax}</span>`;
 
-                    const trClick = q.status === 'waiting' ? `onclick="openEditQueueModal(${q.id}, '${q.q_number}', ${q.pax}, '${potsString}', ${q.adults || 0}, ${q.children || 0})"` : '';
+                    const trClick = q.status === 'waiting' ? `onclick="openEditQueueModal(${q.id}, '${q.q_number}', ${q.pax}, '${potsString}', ${q.adults || 0}, ${q.children || 0}, ${q.is_foreign ? 1 : 0}, ${q.is_separate_table ? 1 : 0})"` : '';
                     const trBg = q.status === 'waiting' ? 'bg-white cursor-pointer hover:bg-blue-50' : 'bg-gray-100 hover:bg-gray-200';
 
                     tbody.innerHTML += `
@@ -1347,7 +1396,7 @@
                             <td class="px-3 py-3 text-center text-gray-600 text-sm">${time}</td>
                             <td class="px-3 py-3 text-center"><span class="${q.status === 'waiting' ? 'text-blue-600 text-2xl' : 'text-gray-700 text-xl'} font-black">${q.q_number}</span></td>
                             <td class="px-3 py-3 text-center">${paxDisplay}</td>
-                            <td class="px-3 py-3">${potsHtml}</td>
+                            <td class="px-3 py-3"><div class="flex items-center gap-2"><div class="flex-shrink-0">${potsHtml}</div>${flagBadges ? `<div class="flex-1 flex flex-col gap-1 items-center">${flagBadges}</div>` : ''}</div></td>
                             <td class="px-3 py-3 align-middle">${statusHtml}</td>
                             <td class="px-3 py-3 align-middle">${actionHtml}</td>
                         </tr>

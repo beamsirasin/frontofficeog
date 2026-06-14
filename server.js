@@ -25,6 +25,8 @@ db.serialize(() => {
 
     db.run("ALTER TABLE queues ADD COLUMN adults INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE queues ADD COLUMN children INTEGER DEFAULT 0", () => {});
+    db.run("ALTER TABLE queues ADD COLUMN is_foreign BOOLEAN DEFAULT 0", () => {});
+    db.run("ALTER TABLE queues ADD COLUMN is_separate_table BOOLEAN DEFAULT 0", () => {});
     db.run("ALTER TABLE tables ADD COLUMN adults INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE tables ADD COLUMN children INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE tables ADD COLUMN toddlers INTEGER DEFAULT 0", () => {});
@@ -127,13 +129,13 @@ app.get('/api/orders', (req, res) => {
 
 // ================== API ระบบคิว ==================
 app.post('/api/queue', (req, res) => {
-    const { pax, pots, adults = 0, children = 0 } = req.body;
+    const { pax, pots, adults = 0, children = 0, is_foreign = 0, is_separate_table = 0 } = req.body;
     const token = crypto.randomBytes(6).toString('hex');
     db.serialize(() => {
         db.get("SELECT COUNT(*) as count FROM queues WHERE date(created_at, 'localtime') = date('now', 'localtime')", [], (err, row) => {
             const qNum = "Q" + ((row ? row.count : 0) + 1);
-            db.run("INSERT INTO queues (q_number, pax, adults, children, pots, status, token) VALUES (?, ?, ?, ?, ?, 'waiting', ?)",
-                [qNum, pax, adults, children, JSON.stringify(pots), token], function(err) {
+            db.run("INSERT INTO queues (q_number, pax, adults, children, pots, status, token, is_foreign, is_separate_table) VALUES (?, ?, ?, ?, ?, 'waiting', ?, ?, ?)",
+                [qNum, pax, adults, children, JSON.stringify(pots), token, is_foreign ? 1 : 0, is_separate_table ? 1 : 0], function(err) {
                 res.json({ success: true, q_number: qNum, token: token, created_at: new Date().toISOString() });
                 io.emit('queue_updated');
             });
@@ -145,7 +147,7 @@ app.get('/api/queue-history', (req, res) => {
     const date = req.query.date;
     db.all("SELECT * FROM queues WHERE date(created_at, 'localtime') = ? ORDER BY id ASC", [date], (err, rows) => {
         if(err) return res.json([]);
-        res.json(rows.map(r => ({...r, pots: JSON.parse(r.pots)})));
+        res.json(rows.map(r => ({...r, pots: JSON.parse(r.pots), created_at: r.created_at ? r.created_at.replace(' ', 'T') + 'Z' : r.created_at})));
     });
 });
 
@@ -167,9 +169,9 @@ app.delete('/api/queue/:id', (req, res) => {
 });
 
 app.post('/api/queue/edit', (req, res) => {
-    const { id, pax, adults, children, pots } = req.body;
-    db.run("UPDATE queues SET pax = ?, adults = ?, children = ?, pots = ? WHERE id = ?",
-        [pax, adults || 0, children || 0, JSON.stringify(pots), id], () => {
+    const { id, pax, adults, children, pots, is_foreign, is_separate_table } = req.body;
+    db.run("UPDATE queues SET pax = ?, adults = ?, children = ?, pots = ?, is_foreign = ?, is_separate_table = ? WHERE id = ?",
+        [pax, adults || 0, children || 0, JSON.stringify(pots), is_foreign ? 1 : 0, is_separate_table ? 1 : 0, id], () => {
         res.json({ success: true });
         io.emit('queue_updated');
     });
