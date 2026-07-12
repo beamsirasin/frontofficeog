@@ -27,6 +27,7 @@ db.serialize(() => {
     db.run("ALTER TABLE queues ADD COLUMN children INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE queues ADD COLUMN is_foreign BOOLEAN DEFAULT 0", () => {});
     db.run("ALTER TABLE queues ADD COLUMN is_separate_table BOOLEAN DEFAULT 0", () => {});
+    db.run("ALTER TABLE queues ADD COLUMN entered_at DATETIME", () => {});
     db.run("ALTER TABLE tables ADD COLUMN adults INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE tables ADD COLUMN children INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE tables ADD COLUMN toddlers INTEGER DEFAULT 0", () => {});
@@ -153,8 +154,10 @@ app.get('/api/queue-history', (req, res) => {
 
 app.post('/api/queue/update', (req, res) => {
     const { id, status, table_assigned, is_billed } = req.body;
-    db.run("UPDATE queues SET status = ?, table_assigned = ?, is_billed = ? WHERE id = ?", 
-        [status, table_assigned || null, is_billed ? 1 : 0, id], () => {
+    const sql = status === 'entered'
+        ? `UPDATE queues SET status = ?, table_assigned = ?, is_billed = ?, entered_at = COALESCE(entered_at, datetime('now', 'localtime')) WHERE id = ?`
+        : `UPDATE queues SET status = ?, table_assigned = ?, is_billed = ?, entered_at = NULL WHERE id = ?`;
+    db.run(sql, [status, table_assigned || null, is_billed ? 1 : 0, id], () => {
         res.json({ success: true });
         io.emit('queue_updated');
     });
