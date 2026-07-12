@@ -418,6 +418,20 @@
         </div>
     </div>
 
+    <div id="undoEnterModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[200] px-4" onclick="if(event.target===this)this.classList.add('hidden')">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+            <div class="px-6 py-6 text-center">
+                <div class="text-4xl mb-3">↩️</div>
+                <p class="text-gray-800 font-bold text-lg">ย้อนกลับสถานะคิว <span id="undoEnterQNum" class="text-blue-600"></span>?</p>
+                <p class="text-gray-500 text-sm mt-1">คิวนี้จะกลับไปเป็น "รอคิว" อีกครั้ง</p>
+            </div>
+            <div class="flex border-t border-gray-100">
+                <button onclick="document.getElementById('undoEnterModal').classList.add('hidden')" class="flex-1 py-3.5 text-gray-500 font-bold hover:bg-gray-50 transition border-r border-gray-100">ยกเลิก</button>
+                <button onclick="confirmUndoEnter()" class="flex-1 py-3.5 text-orange-600 font-bold hover:bg-orange-50 transition">ย้อนกลับ</button>
+            </div>
+        </div>
+    </div>
+
     <div id="printArea" class="hidden text-center font-mono bg-white text-black w-[58mm] mx-auto pb-4"></div>
 
     <script>
@@ -425,6 +439,25 @@
         let currentTableSelection = null;
         const timers = {};
         const paxValues = { adults: 0, children: 0, toddlers: 0 };
+        let undoEnterId = null;
+
+        function openUndoEnterModal(id, qNum) {
+            undoEnterId = id;
+            document.getElementById('undoEnterQNum').innerText = qNum;
+            document.getElementById('undoEnterModal').classList.remove('hidden');
+        }
+
+        function confirmUndoEnter() {
+            if (!undoEnterId) return;
+            fetch('/api/queue/update', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: undoEnterId, status: 'waiting', table_assigned: null, is_billed: 0 })
+            }).then(() => {
+                document.getElementById('undoEnterModal').classList.add('hidden');
+                undoEnterId = null;
+                loadQueueHistory();
+            });
+        }
 
         function adjustPax(type, delta) {
             paxValues[type] = Math.max(0, paxValues[type] + delta);
@@ -1389,8 +1422,14 @@
                         ? `<div class="flex flex-col items-center gap-1">${q.adults > 0 ? `<span class="bg-blue-100 text-blue-700 px-2 py-1 rounded font-black text-base leading-tight whitespace-nowrap">ผญ ${q.adults}</span>` : ''}${q.children > 0 ? `<span class="bg-gray-100 text-gray-600 px-2 py-1 rounded font-black text-base leading-tight whitespace-nowrap">ด ${q.children}</span>` : ''}</div>`
                         : `<span class="bg-gray-200 text-gray-800 px-3 py-1 rounded font-bold text-base">${q.pax}</span>`;
 
-                    const trClick = q.status === 'waiting' ? `onclick="openEditQueueModal(${q.id}, '${q.q_number}', ${q.pax}, '${potsString}', ${q.adults || 0}, ${q.children || 0}, ${q.is_foreign ? 1 : 0}, ${q.is_separate_table ? 1 : 0})"` : '';
-                    const trBg = q.status === 'waiting' ? 'bg-white cursor-pointer hover:bg-blue-50' : 'bg-gray-100 hover:bg-gray-200';
+                    const trClick = q.status === 'waiting'
+                        ? `onclick="openEditQueueModal(${q.id}, '${q.q_number}', ${q.pax}, '${potsString}', ${q.adults || 0}, ${q.children || 0}, ${q.is_foreign ? 1 : 0}, ${q.is_separate_table ? 1 : 0})"`
+                        : ['entered','skipped','cancelled'].includes(q.status)
+                        ? `onclick="openUndoEnterModal(${q.id}, '${q.q_number}')"`
+                        : '';
+                    const trBg = q.status === 'waiting' ? 'bg-white cursor-pointer hover:bg-blue-50'
+                        : ['entered','skipped','cancelled'].includes(q.status) ? 'bg-gray-100 cursor-pointer hover:bg-orange-50'
+                        : 'bg-gray-100';
 
                     tbody.innerHTML += `
                         <tr class="border-b ${trBg}" ${trClick}>
