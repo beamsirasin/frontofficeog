@@ -148,14 +148,14 @@ app.get('/api/queue-history', (req, res) => {
     const date = req.query.date;
     db.all("SELECT * FROM queues WHERE date(created_at, 'localtime') = ? ORDER BY id ASC", [date], (err, rows) => {
         if(err) return res.json([]);
-        res.json(rows.map(r => ({...r, pots: JSON.parse(r.pots), created_at: r.created_at ? r.created_at.replace(' ', 'T') + 'Z' : r.created_at})));
+        res.json(rows.map(r => ({...r, pots: JSON.parse(r.pots), created_at: r.created_at ? r.created_at.replace(' ', 'T') + 'Z' : r.created_at, entered_at: r.entered_at ? r.entered_at.replace(' ', 'T') + 'Z' : null})));
     });
 });
 
 app.post('/api/queue/update', (req, res) => {
     const { id, status, table_assigned, is_billed } = req.body;
     const sql = status === 'entered'
-        ? `UPDATE queues SET status = ?, table_assigned = ?, is_billed = ?, entered_at = COALESCE(entered_at, datetime('now', 'localtime')) WHERE id = ?`
+        ? `UPDATE queues SET status = ?, table_assigned = ?, is_billed = ?, entered_at = COALESCE(entered_at, CURRENT_TIMESTAMP) WHERE id = ?`
         : `UPDATE queues SET status = ?, table_assigned = ?, is_billed = ?, entered_at = NULL WHERE id = ?`;
     db.run(sql, [status, table_assigned || null, is_billed ? 1 : 0, id], () => {
         res.json({ success: true });
