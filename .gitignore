@@ -1,0 +1,13 @@
+node_modules/
+
+# ฐานข้อมูล SQLite (รวมไฟล์ WAL) — ไม่ควรขึ้น git
+restaurant.db
+restaurant.db-wal
+restaurant.db-shm
+
+# โฟลเดอร์สำรองข้อมูล
+backups/
+
+# อื่น ๆ
+.env
+*.log
