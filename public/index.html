@@ -3,6 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- บังคับให้อยู่บนโดเมน https เสมอ (QR เก่าที่ชี้ http/IP จะถูกพามาที่โดเมนพร้อม table/token เดิม) -->
+    <script>
+        (function () {
+            var HOST = 'lumhimkhue.com', h = location.hostname;
+            if (h === 'localhost' || h === '127.0.0.1') return;
+            if (location.protocol !== 'https:' || h !== HOST) {
+                location.replace('https://' + HOST + location.pathname + location.search);
+            }
+        })();
+    </script>
     <title>ลำฮิมคือ SHABU BUFFET</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="/socket.io/socket.io.js"></script>
@@ -146,10 +156,15 @@
         }
 
         const lockScreen = document.getElementById('lockScreen');
-        if(!tableNo || !token) {
-            document.getElementById('lockTitle').innerText = "❌ ไม่สามารถสั่งอาหารได้";
-            lockScreen.classList.remove('hidden');
-        } else {
+
+        // ตรวจสถานะโต๊ะตัวเองใหม่ แล้วปรับล็อก/ปลดล็อกจอให้ตรงความจริง
+        // ใช้ทั้งตอนโหลดหน้าครั้งแรก และตอนเน็ตหลุดแล้วต่อกลับ (reconnect)
+        function syncTableStatus() {
+            if(!tableNo || !token) {
+                document.getElementById('lockTitle').innerText = "❌ ไม่สามารถสั่งอาหารได้";
+                lockScreen.classList.remove('hidden');
+                return;
+            }
             fetch('/api/tables').then(res => res.json()).then(tables => {
                 const myTable = tables.find(t => t.table_no == tableNo);
                 if(!myTable || !myTable.is_open || myTable.session_token !== token) {
@@ -157,9 +172,12 @@
                     lockScreen.classList.remove('hidden');
                 } else if (!myTable.can_order) {
                     showWaitScreen();
+                } else {
+                    lockScreen.classList.add('hidden'); // สั่งได้แล้ว ปลดล็อกจอ
                 }
-            });
+            }).catch(() => {});
         }
+        syncTableStatus();
 
         function showWaitScreen() {
             document.getElementById('lockTitle').innerText = "⏳ กรุณารอสักครู่...";
@@ -169,6 +187,8 @@
 
         socket.on('table_locked', (data) => { if(data.table == tableNo) showWaitScreen(); });
         socket.on('table_unlocked', (data) => { if(data.table == tableNo) lockScreen.classList.add('hidden'); });
+        // เน็ตลูกค้าหลุดแล้วต่อกลับ: เช็คสถานะโต๊ะใหม่ เผื่อพลาด event ล็อก/ปลดล็อกตอนหลุด
+        socket.io.on('reconnect', () => { syncTableStatus(); });
         socket.on('table_closed', (data) => { if(data.table == tableNo) location.reload(); });
         socket.on('order_error', (data) => { alert(data.message); location.reload(); });
 

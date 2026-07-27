@@ -2,6 +2,17 @@
 <html lang="th">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- บังคับให้อยู่บนโดเมน https เสมอ (กัน QR ที่ปริ้นชี้ไป http/IP ถ้าเผลอเปิดผ่าน IP) -->
+    <script>
+        (function () {
+            var HOST = 'lumhimkhue.com', h = location.hostname;
+            if (h === 'localhost' || h === '127.0.0.1') return;
+            if (location.protocol !== 'https:' || h !== HOST) {
+                location.replace('https://' + HOST + location.pathname + location.search);
+            }
+        })();
+    </script>
     <title>LUM HIM KHUE - Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
@@ -22,6 +33,48 @@
         .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #4b5563; border-radius: 4px; }
         .numpad-btn { background: #f3f4f6; border: 1px solid #d1d5db; border-radius: 8px; padding: 14px 0; font-size: 22px; font-weight: 700; color: #1f2937; cursor: pointer; transition: background 0.1s, transform 0.1s; user-select: none; }
         .numpad-btn:active { background: #dbeafe; transform: scale(0.93); }
+
+        /* ===== มือถือ: เปลี่ยนตารางคิวเป็นการ์ด (tablet/desktop ใช้ตารางเหมือนเดิม) ===== */
+        @media (max-width: 767px) {
+            #queueTable, #queueTable tbody, #queueTable tr, #queueTable td { display: block; width: 100%; }
+            #queueTable thead { display: none; }
+            #queueTable td { padding: 0 !important; }
+
+            #queueTable tr.q-row {
+                display: grid;
+                grid-template-columns: minmax(52px, auto) 1fr auto;
+                grid-template-areas:
+                    "qnum  qtime qpax"
+                    "qnum  qent  qpax"
+                    "qpots qpots qpots"
+                    "qstat qstat qstat"
+                    "qact  qact  qact";
+                align-items: center;
+                column-gap: 10px;
+                row-gap: 2px;
+                width: auto;
+                margin: 10px;
+                padding: 12px;
+                border: 1px solid #e5e7eb;
+                border-radius: 14px;
+                box-shadow: 0 1px 4px rgba(0, 0, 0, .07);
+            }
+            #queueTable .qc-num     { grid-area: qnum; text-align: center; white-space: nowrap; }
+            #queueTable .qc-time    { grid-area: qtime; text-align: left !important; }
+            #queueTable .qc-entered { grid-area: qent;  text-align: left !important; }
+            #queueTable .qc-pax     { grid-area: qpax; }
+            #queueTable .qc-pots    { grid-area: qpots; margin-top: 8px; padding-top: 8px !important; border-top: 1px dashed #e5e7eb; }
+            #queueTable .qc-status  { grid-area: qstat; margin-top: 8px; }
+            #queueTable .qc-action  { grid-area: qact;  margin-top: 8px; }
+
+            #queueTable .qc-time::before    { content: "รับ "; color: #9ca3af; font-size: 11px; font-weight: 700; }
+            #queueTable .qc-entered::before { content: "เข้า "; color: #9ca3af; font-size: 11px; font-weight: 700; }
+
+            /* ช่องจัดการที่ไม่มีปุ่ม (คิวที่เข้า/ข้าม/ยกเลิกแล้ว) ไม่ต้องโชว์ขีด */
+            #queueTable .qc-hide-mobile { display: none; }
+
+            #queueTable .qc-empty { text-align: center; padding: 24px 12px !important; }
+        }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen flex flex-col">
@@ -34,13 +87,13 @@
         <p id="loginError" class="text-red-500 mt-4 hidden font-bold text-lg bg-white px-4 py-1 rounded shadow">Username หรือ Password ไม่ถูกต้อง</p>
     </div>
 
-    <nav class="bg-gray-800 text-white p-4 flex justify-center flex-wrap gap-4 no-print shadow-md">
-        <button onclick="switchTab('kitchen')" id="btn-kitchen" class="px-6 py-2 rounded bg-blue-600 font-bold hover:bg-blue-500">หน้าจอครัว</button>
-        <button onclick="switchTab('stats')" id="btn-stats" class="px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600">สถิติยอดเสิร์ฟ</button>
-        <button onclick="switchTab('queue')" id="btn-queue" class="px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600">จัดการคิว</button>
-        <button onclick="switchTab('tables')" id="btn-tables" class="px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600">จัดการโต๊ะ</button>
-        <button id="usbPrinterBtn" onclick="connectUSBPrinter()" class="px-6 py-2 rounded bg-gray-600 font-bold hover:bg-gray-500 border border-gray-400 hidden">เชื่อมต่อเครื่องปริ้น</button>
-        <button onclick="logout()" class="px-6 py-2 rounded bg-red-700 font-bold hover:bg-red-600 border border-red-500">ออกจากระบบ</button>
+    <nav class="bg-gray-800 text-white p-2 sm:p-4 flex justify-center flex-wrap gap-2 sm:gap-4 no-print shadow-md">
+        <button onclick="switchTab('kitchen')" id="btn-kitchen" class="px-3 sm:px-6 py-2 rounded bg-blue-600 font-bold hover:bg-blue-500 text-sm sm:text-base">หน้าจอครัว</button>
+        <button onclick="switchTab('stats')" id="btn-stats" class="px-3 sm:px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600 text-sm sm:text-base">สถิติ</button>
+        <button onclick="switchTab('queue')" id="btn-queue" class="px-3 sm:px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600 text-sm sm:text-base">จัดการคิว</button>
+        <button onclick="switchTab('tables')" id="btn-tables" class="px-3 sm:px-6 py-2 rounded bg-gray-700 font-bold hover:bg-gray-600 text-sm sm:text-base">จัดการโต๊ะ</button>
+        <button id="usbPrinterBtn" onclick="connectUSBPrinter()" class="px-3 sm:px-6 py-2 rounded bg-gray-600 font-bold hover:bg-gray-500 border border-gray-400 hidden text-sm sm:text-base">เชื่อมต่อเครื่องปริ้น</button>
+        <button onclick="logout()" class="px-3 sm:px-6 py-2 rounded bg-red-700 font-bold hover:bg-red-600 border border-red-500 text-sm sm:text-base">ออกจากระบบ</button>
     </nav>
 
     <div id="floatCreateQueue" class="hidden fixed bottom-5 left-1/2 -translate-x-1/2 z-40 no-print">
@@ -49,21 +102,21 @@
         </button>
     </div>
 
-    <div id="tab-queue" class="hidden flex-1 p-6 pb-24 max-w-7xl mx-auto w-full">
+    <div id="tab-queue" class="hidden flex-1 p-2 md:p-6 pb-24 max-w-7xl mx-auto w-full">
         <div class="bg-white rounded-lg shadow-md overflow-hidden border-t-4 border-gray-700">
-            <div class="p-4 bg-gray-100 flex flex-wrap justify-between items-center border-b gap-2">
-                <div class="flex items-center gap-3">
-                    <h2 class="text-2xl font-bold text-gray-800">รายการคิวประจำวัน</h2>
-                    <button onclick="openCreateQueueModal()" class="bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold px-4 py-2 rounded-lg text-sm shadow transition-transform">สร้างคิวใหม่</button>
+            <div class="p-3 md:p-4 bg-gray-100 flex flex-wrap justify-between items-center border-b gap-2 md:gap-3">
+                <div class="flex items-center gap-2 md:gap-3">
+                    <h2 class="text-lg md:text-2xl font-bold text-gray-800">รายการคิวประจำวัน</h2>
+                    <button onclick="openCreateQueueModal()" class="bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold px-3 md:px-4 py-2 rounded-lg text-xs md:text-sm shadow transition-transform whitespace-nowrap">สร้างคิวใหม่</button>
                 </div>
-                <div id="queueSummaryBadges" class="flex flex-wrap gap-2 justify-center text-sm font-bold"></div>
-                <div class="flex items-center gap-2">
-                    <label class="font-bold text-gray-700">เลือกวันที่:</label>
-                    <input type="text" id="queueHistoryDate" class="border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500" readonly>
+                <div id="queueSummaryBadges" class="flex flex-wrap gap-1.5 md:gap-2 justify-start md:justify-center text-xs md:text-sm font-bold w-full md:w-auto"></div>
+                <div class="flex items-center gap-2 w-full md:w-auto">
+                    <label class="font-bold text-gray-700 text-sm md:text-base whitespace-nowrap">เลือกวันที่:</label>
+                    <input type="text" id="queueHistoryDate" class="flex-1 md:flex-none min-w-0 border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500" readonly>
                 </div>
             </div>
             <div>
-                <table class="w-full text-left border-collapse">
+                <table id="queueTable" class="w-full text-left border-collapse">
                     <thead>
                         <tr class="bg-gray-200 text-gray-700 text-sm">
                             <th class="px-3 py-3 border-b text-center w-20">เวลารับ</th>
@@ -75,21 +128,21 @@
                             <th class="px-3 py-3 border-b text-center w-64">จัดการ</th>
                         </tr>
                     </thead>
-                    <tbody id="queueHistoryBody"><tr><td colspan="6" class="text-center p-6 text-gray-500">กำลังโหลดข้อมูล...</td></tr></tbody>
+                    <tbody id="queueHistoryBody"><tr><td colspan="7" class="qc-empty text-center p-6 text-gray-500">กำลังโหลดข้อมูล...</td></tr></tbody>
                 </table>
             </div>
         </div>
     </div>
 
-    <div id="createQueueModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)closeCreateQueueModal()">
-        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl relative flex flex-col">
-            <div class="flex items-center justify-between px-6 py-4 border-b">
-                <h2 class="text-2xl font-bold text-gray-800">สร้างคิวใหม่</h2>
+    <div id="createQueueModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-4" onclick="if(event.target===this)closeCreateQueueModal()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl relative flex flex-col max-h-[95vh]">
+            <div class="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 border-b flex-shrink-0">
+                <h2 class="text-xl md:text-2xl font-bold text-gray-800">สร้างคิวใหม่</h2>
                 <button onclick="closeCreateQueueModal()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
             </div>
-            <div class="flex flex-1 min-h-0">
+            <div class="flex flex-col md:flex-row flex-1 min-h-0 overflow-y-auto">
                 <!-- Left: pax display + soup selection -->
-                <div class="flex-1 p-5 space-y-4 border-r overflow-y-auto">
+                <div class="flex-1 p-4 md:p-5 space-y-4 md:border-r md:overflow-y-auto">
                     <div>
                         <label class="block text-gray-700 font-bold mb-2">จำนวนลูกค้า:</label>
                         <div class="flex gap-2">
@@ -131,7 +184,7 @@
                     </div>
                 </div>
                 <!-- Right: numpad always visible -->
-                <div id="numpadPanel" class="w-56 p-4 bg-gray-50 flex flex-col gap-2 rounded-tr-xl">
+                <div id="numpadPanel" class="w-full md:w-56 flex-shrink-0 p-4 bg-gray-50 flex flex-col gap-2 border-t md:border-t-0 md:rounded-tr-xl">
                     <div id="numpadDisplay" class="text-center text-4xl font-black text-blue-700 bg-white rounded-lg py-3 border-2 border-blue-300 shadow-inner" data-raw="">0</div>
                     <div class="grid grid-cols-3 gap-2">
                         <button onclick="numpadPress('1')" class="numpad-btn">1</button>
@@ -149,8 +202,8 @@
                     </div>
                 </div>
             </div>
-            <div class="px-5 py-4 border-t rounded-b-xl">
-                <button onclick="submitQueue()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-lg text-xl shadow-lg transition-transform active:scale-95">บันทึกคิว</button>
+            <div class="px-4 md:px-5 py-3 md:py-4 border-t rounded-b-xl flex-shrink-0">
+                <button onclick="submitQueue()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 md:py-4 rounded-lg text-lg md:text-xl shadow-lg transition-transform active:scale-95">บันทึกคิว</button>
             </div>
         </div>
     </div>
@@ -200,14 +253,14 @@
         </div>
     </div>
     
-    <div id="queueEditModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)this.classList.add('hidden')">
-        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl relative flex flex-col">
-            <div class="flex items-center justify-between px-6 py-4 border-b">
-                <h2 class="text-2xl font-bold text-gray-800">แก้ไขคิว <span id="editQueueNum" class="text-blue-600"></span></h2>
+    <div id="queueEditModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-4" onclick="if(event.target===this)this.classList.add('hidden')">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl relative flex flex-col max-h-[95vh]">
+            <div class="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 border-b flex-shrink-0">
+                <h2 class="text-xl md:text-2xl font-bold text-gray-800">แก้ไขคิว <span id="editQueueNum" class="text-blue-600"></span></h2>
                 <button onclick="document.getElementById('queueEditModal').classList.add('hidden')" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
             </div>
-            <div class="flex flex-1 min-h-0">
-                <div class="flex-1 p-5 space-y-4 border-r overflow-y-auto">
+            <div class="flex flex-col md:flex-row flex-1 min-h-0 overflow-y-auto">
+                <div class="flex-1 p-4 md:p-5 space-y-4 md:border-r md:overflow-y-auto">
                     <div>
                         <label class="block text-gray-700 font-bold mb-2">จำนวนลูกค้า:</label>
                         <div class="flex gap-2">
@@ -236,7 +289,7 @@
                         <button onclick="addEditPot()" class="mt-3 w-full bg-blue-100 text-blue-700 font-bold py-2 rounded border border-blue-300 hover:bg-blue-200 shadow-sm">+ เพิ่มหม้อ</button>
                     </div>
                 </div>
-                <div class="w-56 p-4 bg-gray-50 flex flex-col gap-2 rounded-tr-xl">
+                <div class="w-full md:w-56 flex-shrink-0 p-4 bg-gray-50 flex flex-col gap-2 border-t md:border-t-0 md:rounded-tr-xl">
                     <div id="editNumpadDisplay" class="text-center text-4xl font-black text-blue-700 bg-white rounded-lg py-3 border-2 border-blue-300 shadow-inner" data-raw="">0</div>
                     <div class="grid grid-cols-3 gap-2">
                         <button onclick="editNumpadPress('1')" class="numpad-btn">1</button>
@@ -254,8 +307,8 @@
                     </div>
                 </div>
             </div>
-            <div class="px-5 py-4 border-t rounded-b-xl">
-                <button onclick="confirmEditQueue()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-lg text-xl shadow-lg transition-transform active:scale-95">บันทึกการแก้ไข</button>
+            <div class="px-4 md:px-5 py-3 md:py-4 border-t rounded-b-xl flex-shrink-0">
+                <button onclick="confirmEditQueue()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 md:py-4 rounded-lg text-lg md:text-xl shadow-lg transition-transform active:scale-95">บันทึกการแก้ไข</button>
             </div>
         </div>
     </div>
@@ -265,8 +318,8 @@
         <div class="bg-gray-700 text-white text-center py-2 text-2xl font-bold mb-4 rounded shadow">รายการรอเสิร์ฟ</div>
         <div id="orderList" class="flex flex-wrap gap-4 mb-8"></div>
         <div class="border-t border-gray-600 pt-6 mt-6">
-            <div class="bg-gray-800 text-blue-300 text-center py-2 text-xl font-bold mb-4 rounded shadow border border-gray-600">โต๊ะที่กำลังเปิดอยู่ & สรุปรายการอาหารที่สั่งทั้งหมด</div>
-            <div id="activeTablesSummary" class="flex flex-wrap gap-4 items-start"></div>
+            <div class="bg-gray-800 text-blue-300 text-center py-2 text-xl font-bold mb-4 rounded shadow border border-gray-600">ประวัติการเสิร์ฟล่าสุด</div>
+            <div id="servedHistoryList" class="flex flex-wrap gap-4 items-start"></div>
         </div>
     </div>
 
@@ -297,19 +350,47 @@
         </div>
     </div>
 
-    <div id="tab-stats" class="hidden flex-1 p-6">
-        <div class="flex flex-wrap justify-between items-center mb-4 gap-4 max-w-xl mx-auto">
-            <h2 class="text-2xl font-bold text-gray-800">สถิติยอดเสิร์ฟ</h2>
-            <div class="flex items-center gap-2">
-                <label class="font-bold text-gray-700">เลือกวันที่:</label>
-                <input type="text" id="statsDate" class="border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500" readonly>
+    <div id="tab-stats" class="hidden flex-1 p-2 md:p-6">
+        <div class="max-w-4xl mx-auto">
+            <div class="flex flex-wrap justify-between items-center mb-4 gap-2 md:gap-4">
+                <h2 class="text-xl md:text-2xl font-bold text-gray-800">สถิติ</h2>
+                <div class="flex items-center gap-2 w-full sm:w-auto">
+                    <label class="font-bold text-gray-700 text-sm md:text-base whitespace-nowrap">ช่วงวันที่:</label>
+                    <input type="text" id="statsDate" class="flex-1 sm:flex-none sm:w-64 min-w-0 border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500 text-center" readonly>
+                </div>
             </div>
-        </div>
-        <div class="bg-white p-6 rounded shadow max-w-xl mx-auto">
-            <table class="w-full text-left">
-                <thead><tr class="border-b"><th class="pb-2">เมนู</th><th class="pb-2 text-right">จำนวนที่เสิร์ฟ (จาน)</th></tr></thead>
-                <tbody id="statsBody"></tbody>
-            </table>
+            <p id="statsRangeNote" class="text-xs text-gray-500 mb-4"></p>
+
+            <!-- ===== สถิติการเสิร์ฟ ===== -->
+            <div class="bg-white rounded-lg shadow-md border-t-4 border-gray-700 mb-6 overflow-hidden">
+                <div class="px-4 py-3 bg-gray-100 border-b">
+                    <h3 class="text-lg font-bold text-gray-800">การเสิร์ฟอาหาร</h3>
+                </div>
+                <div id="serveTiles" class="grid grid-cols-2 md:grid-cols-3 gap-3 p-4"></div>
+                <div class="px-4 pb-4">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left min-w-[420px]">
+                            <thead>
+                                <tr class="border-b text-xs md:text-sm text-gray-500">
+                                    <th class="pb-2">เมนู</th>
+                                    <th class="pb-2 text-right whitespace-nowrap">รวม (จาน)</th>
+                                    <th class="pb-2 text-right whitespace-nowrap">เฉลี่ย/วัน</th>
+                                    <th class="pb-2 text-right whitespace-nowrap">เฉลี่ย/ออเดอร์</th>
+                                </tr>
+                            </thead>
+                            <tbody id="statsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== สถิติคิว ===== -->
+            <div class="bg-white rounded-lg shadow-md border-t-4 border-blue-600 mb-6 overflow-hidden">
+                <div class="px-4 py-3 bg-gray-100 border-b">
+                    <h3 class="text-lg font-bold text-gray-800">คิว</h3>
+                </div>
+                <div id="queueTiles" class="grid grid-cols-2 md:grid-cols-3 gap-3 p-4"></div>
+            </div>
         </div>
     </div>
 
@@ -437,6 +518,33 @@
 
     <script>
         const socket = io();
+
+        // ===== Auth: แนบ token ไปกับทุก fetch ของหน้าแอดมินอัตโนมัติ =====
+        const _origFetch = window.fetch.bind(window);
+        window.fetch = (url, opts = {}) => {
+            opts.headers = { ...(opts.headers || {}), 'x-admin-token': sessionStorage.getItem('adminToken') || '' };
+            return _origFetch(url, opts);
+        };
+        function getAdminToken() { return sessionStorage.getItem('adminToken') || ''; }
+
+        // ===== กัน XSS: escape ก่อนเอาข้อมูลจาก DB ไปต่อเป็น HTML =====
+        // esc()   สำหรับข้อความปกติใน HTML
+        // jsAttr() สำหรับค่าที่ต้องไปอยู่ในสตริง JS ใน attribute เช่น onclick="f('...')"
+        //          ต้อง escape ระดับ JS ก่อน แล้วค่อย escape ระดับ HTML attribute
+        const _escMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+        function esc(v) { return String(v ?? '').replace(/[&<>"']/g, c => _escMap[c]); }
+        function jsAttr(v) {
+            return String(v ?? '')
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, "\\'")
+                .replace(/</g, '\\x3C')
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;');
+        }
+        function showLoginScreen() { document.getElementById('loginScreen').classList.remove('hidden'); }
+        function hideLoginScreen() { document.getElementById('loginScreen').classList.add('hidden'); }
+        function initAdminData() { loadOrders(); loadServedHistory(); loadQueueHistory(); }
+
         let currentTableSelection = null;
         const timers = {};
         const paxValues = { adults: 0, children: 0, toddlers: 0 };
@@ -657,8 +765,8 @@
 
         function renderMenu(menuName, imgClass="w-10 h-10") {
             const src = imgMap[menuName];
-            if(!src) return `<span>${menuName}</span>`;
-            return `<div class="flex items-center gap-3"><img src="${src}" class="${imgClass} object-cover rounded border bg-white shadow-sm"><span class="font-bold text-gray-800">${menuName}</span></div>`;
+            if(!src) return `<span>${esc(menuName)}</span>`;
+            return `<div class="flex items-center gap-3"><img src="${src}" class="${imgClass} object-cover rounded border bg-white shadow-sm"><span class="font-bold text-gray-800">${esc(menuName)}</span></div>`;
         }
 
         function soupBadge(soup) {
@@ -668,32 +776,51 @@
                 'น้ำใส':  'border:2.5px solid #9ca3af; color:#374151; background:#f9fafb;',
             };
             const s = styles[soup];
-            if(!s) return `<span style="color:#9ca3af;font-size:0.75rem;">${soup}</span>`;
-            return `<span style="${s} padding:1px 9px; border-radius:9999px; font-weight:700; font-size:0.8rem; display:inline-block; white-space:nowrap;">${soup}</span>`;
+            if(!s) return `<span style="color:#9ca3af;font-size:0.75rem;">${esc(soup)}</span>`;
+            return `<span style="${s} padding:1px 9px; border-radius:9999px; font-weight:700; font-size:0.8rem; display:inline-block; white-space:nowrap;">${esc(soup)}</span>`;
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-            if(sessionStorage.getItem('adminLoggedIn') === 'true') { document.getElementById('loginScreen').classList.add('hidden'); }
             const now = new Date();
 
             const fpOpts = { dateFormat: "Y-m-d", altInput: true, altFormat: "d/m/Y", defaultDate: now };
             flatpickr("#queueHistoryDate", { ...fpOpts, onChange: () => loadQueueHistory() });
             flatpickr("#historyDate",      { ...fpOpts, onChange: () => loadDailyHistory() });
-            flatpickr("#statsDate",        { ...fpOpts, onChange: () => loadStats() });
+            // หน้าสถิติเลือกเป็น "ช่วงวัน" ได้ (เริ่มต้นเป็นวันนี้วันเดียว)
+            statsPicker = flatpickr("#statsDate", {
+                ...fpOpts,
+                mode: "range",
+                defaultDate: [now, now],
+                locale: { rangeSeparator: " ถึง " },
+                onChange: (sel) => { if (sel.length === 2) loadStats(); }
+            });
 
-            loadKitchenActiveTables();
-            loadQueueHistory();
+            // ตรวจ token ที่เคย login ไว้ (sessionStorage จะหายเมื่อปิดแท็บ) ว่ายังใช้ได้ไหม
+            if (getAdminToken()) {
+                fetch('/api/verify')
+                    .then(r => { if (r.ok) { hideLoginScreen(); initAdminData(); } else { sessionStorage.removeItem('adminToken'); showLoginScreen(); } })
+                    .catch(() => showLoginScreen());
+            }
         });
 
         function checkLogin() {
             const user = document.getElementById('adminUser').value, pin = document.getElementById('adminPin').value;
-            if(user === 'admin' && pin === 'admin') { sessionStorage.setItem('adminLoggedIn', 'true'); document.getElementById('loginScreen').classList.add('hidden'); }
-            else { document.getElementById('loginError').classList.remove('hidden'); document.getElementById('adminPin').value = ''; }
+            fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user, pin }) })
+                .then(r => r.ok ? r.json() : Promise.reject())
+                .then(data => {
+                    sessionStorage.setItem('adminToken', data.token);
+                    hideLoginScreen();
+                    document.getElementById('loginError').classList.add('hidden');
+                    document.getElementById('adminPin').value = '';
+                    initAdminData();
+                })
+                .catch(() => { document.getElementById('loginError').classList.remove('hidden'); document.getElementById('adminPin').value = ''; });
         }
 
         function logout() {
-            sessionStorage.removeItem('adminLoggedIn');
-            document.getElementById('loginScreen').classList.remove('hidden');
+            fetch('/api/logout', { method: 'POST' }).catch(() => {});
+            sessionStorage.removeItem('adminToken');
+            showLoginScreen();
             document.getElementById('adminUser').value = '';
             document.getElementById('adminPin').value = '';
             document.getElementById('loginError').classList.add('hidden');
@@ -709,11 +836,12 @@
         }
 
         function renderOrderCard(order) {
+            if (document.getElementById(`order-${order.id}`)) return; // กันการ์ดซ้ำ (เช่นตอน reconnect ชนกับ receive_order)
             const div = document.createElement('div');
             div.id = `order-${order.id}`;
             const isMeat = order.category === 'meat';
-            const colorClass = isMeat ? 'bg-red-50 border-red-300' : 'bg-blue-50 border-blue-300';
-            const badge = isMeat ? '<span class="bg-red-500 text-white text-xs px-2 py-1 rounded">หมู/เนื้อ</span>' : '<span class="bg-blue-500 text-white text-xs px-2 py-1 rounded">ทะเล</span>';
+            const colorClass = 'bg-slate-50 border-slate-300';
+            const badge = `<span class="bg-slate-200 text-slate-700 text-xs px-2 py-1 rounded border border-slate-300">${isMeat ? 'หมู/เนื้อ' : 'ทะเล'}</span>`;
             div.className = `${colorClass} border-2 w-72 rounded shadow-lg p-3 flex flex-col relative`;
             let itemsHtml = '';
             for (const [menu, qty] of Object.entries(order.items)) {
@@ -737,27 +865,44 @@
             }, 1000);
         }
 
-        let isFetchingActiveTables = false;
-        async function loadKitchenActiveTables() {
-            if (isFetchingActiveTables) return; isFetchingActiveTables = true;
+        let isFetchingServedHistory = false;
+        async function loadServedHistory() {
+            if (isFetchingServedHistory) return; isFetchingServedHistory = true;
             try {
-                const res = await fetch('/api/tables'); const tables = await res.json(); const openTables = tables.filter(t => t.is_open);
-                if(openTables.length === 0) { document.getElementById('activeTablesSummary').innerHTML = '<p class="text-gray-400 text-center w-full text-lg mt-2">ยังไม่มีโต๊ะที่เปิดใช้งานในขณะนี้</p>'; isFetchingActiveTables = false; return; }
-                const htmlParts = await Promise.all(openTables.map(async (t) => {
-                    const resHist = await fetch(`/api/table-history/${t.table_no}`); const orders = await resHist.json(); let totals = {};
-                    orders.forEach(o => { if(o.status === 'cancelled') return; for(const [k, v] of Object.entries(o.items)) { totals[k] = (totals[k] || 0) + v; } });
-                    let itemsHtml = Object.keys(totals).length === 0 ? '<p class="text-gray-400 text-center py-4 text-sm">ยังไม่มีการสั่ง</p>' : '';
-                    for (const [menu, qty] of Object.entries(totals)) { itemsHtml += `<div class="flex justify-between items-center border-b border-gray-600 py-1">${renderMenu(menu, 'w-8 h-8')}<span class="text-blue-300 text-lg font-bold">x${qty}</span></div>`; }
-                    return `<div class="bg-gray-800 border border-gray-600 w-64 rounded shadow-lg p-3 flex flex-col text-white"><div class="text-xl font-extrabold text-white border-b border-gray-500 pb-2 mb-2 text-center bg-gray-700 rounded py-1">โต๊ะ ${t.table_no}</div><div class="flex-grow pb-2">${itemsHtml}</div></div>`;
-                }));
-                document.getElementById('activeTablesSummary').innerHTML = htmlParts.join('');
-            } catch(e) {} finally { isFetchingActiveTables = false; }
+                const res = await fetch('/api/served-recent'); const orders = await res.json();
+                const container = document.getElementById('servedHistoryList');
+                if(!orders || orders.length === 0) { container.innerHTML = '<p class="text-gray-400 text-center w-full text-lg mt-2">ยังไม่มีประวัติการเสิร์ฟในวันนี้</p>'; isFetchingServedHistory = false; return; }
+                container.innerHTML = orders.map(o => {
+                    const d = o.served_at ? new Date(o.served_at) : null;
+                    const timeStr = d ? `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}` : '-';
+                    let itemsHtml = '';
+                    for (const [menu, qty] of Object.entries(o.items)) { itemsHtml += `<div class="flex justify-between items-center border-b border-gray-600 py-1">${renderMenu(menu, 'w-8 h-8')}<span class="text-blue-300 text-lg font-bold">x${qty}</span></div>`; }
+                    return `<div class="bg-gray-800 border border-gray-600 w-64 min-h-[220px] rounded shadow-lg p-3 flex flex-col text-white">
+                        <div class="flex justify-between items-center border-b border-gray-500 pb-2 mb-2">
+                            <span class="text-xl font-extrabold text-white">โต๊ะ ${o.table_no}</span>
+                            <span class="text-xs text-gray-300 font-mono">เสิร์ฟ ${timeStr} น.</span>
+                        </div>
+                        <div class="flex-grow pb-2">${itemsHtml}</div>
+                    </div>`;
+                }).join('');
+            } catch(e) {} finally { isFetchingServedHistory = false; }
         }
 
-        function updateOrder(id, tableNo, status) { socket.emit('update_order', { id: id, table: tableNo, status: status }); }
-        fetch('/api/orders').then(res => res.json()).then(orders => orders.forEach(renderOrderCard));
-        socket.on('receive_order', (newOrder) => { renderOrderCard(newOrder); loadKitchenActiveTables(); });
-        socket.on('order_removed_from_kitchen', (data) => { if(document.getElementById(`order-${data.id}`)) document.getElementById(`order-${data.id}`).remove(); if(timers[data.id]) clearInterval(timers[data.id]); loadKitchenActiveTables(); });
+        function updateOrder(id, tableNo, status) { socket.emit('update_order', { id: id, table: tableNo, status: status, token: getAdminToken() }); }
+        // เซิร์ฟเวอร์ปฏิเสธ (เช่น token หมดอายุหลัง restart) → บังคับ login ใหม่
+        socket.on('auth_error', () => { sessionStorage.removeItem('adminToken'); showLoginScreen(); });
+
+        // โหลด/รีโหลดรายการรอเสิร์ฟทั้งหมดใหม่ (ล้างการ์ด+timer เดิมก่อน กันซ้ำ)
+        function loadOrders() {
+            Object.values(timers).forEach(clearInterval);
+            for (const k in timers) delete timers[k];
+            document.getElementById('orderList').innerHTML = '';
+            fetch('/api/orders').then(res => res.json()).then(orders => orders.forEach(renderOrderCard)).catch(() => {});
+        }
+        socket.on('receive_order', (newOrder) => { renderOrderCard(newOrder); });
+        socket.on('order_removed_from_kitchen', (data) => { if(document.getElementById(`order-${data.id}`)) document.getElementById(`order-${data.id}`).remove(); if(timers[data.id]) clearInterval(timers[data.id]); loadServedHistory(); });
+        // เน็ตหลุดแล้วกลับมา: ดึงออเดอร์ + ประวัติเสิร์ฟใหม่ เผื่อมีที่ตกหล่นระหว่างหลุด
+        socket.io.on('reconnect', () => { loadOrders(); loadServedHistory(); });
         
         function loadTables() {
             fetch('/api/tables').then(res => res.json()).then(tables => {
@@ -829,17 +974,26 @@
             const timeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
             const dateStr = `${now.getDate().toString().padStart(2,'0')}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getFullYear()}`;
             doPrint(el => { el.innerHTML = `
-                <div style="padding:2px 0 0;">
-                    <img src="/images/logo.png" alt="Logo" style="display:block;margin:0 auto;width:110px;height:110px;object-fit:contain;" onerror="this.style.display='none'">
+                <div style="height:50px;overflow:hidden;display:flex;justify-content:center;">
+                    <img src="/images/logo.png" alt="Logo" style="width:115px;height:115px;margin-top:-34px;" onerror="this.style.display='none'">
                 </div>
-                <div style="border-bottom:1px dashed black;padding:4px 0;margin:0 0 5px;">
-                    <p style="font-size:9px;letter-spacing:1px;margin:0 0 1px;">หมายเลขโต๊ะ</p>
-                    <p style="font-size:48px;font-weight:900;line-height:1;margin:0;">${tableNo}</p>
-                    <p style="font-size:9px;margin:2px 0 0;">${dateStr} | ${timeStr} น.</p>
+                <div style="height:6px;"></div>
+                <div style="border-top:1px dashed black;margin:0 6px;"></div>
+                <div style="height:22px;display:flex;align-items:flex-end;justify-content:center;font-size:11px;letter-spacing:2px;font-weight:600;">หมายเลขโต๊ะ</div>
+                <div style="height:78px;display:flex;align-items:flex-start;justify-content:center;padding-top:4px;">
+                    <span style="font-size:54px;font-weight:900;line-height:1;">${tableNo}</span>
                 </div>
-                <p style="font-size:10px;font-weight:700;margin:4px 0 3px;">สแกน QR เพื่อสั่งอาหาร</p>
-                <img src="${qrSrc}" alt="QR" style="display:block;margin:0 auto 4px;width:110px;height:110px;">
-                <div style="border-top:1px dashed black;margin:3px 6px 0;"></div>
+                <div style="height:14px;"></div>
+                <div style="height:20px;line-height:20px;font-size:11px;font-weight:600;">${dateStr} &nbsp;|&nbsp; ${timeStr} น.</div>
+                <div style="height:6px;"></div>
+                <div style="border-top:1px dashed black;margin:0 6px;"></div>
+                <div style="height:24px;display:flex;align-items:flex-end;justify-content:center;font-size:12px;font-weight:700;">สแกน QR เพื่อสั่งอาหาร</div>
+                <div style="height:8px;"></div>
+                <div style="height:130px;display:flex;align-items:center;justify-content:center;">
+                    <img src="${qrSrc}" alt="QR" style="width:125px;height:125px;">
+                </div>
+                <div style="height:6px;"></div>
+                <div style="border-top:1px dashed black;margin:0 6px;"></div>
             `; });
         }
 
@@ -855,16 +1009,92 @@
                     });
                 });
         }
-        socket.on('table_updated', () => { loadTables(); loadDailyHistory(); loadKitchenActiveTables(); });
+        socket.on('table_updated', () => { loadTables(); loadDailyHistory(); });
         
+        let statsPicker = null;
+
+        // วินาที -> ข้อความอ่านง่าย ("-" ถ้ายังไม่มีข้อมูล)
+        function fmtDur(sec) {
+            if (sec === null || sec === undefined) return '-';
+            if (sec < 60) return `${sec} วิ`;
+            const m = Math.floor(sec / 60), s = sec % 60;
+            if (m < 60) return s ? `${m} นาที ${s} วิ` : `${m} นาที`;
+            const h = Math.floor(m / 60), mm = m % 60;
+            return mm ? `${h} ชม. ${mm} นาที` : `${h} ชม.`;
+        }
+
+        // ใช้ปีเดือนวันแบบ local ไม่ใช้ toISOString() เพราะมันแปลงเป็น UTC แล้ววันจะเพี้ยน
+        function toYMD(d) {
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        }
+
+        function statTile(label, value, tone = 'gray', sub = '') {
+            const tones = {
+                gray:   'bg-gray-50 border-gray-200 text-gray-800',
+                blue:   'bg-blue-50 border-blue-200 text-blue-700',
+                green:  'bg-green-50 border-green-200 text-green-700',
+                orange: 'bg-orange-50 border-orange-200 text-orange-700',
+                red:    'bg-red-50 border-red-200 text-red-700'
+            };
+            return `<div class="rounded-xl border px-3 py-3 ${tones[tone]}">
+                        <p class="text-xs font-bold opacity-70 leading-tight">${label}</p>
+                        <p class="text-xl md:text-2xl font-black mt-1 leading-tight">${value}</p>
+                        ${sub ? `<p class="text-xs opacity-60 mt-0.5">${sub}</p>` : ''}
+                    </div>`;
+        }
+
         function loadStats() {
-            const date = document.getElementById('statsDate').value; if(!date) return;
-            fetch(`/api/stats?date=${date}&_=${Date.now()}`).then(res => res.json()).then(data => {
-                const tbody = document.getElementById('statsBody'); tbody.innerHTML = ''; 
-                if(!data || Object.keys(data).length === 0) return tbody.innerHTML = '<tr><td colspan="2" class="text-center p-6 text-gray-500 font-bold bg-white">ไม่มีสถิติในวันที่เลือก</td></tr>';
-                let grandTotal = 0;
-                for(const [k, v] of Object.entries(data)) { tbody.innerHTML += `<tr><td class="py-3">${renderMenu(k, 'w-12 h-12')}</td><td class="text-right py-3 font-bold text-2xl">${v}</td></tr>`; grandTotal += v; }
-                tbody.innerHTML += `<tr class="border-t-2 border-gray-800 text-lg"><td class="py-4 font-bold text-xl">รวมทั้งหมด</td><td class="text-right py-4 font-extrabold text-blue-600 text-2xl">${grandTotal} จาน</td></tr>`;
+            const sel = statsPicker ? statsPicker.selectedDates : [];
+            if (!sel.length) return;
+            const from = toYMD(sel[0]);
+            const to   = toYMD(sel[1] || sel[0]);
+
+            fetch(`/api/stats?from=${from}&to=${to}&_=${Date.now()}`).then(res => res.json()).then(data => {
+                if (!data || !data.range) return;
+                const { serve, queue, range } = data;
+
+                document.getElementById('statsRangeNote').innerText =
+                    range.days === 1 ? `ข้อมูลวันที่ ${range.from}` : `ข้อมูล ${range.from} ถึง ${range.to} (${range.days} วัน)`;
+
+                // ---- การ์ดสรุปการเสิร์ฟ ----
+                const st = serve.serveTime;
+                document.getElementById('serveTiles').innerHTML =
+                    statTile('รวมที่เสิร์ฟ', `${serve.totalPlates} <span class="text-sm font-bold">จาน</span>`, 'blue', `${serve.servedOrders} ออเดอร์`)
+                  + statTile('ออเดอร์ที่ยกเลิก', `${serve.cancelledOrders} <span class="text-sm font-bold">ออเดอร์</span>`, 'red')
+                  + statTile('ออเดอร์ที่ยังค้าง', `${serve.pendingOrders} <span class="text-sm font-bold">ออเดอร์</span>`, 'gray')
+                  + statTile('เสิร์ฟเร็วสุด', fmtDur(st.min), 'green')
+                  + statTile('เสิร์ฟช้าสุด', fmtDur(st.max), 'orange')
+                  + statTile('เวลาเสิร์ฟเฉลี่ย', fmtDur(st.avg), 'blue', st.count ? `จาก ${st.count} ออเดอร์` : 'ยังไม่มีข้อมูล');
+
+                // ---- ตารางเมนู ----
+                const tbody = document.getElementById('statsBody');
+                if (!serve.menus.length) {
+                    tbody.innerHTML = '<tr><td colspan="4" class="text-center p-6 text-gray-500 font-bold">ไม่มีสถิติในช่วงที่เลือก</td></tr>';
+                } else {
+                    tbody.innerHTML = serve.menus.map(m => `
+                        <tr class="border-b last:border-0">
+                            <td class="py-3">${renderMenu(m.name, 'w-12 h-12')}</td>
+                            <td class="text-right py-3 font-bold text-xl md:text-2xl">${m.qty}</td>
+                            <td class="text-right py-3 text-gray-600 font-bold">${m.perDay}</td>
+                            <td class="text-right py-3 text-gray-600 font-bold">${m.perOrder}</td>
+                        </tr>`).join('')
+                      + `<tr class="border-t-2 border-gray-800">
+                            <td class="py-4 font-bold text-lg md:text-xl">รวมทั้งหมด</td>
+                            <td class="text-right py-4 font-extrabold text-blue-600 text-xl md:text-2xl">${serve.totalPlates}</td>
+                            <td colspan="2"></td>
+                         </tr>`;
+                }
+
+                // ---- การ์ดสรุปคิว ----
+                const wt = queue.waitTime;
+                document.getElementById('queueTiles').innerHTML =
+                    statTile('คิวทั้งหมด', `${queue.total} <span class="text-sm font-bold">คิว</span>`, 'gray', queue.waiting ? `ยังรออยู่ ${queue.waiting}` : '')
+                  + statTile('เข้าโต๊ะแล้ว', `${queue.entered} <span class="text-sm font-bold">คิว</span>`, 'green')
+                  + statTile('ข้ามคิว', `${queue.skipped} <span class="text-sm font-bold">คิว</span>`, 'orange')
+                  + statTile('ยกเลิกคิว', `${queue.cancelled} <span class="text-sm font-bold">คิว</span>`, 'red')
+                  + statTile('รอนานสุด', fmtDur(wt.max), 'orange')
+                  + statTile('เข้าเร็วสุด', fmtDur(wt.min), 'green')
+                  + statTile('รอเฉลี่ย', fmtDur(wt.avg), 'blue', wt.count ? `จาก ${wt.count} คิวที่เข้าโต๊ะ` : 'ยังไม่มีข้อมูล');
             });
         }
         socket.on('stats_updated', loadStats);
@@ -1368,7 +1598,7 @@
                     <span class="bg-red-100 text-red-700 px-3 py-1 rounded-full">ยกเลิก ${cancelled}</span>
                 `;
 
-                if(history.length === 0) return tbody.innerHTML = '<tr><td colspan="6" class="text-center p-6 text-gray-500 font-bold bg-white">ไม่มีประวัติคิวในวันที่เลือก</td></tr>';
+                if(history.length === 0) return tbody.innerHTML = '<tr><td colspan="7" class="qc-empty text-center p-6 text-gray-500 font-bold bg-white">ไม่มีประวัติคิวในวันที่เลือก</td></tr>';
                 
                 history.forEach(q => {
                     const time = new Date(q.created_at).toLocaleTimeString('th-TH', {hour: '2-digit', minute:'2-digit'});
@@ -1383,10 +1613,10 @@
                     let actionHtml = '';
 
                     if(q.status === 'entered') {
-                        const tableLabel = q.table_assigned && q.table_assigned !== 'null' ? `โต๊ะ ${q.table_assigned}` : 'โต๊ะ -';
-                        statusHtml = `<div onclick="event.stopPropagation(); openTablePickerForReassign(${q.id}, '${q.status}', ${!!q.is_billed})" class="bg-green-100 text-green-800 p-3 rounded text-center font-bold text-base cursor-pointer hover:bg-green-200 active:scale-95 transition select-none">${tableLabel}</div>`;
+                        const tableLabel = q.table_assigned && q.table_assigned !== 'null' ? `โต๊ะ ${esc(q.table_assigned)}` : 'โต๊ะ -';
+                        statusHtml = `<div onclick="event.stopPropagation(); openTablePickerForReassign(${q.id}, '${jsAttr(q.status)}', ${!!q.is_billed})" class="bg-green-100 text-green-800 p-3 rounded text-center font-bold text-base cursor-pointer hover:bg-green-200 active:scale-95 transition select-none">${tableLabel}</div>`;
                         actionHtml = `<label onclick="event.stopPropagation()" class="flex items-center justify-center gap-2 cursor-pointer font-bold ${q.is_billed ? 'text-green-600' : 'text-gray-500'}">
-                                        <input type="checkbox" onchange="updateQueueBill(${q.id}, '${q.status}', '${q.table_assigned}', this.checked)" ${q.is_billed ? 'checked' : ''} class="w-6 h-6">
+                                        <input type="checkbox" onchange="updateQueueBill(${q.id}, '${jsAttr(q.status)}', '${jsAttr(q.table_assigned)}', this.checked)" ${q.is_billed ? 'checked' : ''} class="w-6 h-6">
                                         <span class="text-base">ออกบิลแล้ว</span>
                                       </label>`;
                     } else if(q.status === 'cancelled') {
@@ -1398,7 +1628,7 @@
                     } else {
                         const specialTypes = ['รอโต๊ะใหญ่', 'รอโต๊ะเชื่อม'];
                         if (q.table_assigned && q.table_assigned !== 'null') {
-                            const label = specialTypes.includes(q.table_assigned) ? q.table_assigned : `รอเข้าโต๊ะ ${q.table_assigned}`;
+                            const label = specialTypes.includes(q.table_assigned) ? esc(q.table_assigned) : `รอเข้าโต๊ะ ${esc(q.table_assigned)}`;
                             statusHtml = `<div onclick="event.stopPropagation(); openPreassignPicker(${q.id})" class="bg-orange-100 text-orange-700 p-3 rounded text-center font-bold text-base cursor-pointer hover:bg-orange-200 active:scale-95 transition select-none border border-orange-300">${label}</div>`;
                         } else {
                             statusHtml = `<div onclick="event.stopPropagation(); openPreassignPicker(${q.id})" class="bg-blue-50 text-blue-600 border border-blue-300 p-3 rounded text-center font-bold text-base cursor-pointer hover:bg-blue-100 active:scale-95 transition select-none">รอคิวปกติ</div>`;
@@ -1406,13 +1636,13 @@
 
                         actionHtml = `
                             <div class="flex items-center gap-2">
-                                <button onclick="event.stopPropagation(); openQueueActionModal(${q.id}, '${q.q_number}', '${q.table_assigned || ''}')" class="flex-1 bg-green-500 hover:bg-green-600 active:scale-95 text-white font-bold py-3 rounded-lg text-sm shadow-sm whitespace-nowrap text-center transition-transform">เรียกเข้าโต๊ะ</button>
-                                <button onclick="event.stopPropagation(); cancelQueue(${q.id}, '${q.q_number}')" class="flex-1 bg-red-100 hover:bg-red-200 active:scale-95 text-red-600 font-bold py-3 rounded-lg text-sm shadow-sm whitespace-nowrap text-center transition-transform">ข้ามคิว</button>
+                                <button onclick="event.stopPropagation(); openQueueActionModal(${q.id}, '${jsAttr(q.q_number)}', '${jsAttr(q.table_assigned || '')}')" class="flex-1 bg-green-500 hover:bg-green-600 active:scale-95 text-white font-bold py-3 rounded-lg text-sm shadow-sm whitespace-nowrap text-center transition-transform">เรียกเข้าโต๊ะ</button>
+                                <button onclick="event.stopPropagation(); cancelQueue(${q.id}, '${jsAttr(q.q_number)}')" class="flex-1 bg-red-100 hover:bg-red-200 active:scale-95 text-red-600 font-bold py-3 rounded-lg text-sm shadow-sm whitespace-nowrap text-center transition-transform">ข้ามคิว</button>
                                 <div class="relative flex-shrink-0">
                                     <button onclick="event.stopPropagation(); toggleQueueMenu(${q.id})" class="bg-gray-200 hover:bg-gray-300 text-gray-600 w-11 h-11 rounded-lg text-xl font-bold border border-gray-300 shadow-sm flex items-center justify-center">⋮</button>
                                     <div id="queueMenu-${q.id}" class="hidden absolute right-0 bottom-full mb-1 bg-white border border-gray-200 rounded-xl shadow-xl z-[200] w-36 overflow-hidden">
-                                        <button onclick="event.stopPropagation(); printQueueSlip('${q.q_number}', ${q.pax}, '${potsString}', '${q.token}', '${q.created_at}')" class="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 border-b border-gray-100">ปริ้น</button>
-                                        <button onclick="event.stopPropagation(); showQueueQr('${q.q_number}', '${q.token}')" class="w-full text-left px-4 py-3 text-sm font-bold hover:bg-blue-50 text-blue-700">QR</button>
+                                        <button onclick="event.stopPropagation(); printQueueSlip('${jsAttr(q.q_number)}', ${q.pax}, '${potsString}', '${jsAttr(q.token)}', '${jsAttr(q.created_at)}')" class="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 border-b border-gray-100">ปริ้น</button>
+                                        <button onclick="event.stopPropagation(); showQueueQr('${jsAttr(q.q_number)}', '${jsAttr(q.token)}')" class="w-full text-left px-4 py-3 text-sm font-bold hover:bg-blue-50 text-blue-700">QR</button>
                                     </div>
                                 </div>
                             </div>
@@ -1424,9 +1654,9 @@
                         : `<span class="bg-gray-200 text-gray-800 px-3 py-1 rounded font-bold text-base">${q.pax}</span>`;
 
                     const trClick = q.status === 'waiting'
-                        ? `onclick="openEditQueueModal(${q.id}, '${q.q_number}', ${q.pax}, '${potsString}', ${q.adults || 0}, ${q.children || 0}, ${q.is_foreign ? 1 : 0}, ${q.is_separate_table ? 1 : 0})"`
+                        ? `onclick="openEditQueueModal(${q.id}, '${jsAttr(q.q_number)}', ${q.pax}, '${potsString}', ${q.adults || 0}, ${q.children || 0}, ${q.is_foreign ? 1 : 0}, ${q.is_separate_table ? 1 : 0})"`
                         : ['entered','skipped','cancelled'].includes(q.status)
-                        ? `onclick="openUndoEnterModal(${q.id}, '${q.q_number}')"`
+                        ? `onclick="openUndoEnterModal(${q.id}, '${jsAttr(q.q_number)}')"`
                         : '';
                     const trBg = q.status === 'waiting' ? 'bg-white cursor-pointer hover:bg-blue-50'
                         : ['entered','skipped','cancelled'].includes(q.status) ? 'bg-gray-100 cursor-pointer hover:bg-orange-50'
@@ -1434,15 +1664,18 @@
 
                     const enteredTimeStr = q.entered_at ? (() => { const d = new Date(q.entered_at); return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; })() : '-';
 
+                    // บนมือถือช่อง "จัดการ" ที่มีแค่ขีด (คิวที่จบแล้ว) ให้ซ่อนไปเลย
+                    const actionCellClass = actionHtml === '-' ? 'qc-action qc-hide-mobile' : 'qc-action';
+
                     tbody.innerHTML += `
-                        <tr class="border-b ${trBg}" ${trClick}>
-                            <td class="px-3 py-3 text-center text-gray-600 text-sm">${time}</td>
-                            <td class="px-3 py-3 text-center text-sm ${q.entered_at ? 'text-green-700 font-bold' : 'text-gray-300'}">${enteredTimeStr}</td>
-                            <td class="px-3 py-3 text-center"><span class="${q.status === 'waiting' ? 'text-blue-600 text-2xl' : 'text-gray-700 text-xl'} font-black">${q.q_number}</span></td>
-                            <td class="px-3 py-3 text-center">${paxDisplay}</td>
-                            <td class="px-3 py-3"><div class="flex items-center gap-2"><div class="flex-shrink-0">${potsHtml}</div>${flagBadges ? `<div class="flex-1 flex flex-col gap-1 items-center">${flagBadges}</div>` : ''}</div></td>
-                            <td class="px-3 py-3 align-middle">${statusHtml}</td>
-                            <td class="px-3 py-3 align-middle">${actionHtml}</td>
+                        <tr class="q-row border-b ${trBg}" ${trClick}>
+                            <td class="qc-time px-3 py-3 text-center text-gray-600 text-sm">${time}</td>
+                            <td class="qc-entered px-3 py-3 text-center text-sm ${q.entered_at ? 'text-green-700 font-bold' : 'text-gray-300'}">${enteredTimeStr}</td>
+                            <td class="qc-num px-3 py-3 text-center"><span class="${q.status === 'waiting' ? 'text-blue-600 text-2xl' : 'text-gray-700 text-xl'} font-black">${esc(q.q_number)}</span></td>
+                            <td class="qc-pax px-3 py-3 text-center">${paxDisplay}</td>
+                            <td class="qc-pots px-3 py-3"><div class="flex items-center gap-2"><div class="flex-shrink-0">${potsHtml}</div>${flagBadges ? `<div class="flex-1 flex flex-col gap-1 items-center">${flagBadges}</div>` : ''}</div></td>
+                            <td class="qc-status px-3 py-3 align-middle">${statusHtml}</td>
+                            <td class="${actionCellClass} px-3 py-3 align-middle">${actionHtml}</td>
                         </tr>
                     `;
                 });
