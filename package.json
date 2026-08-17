@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node --test",
     "test:browser": "node --test test-browser/*.check.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "stage:lan": "node scripts/lan-staging-server.js"
   },
   "keywords": [],
   "author": "",
