@@ -6,6 +6,7 @@ const QRCode = require('qrcode');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { FixedWindowLimiter, normalizeIp, ipFromForwardedHeader } = require('./rate-limiter');
 
 // โหลดค่าจากไฟล์ .env (ถ้ามี) — เขียนเองสั้นๆ จะได้ไม่ต้องลง package เพิ่ม
 // ค่าที่ตั้งไว้ใน environment อยู่แล้วจะไม่ถูกทับ
@@ -63,9 +64,31 @@ function summarizeSecs(secs) {
     return { count: secs.length, min, max, avg: Math.round(sum / secs.length) };
 }
 
+// (Phase 6C) เชื่อ X-Forwarded-For เฉพาะตอนอยู่หลัง reverse proxy ที่เชื่อถือได้จริงเท่านั้น (nginx hop เดียวตาม MIGRATION.md)
+// ปล่อยว่าง/false ตอนพัฒนา/LAN staging/เทสต์ (ไม่มี proxy อยู่หน้าแอปเลย) — ไม่งั้น client จะปลอม IP ตัวเองผ่าน header นี้ตรงๆ ได้
+// ตั้งเป็น true อัตโนมัติเมื่อ NODE_ENV=production เหมือนแนวทางเดียวกับ COOKIE_SECURE ด้านล่าง
+const TRUST_PROXY = process.env.TRUST_PROXY === 'true' || process.env.NODE_ENV === 'production';
+
 const app = express();
+if (TRUST_PROXY) app.set('trust proxy', 1); // เชื่อ hop เดียว (nginx) — ตรงกับสถาปัตยกรรมจริงใน MIGRATION.md เป๊ะ ไม่เชื่อมากกว่านั้น
 const server = http.createServer(app);
 const io = new Server(server);
+
+// ---- ตัวช่วย IP กลาง ใช้ร่วมกันทั้ง HTTP (req.ip ผ่าน Express trust proxy) และ Socket.IO (ซึ่ง "ไม่" อ่าน trust proxy ของ Express ให้เองเลย) ----
+// engine.io ตั้งค่า socket.handshake.address จาก TCP connection ตรงๆ เสมอ (ดู node_modules/engine.io/build/socket.js) —
+// ต่อให้ Express ตั้ง trust proxy ไว้แล้ว ก็ไม่มีผลกับค่านี้ ต้องอ่าน X-Forwarded-For เองตรงนี้ให้ตรงกับนโยบายเดียวกัน กัน HTTP/Socket.IO เห็น IP ไม่ตรงกัน
+function getHttpClientIp(req) {
+    return normalizeIp(req.ip || (req.socket && req.socket.remoteAddress) || 'unknown');
+}
+function getSocketClientIp(socket) {
+    let raw = null;
+    if (TRUST_PROXY) {
+        const headers = socket.handshake && socket.handshake.headers;
+        raw = ipFromForwardedHeader(headers && headers['x-forwarded-for']);
+    }
+    if (!raw) raw = (socket.handshake && socket.handshake.address) || (socket.request && socket.request.socket && socket.request.socket.remoteAddress) || 'unknown';
+    return normalizeIp(raw);
+}
 
 // ================== หน้า /staff/ (Phase 4) ==================
 // ต้องลงทะเบียนก่อน express.static('public') เสมอ — ไม่งั้น express.static จะเสิร์ฟ
@@ -543,7 +566,7 @@ function clearSessionCookie(res) {
 }
 
 app.post('/api/login', (req, res) => {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const ip = getHttpClientIp(req);
     if (loginBlocked(ip)) return res.status(429).json({ success: false, error: 'พยายามเข้าสู่ระบบผิดหลายครั้งเกินไป กรุณารอสักครู่' });
 
     const { user, pin } = req.body || {};
@@ -673,7 +696,7 @@ function tableSessionRateLimited(ip) {
 // เช็คสถานะ "โต๊ะของตัวเอง" สำหรับลูกค้า — ต้องมีทั้ง table และ token ที่ถูกต้องของโต๊ะนั้นเท่านั้น
 // ตอบกลับเฉพาะข้อมูลที่หน้าลูกค้าต้องใช้จริง (is_open/can_order) ไม่มี session_token หรือข้อมูลโต๊ะอื่นหลุดออกไปเด็ดขาด
 app.get('/api/table-session', (req, res) => {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const ip = getHttpClientIp(req);
     if (tableSessionRateLimited(ip)) return res.status(429).json({ error: 'ลองบ่อยเกินไป กรุณารอสักครู่' });
 
     const { table, token } = req.query;
@@ -888,15 +911,46 @@ app.post('/api/queue/update', requireAuth, requirePermission(PERMISSIONS.QUEUE_M
     });
 });
 
+// (Phase 6C) rate limit ของ /api/queue/cancel-by-token — token ควรถูกยกเลิกแค่ 0 หรือ 1 ครั้งต่อคิวจริงๆ (ไม่เหมือน send_order ที่ลูกค้าสั่งหลายรอบได้)
+// เพดานกว้าง (ทุก request ไม่ว่าสำเร็จหรือไม่) ใจกว้างพอให้หลายคนหลัง NAT เดียวกันยกเลิกคิวตัวเองพร้อมกันได้ตามปกติ
+// เพดานล้มเหลว (แคบกว่ามาก นับเฉพาะครั้งที่ token ผิด/ใช้ไม่ได้จริง) ไว้ปราบการเดา token รัวๆ โดยเฉพาะ — ไม่กระทบคนที่ยกเลิกสำเร็จเลยสักคน
+const QUEUE_CANCEL_IP_WINDOW_MS = 5 * 60 * 1000;
+const QUEUE_CANCEL_IP_LIMIT = 20;
+const QUEUE_CANCEL_FAILED_WINDOW_MS = 5 * 60 * 1000;
+const QUEUE_CANCEL_FAILED_LIMIT = 8;
+const queueCancelIpLimiter = new FixedWindowLimiter({ windowMs: QUEUE_CANCEL_IP_WINDOW_MS, max: QUEUE_CANCEL_IP_LIMIT });
+const queueCancelFailedLimiter = new FixedWindowLimiter({ windowMs: QUEUE_CANCEL_FAILED_WINDOW_MS, max: QUEUE_CANCEL_FAILED_LIMIT });
+
 // ลูกค้ายกเลิกคิว "ของตัวเอง" ด้วย token จาก QR (ไม่ต้อง login)
 // ผูกกับ token ไม่ใช่ id เพราะ id เป็นเลขรันนิ่งที่เดาได้ และยอมให้เฉพาะคิวที่ยังรออยู่วันนี้เท่านั้น
 app.post('/api/queue/cancel-by-token', (req, res) => {
+    const ip = getHttpClientIp(req);
+
+    // 1) เพดานกว้างต่อ IP ก่อนแตะ DB เลย (ถูกทุก request ไม่ว่า token จะถูกหรือผิด)
+    const broad = queueCancelIpLimiter.hit(ip);
+    if (broad.limited) {
+        res.set('Retry-After', String(broad.retryAfterSec));
+        return res.status(429).json({ error: 'ลองบ่อยเกินไป กรุณารอสักครู่' });
+    }
+
+    // 2) เพดานความล้มเหลว: ถ้า IP นี้เพิ่งพยายามด้วย token ผิดเกินเพดานไปแล้วในหน้าต่างเวลานี้ บล็อกไว้ก่อนแม้ครั้งนี้จะถือ token ถูกก็ตาม
+    // (peek() เท่านั้น ไม่เพิ่มตัวนับ — เพิ่มเฉพาะตอนล้มเหลวจริงด้านล่าง กันคนที่ยกเลิกสำเร็จปกติโดนลูกหลงจากคนอื่นที่พลาดบ่อยบน IP เดียวกัน)
+    const failedState = queueCancelFailedLimiter.peek(ip);
+    if (failedState.limited) {
+        res.set('Retry-After', String(failedState.retryAfterSec));
+        return res.status(429).json({ error: 'ลองบ่อยเกินไป กรุณารอสักครู่' });
+    }
+
     const { token } = req.body || {};
-    if (!token) return res.status(400).json({ error: 'ไม่พบ token' });
+    if (!token || typeof token !== 'string') return res.status(400).json({ error: 'ไม่พบ token' });
+
     db.run(`UPDATE queues SET status = 'cancelled', entered_at = NULL
             WHERE token = ? AND status = 'waiting' AND date(created_at, 'localtime') = date('now', 'localtime')`,
         [token], function () {
-            if (this.changes === 0) return res.status(400).json({ error: 'ยกเลิกคิวนี้ไม่ได้' });
+            if (this.changes === 0) {
+                queueCancelFailedLimiter.hit(ip); // นับเป็นความล้มเหลวจริง (token ผิด/ใช้ไปแล้ว/หมดอายุ) — ข้อความตอบเหมือนเดิมทุกกรณี ไม่บอกใบ้เหตุผล
+                return res.status(400).json({ error: 'ยกเลิกคิวนี้ไม่ได้' });
+            }
             res.json({ success: true });
             io.emit('queue_updated');
         });
@@ -1726,13 +1780,75 @@ app.delete('/api/admin/roles/:id', requireAuth, requirePermission(PERMISSIONS.RO
     }
 });
 
+// (Phase 6C) rate limit ของ socket 'send_order' — สามชั้น ตามลักษณะการใช้งานจริงที่ต่างกัน:
+//   1) เพดานกว้างต่อ IP (ทุก event ไม่ว่าผลจะเป็นอย่างไร) — ใจกว้างพอให้ทั้งร้าน (27 โต๊ะ) สั่งพร้อมกันได้ตามปกติผ่าน NAT/WiFi เดียวกัน
+//   2) เพดานเข้ม token ผิด/โต๊ะไม่มีจริงต่อ IP — แยกจากกรณี "token ถูกแต่โต๊ะกำลังรอเสิร์ฟอยู่" (ไม่ใช่การเดา ไม่ควรถูกนับ) โดยเจตนา
+//   3) เพดานต่อ session (โต๊ะ+token ที่ผ่านการยืนยันแล้วว่าเป็นจริง) — key space จำกัดตามจำนวนโต๊ะที่เปิดอยู่จริงเท่านั้น (ไม่มีทางโตไม่มีที่สิ้นสุด)
+// เหตุผลตัวเลข: การ "สั่งสำเร็จ" ถูกจำกัดโดยธรรมชาติอยู่แล้วจาก can_order (สั่งรอบใหม่ไม่ได้จนกว่าครัวจะเสิร์ฟรอบก่อนหมด)
+// แต่ event ที่ถูกปฏิเสธ (can_order=false ระหว่างรอ, หรือ token ผิด) ยังกิน DB write + socket overhead ทุกครั้ง จึงต้องกันการยิงรัวไว้ด้วย
+const SEND_ORDER_IP_WINDOW_MS = 5 * 60 * 1000;
+const SEND_ORDER_IP_LIMIT = 120; // ~27 โต๊ะ x 4 event/5นาที ยังพอสบายๆ
+const SEND_ORDER_INVALID_TOKEN_WINDOW_MS = 5 * 60 * 1000;
+const SEND_ORDER_INVALID_TOKEN_LIMIT = 15; // token ผิด/โต๊ะไม่มีจริงเกินนี้ใน 5 นาที ไม่ใช่ลูกค้าจริงแน่ๆ
+const SEND_ORDER_SESSION_WINDOW_MS = 5 * 60 * 1000;
+const SEND_ORDER_SESSION_LIMIT = 20; // ใจกว้างพอสำหรับหลายรอบการสั่ง + กดพลาด/กดซ้ำ แต่กันสคริปต์ยิงรัวใส่โต๊ะเดียว
+const SEND_ORDER_MAX_ITEMS = 20; // เมนูจริงมีแค่ 5 รายการ (MEAT_MENU 3 + SEAFOOD_MENU 2) — เผื่อไว้กว้างๆ กัน payload items ขนาดใหญ่ผิดปกติ
+
+const sendOrderIpLimiter = new FixedWindowLimiter({ windowMs: SEND_ORDER_IP_WINDOW_MS, max: SEND_ORDER_IP_LIMIT });
+const sendOrderInvalidTokenLimiter = new FixedWindowLimiter({ windowMs: SEND_ORDER_INVALID_TOKEN_WINDOW_MS, max: SEND_ORDER_INVALID_TOKEN_LIMIT });
+const sendOrderSessionLimiter = new FixedWindowLimiter({ windowMs: SEND_ORDER_SESSION_WINDOW_MS, max: SEND_ORDER_SESSION_LIMIT, maxKeys: 500 });
+
+// key ของ per-session limiter ต้องไม่ใช่ raw token ตรงๆ (กันหลุดถ้ามีจุดไหนพลาดไป log/debug Map นี้ในอนาคต) — แฮชสั้นๆ พอแยกแยะกันได้ก็พอ ไม่ต้องเก็บย้อนกลับได้
+function hashForLimiterKey(raw) {
+    return crypto.createHash('sha256').update(String(raw)).digest('hex').slice(0, 16);
+}
+
+// ล้าง entry ที่หมดอายุของ limiter ทั้งสามตัวเป็นระยะ กันตาราง Map ในหน่วยความจำโตไม่มีที่สิ้นสุด (ดู rate-limiter.js)
+const SEND_ORDER_LIMITER_CLEANUP_MS = 10 * 60 * 1000;
+setInterval(() => {
+    sendOrderIpLimiter.cleanup();
+    sendOrderInvalidTokenLimiter.cleanup();
+    sendOrderSessionLimiter.cleanup();
+    queueCancelIpLimiter.cleanup();
+    queueCancelFailedLimiter.cleanup();
+}, SEND_ORDER_LIMITER_CLEANUP_MS).unref();
+
 io.on('connection', (socket) => {
     socket.on('send_order', (data) => {
         const { table, token, items } = data || {};
         // กัน input พัง (เช่นถูกยิงข้อมูลมั่ว) ไม่ให้ทำ server ล่ม
         if (!table || !token || !items || typeof items !== 'object') return;
+        if (typeof table !== 'string' || typeof token !== 'string') return;
+        if (Object.keys(items).length > SEND_ORDER_MAX_ITEMS) return; // payload ใหญ่ผิดปกติ ไม่ใช่ลูกค้าจริงแน่ๆ
+
+        const ip = getSocketClientIp(socket);
+
+        // 1) เพดานกว้างต่อ IP ก่อนแตะ DB เลย (นับทุก event ไม่ว่าผลจะเป็นอย่างไร)
+        if (sendOrderIpLimiter.hit(ip).limited) {
+            return socket.emit('order_error', { message: 'ส่งรายการเร็วเกินไป กรุณารอสักครู่แล้วลองใหม่' });
+        }
+
         db.run("UPDATE tables SET can_order = false WHERE table_no = ? AND can_order = true AND is_open = true AND session_token = ?", [table, token], function(err) {
-            if (this.changes === 0) return socket.emit('order_error', { message: 'QR Code นี้หมดอายุแล้ว หรืออยู่ระหว่างรับออเดอร์' });
+            if (this.changes === 0) {
+                // แยก "token ผิด/โต๊ะไม่มีจริง" (นับเป็นความล้มเหลว) ออกจาก "token ถูกแต่โต๊ะกำลังรอเสิร์ฟรอบก่อนอยู่" (ปกติมาก ไม่ใช่การเดา ไม่นับ)
+                // ข้อความที่ตอบกลับลูกค้าเหมือนเดิมทุกกรณีอยู่แล้ว ไม่มีทางแยกออกจากฝั่งลูกค้าได้ว่าเป็นกรณีไหน (ไม่สร้าง oracle)
+                db.get("SELECT is_open, session_token FROM tables WHERE table_no = ?", [table], (err2, row) => {
+                    const isGuessedOrUnknown = !row || row.session_token !== token;
+                    if (isGuessedOrUnknown) {
+                        sendOrderInvalidTokenLimiter.hit(ip);
+                    }
+                });
+                return socket.emit('order_error', { message: 'QR Code นี้หมดอายุแล้ว หรืออยู่ระหว่างรับออเดอร์' });
+            }
+
+            // 2) เพดานต่อ session — เช็คหลังยืนยันแล้วว่า token เป็นของจริงเท่านั้น (key space จำกัดแค่จำนวนโต๊ะที่เปิดอยู่จริง)
+            const sessionCheck = sendOrderSessionLimiter.hit(hashForLimiterKey(token));
+            if (sessionCheck.limited) {
+                // ปลดล็อกโต๊ะคืนทันที กันโต๊ะค้างสถานะ "กำลังรับออเดอร์" ทั้งที่ไม่มีออเดอร์ถูกสร้างจริง
+                db.run("UPDATE tables SET can_order = true WHERE table_no = ? AND session_token = ?", [table, token]);
+                return socket.emit('order_error', { message: 'ส่งรายการเร็วเกินไป กรุณารอสักครู่แล้วลองใหม่' });
+            }
+
             io.emit('table_locked', { table: table });
             let meatItems = {}, seaItems = {};
             // บังคับเพดานเดียวกับหน้าลูกค้าที่ฝั่ง server ด้วย — ฝั่ง client แก้ค่าหรือยิง socket ตรงมาได้
@@ -1750,7 +1866,7 @@ io.on('connection', (socket) => {
             }
             const insertOrder = (category, categoryItems) => {
                 if (Object.keys(categoryItems).length > 0) {
-                    db.run("INSERT INTO orders (table_no, session_token, category, items, status) VALUES (?, ?, ?, ?, 'pending')", 
+                    db.run("INSERT INTO orders (table_no, session_token, category, items, status) VALUES (?, ?, ?, ?, 'pending')",
                     [table, token, category, JSON.stringify(categoryItems)], function(err) {
                         if (!err) io.emit('receive_order', { id: this.lastID, table_no: table, category: category, items: categoryItems, status: 'pending', created_at: new Date().toISOString() });
                     });

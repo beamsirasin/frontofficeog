@@ -272,7 +272,10 @@ test('owner regression: Queue — can create, list, update, and delete queue ent
     const created = await createRes.json();
     assert.ok(created.success);
 
-    const today = new Date().toISOString().slice(0, 10);
+    // ใช้วันที่ตาม "เวลาเครื่องนี้" (local) ไม่ใช่ toISOString() (UTC) — server เก็บ/query queues ด้วย date(created_at, 'localtime')
+    // ใกล้เที่ยงคืนในโซนเวลา UTC+ ค่า UTC กับ local จะเป็นคนละวันกัน ทำให้แถวที่เพิ่งสร้างหาไม่เจอถ้าใช้ toISOString()
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const histRes = await fetch(`${baseURL}/api/queue-history?date=${today}`, { headers: { Cookie: ownerCookie } });
     assert.equal(histRes.status, 200);
     const rows = await histRes.json();
