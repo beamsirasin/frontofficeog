@@ -26,8 +26,10 @@ before(async () => {
     const { port } = server.address();
     baseURL = `http://127.0.0.1:${port}`;
 
+    // /api/tables ตอนนี้ต้อง login ก่อนถึงจะเรียกได้ (Phase 1.1) เลย login ในลูปรอด้วย
+    const adminToken = await login();
     for (let i = 0; i < 50; i++) {
-        const res = await fetch(`${baseURL}/api/tables`);
+        const res = await fetch(`${baseURL}/api/tables`, { headers: { 'x-admin-token': adminToken } });
         const rows = await res.json();
         if (Array.isArray(rows) && rows.length >= 27) return;
         await new Promise((r) => setTimeout(r, 50));
@@ -74,9 +76,9 @@ test('a customer holding the real table+token can still submit an order (end-to-
     const realToken = await openTable(adminToken, '10');
 
     // ลูกค้าเช็คสถานะโต๊ะตัวเองก่อน (เหมือน index.html ทำตอนโหลดหน้า) — ต้อง token_match: true
-    const statusRes = await fetch(`${baseURL}/api/tables?table=10&token=${realToken}`);
-    const statusRows = await statusRes.json();
-    const myTable = statusRows.find((t) => t.table_no === '10');
+    // Phase 1.1: จุดนี้เปลี่ยนจาก /api/tables (ลิสต์ทั้งร้าน) มาเป็น /api/table-session (โต๊ะเดียว)
+    const statusRes = await fetch(`${baseURL}/api/table-session?table=10&token=${realToken}`);
+    const myTable = await statusRes.json();
     assert.equal(myTable.token_match, true);
     // sqlite3 เก็บ BOOLEAN เป็น 0/1 ดิบๆ ไม่ใช่ true/false ของ JS จริง เช็คแบบ truthy แทน strict equal
     assert.ok(myTable.can_order, 'โต๊ะที่เพิ่งเปิดควรสั่งอาหารได้ (can_order เป็นค่าจริง)');

@@ -165,8 +165,7 @@
                 lockScreen.classList.remove('hidden');
                 return;
             }
-            fetch('/api/tables?table=' + encodeURIComponent(tableNo) + '&token=' + encodeURIComponent(token)).then(res => res.json()).then(tables => {
-                const myTable = tables.find(t => t.table_no == tableNo);
+            fetch('/api/table-session?table=' + encodeURIComponent(tableNo) + '&token=' + encodeURIComponent(token)).then(res => res.json()).then(myTable => {
                 if(!myTable || !myTable.is_open || !myTable.token_match) {
                     document.getElementById('lockTitle').innerText = "🚫 QR Code หมดอายุ";
                     lockScreen.classList.remove('hidden');

@@ -185,7 +185,9 @@ db.serialize(() => {
 
 app.post('/api/open-table', requireAuth, async (req, res) => {
     const { table, adults = 0, children = 0, toddlers = 0 } = req.body;
-    const token = crypto.randomBytes(4).toString('hex');
+    // 16 ไบต์ (128 บิต) กันเดา token — ของเก่าที่เปิดโต๊ะไว้ก่อนหน้านี้ (4 ไบต์) ยังใช้ได้ตามปกติ
+    // เพราะการตรวจสอบเป็นการเทียบสตริงตรงๆ ไม่สนใจความยาว ไม่ต้อง migrate ข้อมูลเดิม
+    const token = crypto.randomBytes(16).toString('hex');
     const url = `${PUBLIC_BASE_URL}/?table=${table}&token=${token}`;
     try {
         const qrImage = await QRCode.toDataURL(url);
@@ -221,21 +223,42 @@ app.post('/api/close-table', requireAuth, (req, res) => {
     });
 });
 
-// รายการโต๊ะ — แอดมิน (มี x-admin-token ถูกต้อง) เห็นข้อมูลเต็มรวม session_token
-// ผู้ใช้ทั่วไป/ลูกค้า ไม่ได้ session_token กลับไปเด็ดขาด (มันคือรหัสลับใน QR สั่งอาหาร)
-// แทนที่ด้วย token_match: server เทียบ table+token ที่ลูกค้าส่งมาเองกับของจริงใน DB ให้แทน
-// ลูกค้าจึงยังเช็คได้ว่า QR ตัวเองยังใช้ได้ไหม โดยไม่ต้องรู้ค่า session_token ของโต๊ะไหนเลย
-app.get('/api/tables', (req, res) => {
-    db.all("SELECT * FROM tables", [], (err, rows) => {
-        if (err || !rows) return res.json([]);
-        if (isAdminToken(req)) return res.json(rows);
+// รายการโต๊ะทั้งหมด (รวม session_token) — สำหรับแอดมิน/แดชบอร์ดเท่านั้น
+// ลูกค้า/ผู้ใช้ทั่วไปไม่ควรเห็นรายชื่อโต๊ะทั้งร้านหรือ session_token ของโต๊ะไหนเลย
+// ให้ใช้ GET /api/table-session (ด้านล่าง) ซึ่งจำกัดขอบเขตแค่โต๊ะเดียวที่ตัวเองมี token แทน
+app.get('/api/tables', requireAuth, (req, res) => {
+    db.all("SELECT * FROM tables", [], (err, rows) => res.json(rows || []));
+});
 
-        const { table, token } = req.query;
-        const safeRows = rows.map(({ session_token, ...rest }) => ({
-            ...rest,
-            token_match: !!(token && rest.table_no === table && session_token === token)
-        }));
-        res.json(safeRows);
+// กันเดา token แบบยิงรัวๆ ต่อ IP — ลอจิกเดียวกับที่ใช้กับ /api/login (ดูด้านบน)
+const TABLE_SESSION_RATE_LIMIT = 30; // ครั้งต่อหน้าต่างเวลา
+const TABLE_SESSION_RATE_WINDOW_MS = 60 * 1000;
+const tableSessionHits = new Map(); // ip -> { count, windowStart }
+
+function tableSessionRateLimited(ip) {
+    const now = Date.now();
+    const rec = tableSessionHits.get(ip);
+    if (!rec || now - rec.windowStart > TABLE_SESSION_RATE_WINDOW_MS) {
+        tableSessionHits.set(ip, { count: 1, windowStart: now });
+        return false;
+    }
+    rec.count += 1;
+    return rec.count > TABLE_SESSION_RATE_LIMIT;
+}
+
+// เช็คสถานะ "โต๊ะของตัวเอง" สำหรับลูกค้า — ต้องมีทั้ง table และ token ที่ถูกต้องของโต๊ะนั้นเท่านั้น
+// ตอบกลับเฉพาะข้อมูลที่หน้าลูกค้าต้องใช้จริง (is_open/can_order) ไม่มี session_token หรือข้อมูลโต๊ะอื่นหลุดออกไปเด็ดขาด
+app.get('/api/table-session', (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (tableSessionRateLimited(ip)) return res.status(429).json({ error: 'ลองบ่อยเกินไป กรุณารอสักครู่' });
+
+    const { table, token } = req.query;
+    if (!table) return res.status(400).json({ error: 'ต้องระบุโต๊ะ' });
+
+    db.get("SELECT is_open, can_order, session_token FROM tables WHERE table_no = ?", [table], (err, row) => {
+        const matched = !!(row && token && row.session_token === token);
+        if (!matched) return res.json({ token_match: false, is_open: false, can_order: false });
+        res.json({ token_match: true, is_open: !!row.is_open, can_order: !!row.can_order });
     });
 });
 
