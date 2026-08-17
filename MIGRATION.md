@@ -183,8 +183,8 @@ systemctl reload nginx
 
 **6.1 ชี้โดเมนมา IP ใหม่**
 ไปที่เว็บผู้ให้บริการโดเมน แก้ **A record**:
-- `lumhimkhue.com` → `YOUR_IP`
-- `www.lumhimkhue.com` → `YOUR_IP`
+- `lumhimkhue.com` → `YOUR_IP` A @
+- `www.lumhimkhue.com` → `YOUR_IP` CNAME www
 
 รอ ~5–30 นาที แล้วเช็คใน cmd (SSH):
 ```bash
@@ -333,8 +333,8 @@ grep PUBLIC_BASE_URL /root/frontofficeog/server.js     # ต้องเป็�
 
 ```bash
 pm2 status                            # ดูสถานะแอป
-pm2 restart frontoffice               # รีสตาร์ท (ทำทุกครั้งหลังอัปโค้ดใหม่ผ่าน FileZilla)
-pm2 logs frontoffice                  # ดู log สด (กด Ctrl+C ออก)
+pm2 restart frontofficeog               # รีสตาร์ท (ทำทุกครั้งหลังอัปโค้ดใหม่ผ่าน FileZilla)
+pm2 logs frontofficeog                  # ดู log สด (กด Ctrl+C ออก)
 nginx -t && systemctl reload nginx    # ทดสอบ + รีโหลด nginx
 /root/backup-db.sh                    # สั่ง backup เดี๋ยวนั้น
 free -h && df -h                      # เช็ค RAM + ดิสก์

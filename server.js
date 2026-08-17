@@ -271,13 +271,29 @@ app.get('/api/stats', requireAuth, (req, res) => {
 
     // orders.created_at / served_at เก็บเป็น UTC ทั้งคู่ ลบกันตรงๆ ได้เวลาเสิร์ฟที่ถูกต้อง
     // ส่วนการแบ่งวันใช้ localtime เหมือนหน้าอื่นๆ ของระบบ
+    // ถังรายชั่วโมง 00-23 (ใช้ทั้งฝั่งออเดอร์และฝั่งคิว)
+    const emptyHours = () => Array.from({ length: 24 }, (_, h) => ({ hour: h, count: 0, plates: 0 }));
+
     db.all(`SELECT status, items,
+                   CAST(strftime('%H', created_at, 'localtime') AS INTEGER) AS hr,
                    CAST(strftime('%s', served_at) - strftime('%s', created_at) AS INTEGER) AS serve_sec
             FROM orders
             WHERE date(created_at, 'localtime') BETWEEN ? AND ?`, [dFrom, dTo], (err, orders) => {
         orders = orders || [];
 
         const served = orders.filter(o => o.status === 'served');
+
+        // ออเดอร์เข้ามาชั่วโมงไหนบ้าง (นับตามเวลาที่ลูกค้ากดสั่ง ไม่ใช่เวลาเสิร์ฟ)
+        // จานนับเฉพาะออเดอร์ที่ไม่ถูกยกเลิก จะได้ตรงกับยอดที่ทำจริง
+        const serveByHour = emptyHours();
+        orders.forEach(o => {
+            const h = o.hr;
+            if (!Number.isInteger(h) || h < 0 || h > 23) return;
+            serveByHour[h].count++;
+            if (o.status === 'cancelled') return;
+            const items = safeParse(o.items, {});
+            for (const v of Object.values(items)) serveByHour[h].plates += parseInt(v) || 0;
+        });
 
         // รวมจานต่อเมนู + นับจำนวนออเดอร์ที่มีเมนูนั้น (ไว้หารเป็นค่าเฉลี่ยต่อออเดอร์)
         const qty = {}, ordersWith = {};
@@ -300,12 +316,22 @@ app.get('/api/stats', requireAuth, (req, res) => {
 
         const serveSecs = served.map(o => o.serve_sec).filter(s => Number.isFinite(s) && s >= 0);
 
-        db.all(`SELECT status,
+        db.all(`SELECT status, pax,
+                       CAST(strftime('%H', created_at, 'localtime') AS INTEGER) AS hr,
                        CAST(strftime('%s', entered_at) - strftime('%s', created_at) AS INTEGER) AS wait_sec
                 FROM queues
                 WHERE date(created_at, 'localtime') BETWEEN ? AND ?`, [dFrom, dTo], (err2, queues) => {
             queues = queues || [];
             const countBy = st => queues.filter(q => q.status === st).length;
+
+            // คนมารับคิวชั่วโมงไหนบ้าง (นับตามเวลาที่กดรับคิว) — plates ตรงนี้คือจำนวนคน
+            const queueByHour = emptyHours();
+            queues.forEach(q => {
+                const h = q.hr;
+                if (!Number.isInteger(h) || h < 0 || h > 23) return;
+                queueByHour[h].count++;
+                queueByHour[h].plates += parseInt(q.pax) || 0;
+            });
             // เวลารอ นับเฉพาะคิวที่ได้เข้าโต๊ะจริง (คิวที่ข้าม/ยกเลิก ไม่มี entered_at)
             const waitSecs = queues.filter(q => q.status === 'entered')
                                    .map(q => q.wait_sec)
@@ -319,9 +345,11 @@ app.get('/api/stats', requireAuth, (req, res) => {
                     servedOrders: served.length,
                     cancelledOrders: orders.filter(o => o.status === 'cancelled').length,
                     pendingOrders: orders.filter(o => o.status === 'pending').length,
-                    serveTime: summarizeSecs(serveSecs)
+                    serveTime: summarizeSecs(serveSecs),
+                    byHour: serveByHour
                 },
                 queue: {
+                    byHour: queueByHour,
                     total: queues.length,
                     entered: countBy('entered'),
                     skipped: countBy('skipped'),

@@ -382,6 +382,15 @@
                         </table>
                     </div>
                 </div>
+                <div class="px-4 pb-4">
+                    <div class="border-t pt-3">
+                        <div class="flex items-baseline justify-between gap-2 flex-wrap mb-1">
+                            <h4 class="font-bold text-gray-700 text-sm md:text-base">ออเดอร์เข้าตามช่วงเวลา</h4>
+                            <span class="text-xs text-gray-500">นับตามเวลาที่ลูกค้ากดสั่ง</span>
+                        </div>
+                        <div id="serveHourChart"></div>
+                    </div>
+                </div>
             </div>
 
             <!-- ===== สถิติคิว ===== -->
@@ -390,6 +399,15 @@
                     <h3 class="text-lg font-bold text-gray-800">คิว</h3>
                 </div>
                 <div id="queueTiles" class="grid grid-cols-2 md:grid-cols-3 gap-3 p-4"></div>
+                <div class="px-4 pb-4">
+                    <div class="border-t pt-3">
+                        <div class="flex items-baseline justify-between gap-2 flex-wrap mb-1">
+                            <h4 class="font-bold text-gray-700 text-sm md:text-base">คนมารับคิวตามช่วงเวลา</h4>
+                            <span class="text-xs text-gray-500">นับตามเวลาที่กดรับคิว</span>
+                        </div>
+                        <div id="queueHourChart"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -1043,6 +1061,62 @@
                     </div>`;
         }
 
+        // กราฟแท่งรายชั่วโมง เขียนด้วย div ล้วนๆ จะได้ไม่ต้องโหลดไลบรารีกราฟเพิ่ม
+        // buckets = [{hour, count, plates}] 24 ช่อง, opts.subLabel = หน่วยของ plates ('จาน' / 'คน')
+        function renderHourChart(elId, buckets, opts) {
+            const el = document.getElementById(elId);
+            if (!el) return;
+            const { unit = 'ออเดอร์', subLabel = '', color = 'blue', days = 1 } = opts || {};
+            const bars = {
+                blue:  { on: 'bg-blue-500',  peak: 'bg-blue-700',  text: 'text-blue-700' },
+                green: { on: 'bg-green-500', peak: 'bg-green-700', text: 'text-green-700' }
+            }[color];
+
+            const data = Array.isArray(buckets) ? buckets : [];
+            const total = data.reduce((s, b) => s + b.count, 0);
+            if (!total) {
+                el.innerHTML = '<p class="text-center text-gray-500 font-bold py-8 text-sm">ไม่มีข้อมูลในช่วงที่เลือก</p>';
+                return;
+            }
+
+            // ตัดชั่วโมงที่ไม่มีอะไรเลยหัวท้ายทิ้ง เผื่อไว้ข้างละ 1 ชม. กราฟจะได้ไม่โล่ง
+            const active = data.filter(b => b.count > 0).map(b => b.hour);
+            const first = Math.max(0, Math.min(...active) - 1);
+            const last  = Math.min(23, Math.max(...active) + 1);
+            const shown = data.slice(first, last + 1);
+
+            const max = Math.max(...shown.map(b => b.count));
+            const peak = shown.reduce((a, b) => (b.count > a.count ? b : a), shown[0]);
+            const hh = h => String(h).padStart(2, '0');
+
+            const cols = shown.map(b => {
+                const pct = max ? Math.round((b.count / max) * 100) : 0;
+                const isPeak = b.count === max && b.count > 0;
+                const tip = `${hh(b.hour)}:00-${hh(b.hour)}:59 — ${b.count} ${unit}` + (subLabel && b.plates ? ` / ${b.plates} ${subLabel}` : '');
+                // คูณ 0.86 กันไม่ให้แท่งที่สูงสุดดันตัวเลขข้างบนล้นกรอบ
+                const h = b.count ? Math.max(Math.round(pct * 0.86), 4) : 2;
+                return `<div class="flex-1 min-w-[20px] flex flex-col items-center" title="${tip}">
+                            <div class="w-full h-28 md:h-36 flex flex-col justify-end items-center">
+                                <span class="text-[10px] leading-none font-bold ${b.count ? 'text-gray-700' : 'text-transparent'} mb-1">${b.count || 0}</span>
+                                <div class="w-full rounded-t ${b.count ? (isPeak ? bars.peak : bars.on) : 'bg-gray-200'}"
+                                     style="height:${h}%;max-width:44px;margin:0 auto"></div>
+                            </div>
+                            <span class="text-[10px] leading-none ${isPeak ? 'font-bold ' + bars.text : 'text-gray-500'} mt-1">${hh(b.hour)}</span>
+                        </div>`;
+            }).join('');
+
+            const perDay = days > 1 ? ` (เฉลี่ย ${Math.round((peak.count / days) * 10) / 10} ${unit}/วัน)` : '';
+            el.innerHTML = `
+                <div class="overflow-x-auto pb-1">
+                    <div class="flex items-end gap-1 md:gap-1.5" style="min-width:${Math.max(shown.length * 26, 300)}px">${cols}</div>
+                </div>
+                <p class="text-xs text-gray-600 mt-2">
+                    ช่วงที่เยอะสุด <span class="font-bold ${bars.text}">${hh(peak.hour)}:00-${hh(peak.hour)}:59</span>
+                    — ${peak.count} ${unit}${perDay}
+                    <span class="text-gray-400">· รวม ${total} ${unit}</span>
+                </p>`;
+        }
+
         function loadStats() {
             const sel = statsPicker ? statsPicker.selectedDates : [];
             if (!sel.length) return;
@@ -1085,6 +1159,9 @@
                          </tr>`;
                 }
 
+                // ---- กราฟออเดอร์รายชั่วโมง ----
+                renderHourChart('serveHourChart', serve.byHour, { unit: 'ออเดอร์', subLabel: 'จาน', color: 'blue', days: range.days });
+
                 // ---- การ์ดสรุปคิว ----
                 const wt = queue.waitTime;
                 document.getElementById('queueTiles').innerHTML =
@@ -1095,6 +1172,9 @@
                   + statTile('รอนานสุด', fmtDur(wt.max), 'orange')
                   + statTile('เข้าเร็วสุด', fmtDur(wt.min), 'green')
                   + statTile('รอเฉลี่ย', fmtDur(wt.avg), 'blue', wt.count ? `จาก ${wt.count} คิวที่เข้าโต๊ะ` : 'ยังไม่มีข้อมูล');
+
+                // ---- กราฟคิวรายชั่วโมง ----
+                renderHourChart('queueHourChart', queue.byHour, { unit: 'คิว', subLabel: 'คน', color: 'green', days: range.days });
             });
         }
         socket.on('stats_updated', loadStats);
