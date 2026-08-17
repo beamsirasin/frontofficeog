@@ -394,6 +394,8 @@ db.serialize(() => {
     db.run("ALTER TABLE session_history ADD COLUMN adults INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE session_history ADD COLUMN children INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE session_history ADD COLUMN toddlers INTEGER DEFAULT 0", () => {});
+    // (Phase 7.1) optimistic-concurrency version สำหรับใบตรวจนับเงินสด — DB เดิม (Phase 7) ยังไม่มีคอลัมน์นี้ ต้อง ALTER เพิ่ม, DEFAULT 1 ให้แถวเก่าที่มีอยู่แล้วได้ค่าเริ่มต้นที่ปลอดภัย (ไม่ destructive)
+    db.run("ALTER TABLE cash_count_sheets ADD COLUMN version INTEGER NOT NULL DEFAULT 1", () => {});
 
     // Index เร่งการค้นหา (กัน full table scan เมื่อข้อมูลสะสมเยอะ)
     db.run("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)", () => {});
@@ -1189,7 +1191,19 @@ function validateDisplayName(raw) {
 }
 
 // ---- transaction เล็กๆ ไว้ครอบ mutation ที่แตะหลายตารางพร้อมกัน กัน state ค้างครึ่งๆ กลางถ้าขั้นใดขั้นหนึ่งพัง ----
+// (Phase 7.1) node-sqlite3 ตัว db object เดียวที่ทั้งแอปใช้ร่วมกัน โดย default อยู่ใน "parallel" mode (ไม่ใช่ "serialize") —
+// ไม่ได้การันตีว่าคำสั่ง BEGIN/COMMIT ของสอง request ที่เข้ามาพร้อมกันจะไม่ไปแทรกกันเอง ถ้าไม่ล็อกเองจะได้ SQLITE_ERROR: "cannot start
+// a transaction within a transaction" (สอง BEGIN ไปชนกันบน connection เดียวกัน) หรือแย่กว่านั้นคือ statement ของ request หนึ่ง
+// ไปติดอยู่ใน transaction ของอีก request โดยไม่ตั้งใจ — คิว (mutex ระดับแอป) นี้บังคับให้ธุรกรรมแต่ละตัวรันสำเร็จ/ล้มเหลวจบก่อน
+// ตัวถัดไปถึงจะเริ่ม BEGIN ได้ ผลลัพธ์ของผู้เรียกแต่ละคนยังคงเป็นของตัวเองเป๊ะ (ไม่ปนกัน) — แค่ execution ถูก serialize จริงๆ ที่ระดับ JS
+let _transactionQueue = Promise.resolve();
 async function withTransaction(fn) {
+    const run = () => runTransactionNow(fn);
+    const settled = _transactionQueue.then(run, run);
+    _transactionQueue = settled.then(() => {}, () => {}); // ไม่ว่าตัวนี้จะสำเร็จหรือพัง ตัวถัดไปในคิวต้องเริ่มได้เสมอ
+    return settled;
+}
+async function runTransactionNow(fn) {
     await dbRunAsync('BEGIN IMMEDIATE TRANSACTION');
     try {
         const result = await fn();
@@ -1927,6 +1941,7 @@ async function summarizeCashSheet(sheetRow) {
         business_date_display: formatThaiDate(sheetRow.business_date),
         sheet_type: sheetRow.sheet_type,
         status: sheetRow.status,
+        version: sheetRow.version,
         lines, coin_total, banknote_total, grand_total,
         created_by: await summarizeCashActor(sheetRow.created_by),
         updated_by: await summarizeCashActor(sheetRow.updated_by),
@@ -1959,6 +1974,18 @@ app.get('/api/cashier/server-time', requireAuth, requirePermission(PERMISSIONS.C
     res.json({ business_date: businessDate, display_date: formatThaiDate(businessDate), time_hhmm: bangkokTimeHHMM(now), iso: now.toISOString() });
 });
 
+// (Phase 7.1) แก้ไข "ฉบับร่างที่มีอยู่แล้ว" ต้องผ่านเพดาน 2 ชั้นพร้อมกันในคำสั่ง UPDATE เดียว (atomic, ไม่ใช่ SELECT แล้วค่อย UPDATE แยกกันคนละ round-trip):
+//   1) status = 'draft' — กัน request ที่ค้างมาตั้งแต่ก่อน finalize แล้วมาถึง DB ทีหลัง ไม่ให้ไปทับใบที่ยืนยันไปแล้วได้เด็ดขาด (แม้ตอนที่ตัวมันเอง SELECT ตอนแรกจะยังเห็นเป็น draft อยู่ก็ตาม)
+//   2) version = expected_version — optimistic concurrency กัน "lost update" ระหว่างสองอุปกรณ์ที่แก้ไขใบเดียวกันพร้อมกัน (คนหลังบันทึกทับคนแรกเงียบๆ โดยไม่รู้ตัว)
+// affected rows = 0 แปลว่าแพ้การแข่ง (ไม่ว่าจะเพราะ finalize ไปแล้ว หรือมีคนอื่นบันทึกสำเร็จไปก่อนจน version ขยับ) — คืน 409 พร้อมเหตุผลที่แยกแยะได้ ไม่ใช่ปล่อยให้บันทึกทับแบบเงียบๆ
+async function conflictReasonAfterFailedUpdate(sheetId) {
+    const latest = await getCashSheetById(sheetId);
+    return (!latest || latest.status === 'finalized') ? 'finalized' : 'stale_version';
+}
+function conflictMessageFor(reason, finalizedMsg) {
+    return reason === 'finalized' ? finalizedMsg : 'รายการนี้ถูกแก้ไขจากอุปกรณ์อื่น กรุณาโหลดข้อมูลล่าสุด';
+}
+
 // PUT /api/cashier/sheets/:type (opening|closing) — สร้างฉบับร่างใหม่ หรือบันทึกทับฉบับร่างเดิม (ยืนยันแล้วแก้ไม่ได้ผ่าน endpoint นี้เด็ดขาด)
 app.put('/api/cashier/sheets/:type', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
     const sheetType = req.params.type;
@@ -1970,47 +1997,76 @@ app.put('/api/cashier/sheets/:type', requireAuth, requirePermission(PERMISSIONS.
 
     try {
         const existing = await getCashSheetRow(body.business_date, sheetType);
-        if (existing && existing.status === 'finalized') return res.status(409).json({ error: 'ใบตรวจนับนี้ยืนยันแล้ว ไม่สามารถแก้ไขได้' });
+        if (existing && existing.status === 'finalized') {
+            return res.status(409).json({ error: 'ใบตรวจนับนี้ยืนยันแล้ว ไม่สามารถแก้ไขได้', conflict_reason: 'finalized' });
+        }
+        let expectedVersion = null;
+        if (existing) {
+            expectedVersion = Number(body.expected_version);
+            if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+                return res.status(409).json({ error: 'ข้อมูลที่ถืออยู่อาจไม่ใช่ฉบับล่าสุด กรุณาโหลดข้อมูลล่าสุดก่อนบันทึก', conflict_reason: 'missing_version' });
+            }
+        }
 
+        let conflict = false;
         const sheetId = await withTransaction(async () => {
             let id;
             if (existing) {
                 id = existing.id;
-                await dbRunAsync("UPDATE cash_count_sheets SET updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [req.authUser.id, id]);
+                const updateResult = await dbRunAsync(
+                    "UPDATE cash_count_sheets SET updated_by = ?, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ? AND status = 'draft' AND version = ?",
+                    [req.authUser.id, id, expectedVersion]
+                );
+                if (updateResult.changes === 0) { conflict = true; return id; } // แพ้การแข่ง — ไม่แตะ cash_count_lines เลยแม้แต่บรรทัดเดียว, transaction นี้จะ commit แบบไม่ทำอะไรเลย (no-op ปลอดภัย)
                 await dbRunAsync("DELETE FROM cash_count_lines WHERE sheet_id = ?", [id]);
             } else {
                 const result = await dbRunAsync(
-                    "INSERT INTO cash_count_sheets (business_date, sheet_type, status, created_by, updated_by) VALUES (?, ?, 'draft', ?, ?)",
+                    "INSERT INTO cash_count_sheets (business_date, sheet_type, status, created_by, updated_by, version) VALUES (?, ?, 'draft', ?, ?, 1)",
                     [body.business_date, sheetType, req.authUser.id, req.authUser.id]
                 );
                 id = result.lastID;
             }
-            for (const [denomination, quantity] of linesCheck.qtyByDenom) {
-                await dbRunAsync("INSERT INTO cash_count_lines (sheet_id, denomination, quantity) VALUES (?, ?, ?)", [id, denomination, quantity]);
+            if (!conflict) {
+                for (const [denomination, quantity] of linesCheck.qtyByDenom) {
+                    await dbRunAsync("INSERT INTO cash_count_lines (sheet_id, denomination, quantity) VALUES (?, ?, ?)", [id, denomination, quantity]);
+                }
             }
             return id;
         });
 
+        if (conflict) {
+            const reason = await conflictReasonAfterFailedUpdate(sheetId);
+            return res.status(409).json({ error: conflictMessageFor(reason, 'ใบตรวจนับนี้ยืนยันแล้ว ไม่สามารถแก้ไขได้'), conflict_reason: reason });
+        }
+
         res.json({ sheet: await summarizeCashSheet(await getCashSheetById(sheetId)) });
     } catch (e) {
-        if (e && e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'มีใบตรวจนับของวันที่/ประเภทนี้ถูกสร้างไปแล้ว กรุณาโหลดใหม่' });
+        if (e && e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'มีใบตรวจนับของวันที่/ประเภทนี้ถูกสร้างไปแล้ว กรุณาโหลดใหม่', conflict_reason: 'duplicate' });
         console.error('[cashier] บันทึกฉบับร่างไม่สำเร็จ:', e.message);
         res.status(500).json({ error: 'internal_error' });
     }
 });
 
 // POST /api/cashier/sheets/:id/finalize — ยืนยันใบตรวจนับ (immutable ผ่าน API ปกติหลังจากนี้)
+// (Phase 7.1) ก่อนหน้านี้เป็น SELECT (เช็ค status) แล้วค่อย UPDATE (ไม่มีเงื่อนไข) คนละ round-trip — ถ้ามีสอง finalize request พร้อมกัน
+// ทั้งคู่จะเห็น status='draft' ตอน SELECT เหมือนกันได้ แล้วทั้งคู่ก็ยิง UPDATE ผ่านหมด กลายเป็นตอบ success ทั้งคู่ (ผิด invariant "finalize ได้แค่ครั้งเดียว")
+// ตอนนี้รวมเป็น UPDATE ... WHERE status = 'draft' คำสั่งเดียว แล้วเช็ค affected rows แทน — ผ่าน withTransaction (คิว serialize ระดับแอป
+// เดียวกับ PUT/prepare-next-day) เพื่อไม่ให้ statement เดี่ยวๆ นี้ไปแทรกกลางธุรกรรม BEGIN...COMMIT ของ sheet อื่นบน connection เดียวกันโดยบังเอิญ
+// มีแค่ request เดียวเท่านั้นที่ WHERE จะ match — คนแพ้ affected rows = 0 ไม่แตะ finalized_by/finalized_at ของตัวเองเข้าไปในแถวเลยแม้แต่นิดเดียว
 app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
     const sheetId = parseInt(req.params.id, 10);
     if (!Number.isInteger(sheetId)) return res.status(400).json({ error: 'invalid_id' });
     try {
-        const row = await getCashSheetById(sheetId);
-        if (!row) return res.status(404).json({ error: 'not_found' });
-        if (row.status === 'finalized') return res.status(409).json({ error: 'ใบตรวจนับนี้ยืนยันไปแล้ว' });
-        await dbRunAsync(
-            "UPDATE cash_count_sheets SET status = 'finalized', finalized_by = ?, finalized_at = CURRENT_TIMESTAMP, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        const before = await getCashSheetById(sheetId);
+        if (!before) return res.status(404).json({ error: 'not_found' });
+
+        const updateResult = await withTransaction(() => dbRunAsync(
+            "UPDATE cash_count_sheets SET status = 'finalized', finalized_by = ?, finalized_at = CURRENT_TIMESTAMP, updated_by = ?, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ? AND status = 'draft'",
             [req.authUser.id, req.authUser.id, sheetId]
-        );
+        ));
+        if (updateResult.changes === 0) {
+            return res.status(409).json({ error: 'ใบตรวจนับนี้ยืนยันไปแล้ว', conflict_reason: 'finalized' });
+        }
         res.json({ sheet: await summarizeCashSheet(await getCashSheetById(sheetId)) });
     } catch (e) {
         console.error(`[cashier] ยืนยันใบตรวจนับไม่สำเร็จ (id=${sheetId}):`, e.message);
@@ -2039,33 +2095,52 @@ app.post('/api/cashier/sheets/prepare-next-day', requireAuth, requirePermission(
 
     try {
         const existing = await getCashSheetRow(targetDate, 'opening');
-        if (existing && existing.status === 'finalized') return res.status(409).json({ error: 'เงินเปิดร้านวันถัดไปถูกยืนยันไปแล้ว ไม่สามารถแก้ไขได้' });
+        if (existing && existing.status === 'finalized') {
+            return res.status(409).json({ error: 'เงินเปิดร้านวันถัดไปถูกยืนยันไปแล้ว ไม่สามารถแก้ไขได้', conflict_reason: 'finalized' });
+        }
+        let expectedVersion = null;
+        if (existing) {
+            expectedVersion = Number(body.expected_version);
+            if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+                return res.status(409).json({ error: 'ข้อมูลที่ถืออยู่อาจไม่ใช่ฉบับล่าสุด กรุณาโหลดข้อมูลล่าสุดก่อนบันทึก', conflict_reason: 'missing_version' });
+            }
+        }
 
+        // (Phase 7.1) เพดานเดียวกับ PUT /api/cashier/sheets/:type เป๊ะๆ — status='draft' + version=? ใน UPDATE เดียวกันแบบ atomic กันทั้ง stale-write-after-finalize และ lost-update
+        let conflict = false;
         const sheetId = await withTransaction(async () => {
             let id;
             if (existing) {
                 id = existing.id;
-                await dbRunAsync(
-                    "UPDATE cash_count_sheets SET updated_by = ?, updated_at = CURRENT_TIMESTAMP, prepared_from_sheet_id = COALESCE(?, prepared_from_sheet_id) WHERE id = ?",
-                    [req.authUser.id, sourceSheetId, id]
+                const updateResult = await dbRunAsync(
+                    "UPDATE cash_count_sheets SET updated_by = ?, updated_at = CURRENT_TIMESTAMP, version = version + 1, prepared_from_sheet_id = COALESCE(?, prepared_from_sheet_id) WHERE id = ? AND status = 'draft' AND version = ?",
+                    [req.authUser.id, sourceSheetId, id, expectedVersion]
                 );
+                if (updateResult.changes === 0) { conflict = true; return id; }
                 await dbRunAsync("DELETE FROM cash_count_lines WHERE sheet_id = ?", [id]);
             } else {
                 const result = await dbRunAsync(
-                    "INSERT INTO cash_count_sheets (business_date, sheet_type, status, created_by, updated_by, prepared_from_sheet_id) VALUES (?, 'opening', 'draft', ?, ?, ?)",
+                    "INSERT INTO cash_count_sheets (business_date, sheet_type, status, created_by, updated_by, prepared_from_sheet_id, version) VALUES (?, 'opening', 'draft', ?, ?, ?, 1)",
                     [targetDate, req.authUser.id, req.authUser.id, sourceSheetId]
                 );
                 id = result.lastID;
             }
-            for (const [denomination, quantity] of linesCheck.qtyByDenom) {
-                await dbRunAsync("INSERT INTO cash_count_lines (sheet_id, denomination, quantity) VALUES (?, ?, ?)", [id, denomination, quantity]);
+            if (!conflict) {
+                for (const [denomination, quantity] of linesCheck.qtyByDenom) {
+                    await dbRunAsync("INSERT INTO cash_count_lines (sheet_id, denomination, quantity) VALUES (?, ?, ?)", [id, denomination, quantity]);
+                }
             }
             return id;
         });
 
+        if (conflict) {
+            const reason = await conflictReasonAfterFailedUpdate(sheetId);
+            return res.status(409).json({ error: conflictMessageFor(reason, 'เงินเปิดร้านวันถัดไปถูกยืนยันไปแล้ว ไม่สามารถแก้ไขได้'), conflict_reason: reason });
+        }
+
         res.json({ sheet: await summarizeCashSheet(await getCashSheetById(sheetId)), business_date: targetDate });
     } catch (e) {
-        if (e && e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'มีใบตรวจนับของวันถัดไปถูกสร้างไปแล้ว กรุณาโหลดใหม่' });
+        if (e && e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'มีใบตรวจนับของวันถัดไปถูกสร้างไปแล้ว กรุณาโหลดใหม่', conflict_reason: 'duplicate' });
         console.error('[cashier] เตรียมเงินเปิดร้านวันถัดไปไม่สำเร็จ:', e.message);
         res.status(500).json({ error: 'internal_error' });
     }

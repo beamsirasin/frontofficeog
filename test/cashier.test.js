@@ -221,7 +221,7 @@ test('11. create an opening draft', async () => {
 
 test('12. update an existing opening draft (values change, not duplicated)', async () => {
     await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-08-12', lines: allNineLines({ 10: 5 }) });
-    const res = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-08-12', lines: allNineLines({ 10: 9 }) });
+    const res = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-08-12', lines: allNineLines({ 10: 9 }), expected_version: 1 });
     const body = await res.json();
     assert.equal(body.sheet.lines.find((l) => l.denomination === 10).quantity, 9);
 });
@@ -319,7 +319,7 @@ test('22. the next-day opening amount does not need to equal the closing amount 
 
 test('23. calling prepare-next-day again updates the existing tomorrow draft instead of duplicating it', async () => {
     await api(ownerCookie, 'POST', '/api/cashier/sheets/prepare-next-day', { reference_business_date: '2026-08-24', lines: allNineLines({ 10: 1 }) });
-    await api(ownerCookie, 'POST', '/api/cashier/sheets/prepare-next-day', { reference_business_date: '2026-08-24', lines: allNineLines({ 10: 4 }) });
+    await api(ownerCookie, 'POST', '/api/cashier/sheets/prepare-next-day', { reference_business_date: '2026-08-24', lines: allNineLines({ 10: 4 }), expected_version: 1 });
     const rows = await dbAll("SELECT id FROM cash_count_sheets WHERE business_date = '2026-08-25' AND sheet_type = 'opening'");
     assert.equal(rows.length, 1);
     const res = await api(ownerCookie, 'GET', '/api/cashier/sheets?date=2026-08-25&type=opening');
@@ -373,17 +373,18 @@ test('29. cashier.view cannot mutate (PUT / finalize / prepare-next-day all retu
 });
 
 test('30. cashier.manage can create, update, and finalize', async () => {
-    const create = await api(manageOnly.cookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-09-01', lines: allNineLines({ 10: 1 }) });
+    // (Phase 7.1) วันที่นี้ต้องไม่ชนกับวันถัดไปที่ test 21 (month-boundary 2026-08-31 -> 2026-09-01) เตรียมไว้แล้ว — ไม่งั้น PUT นี้จะเจอใบที่มีอยู่แล้วแทนที่จะสร้างใหม่จริงๆ
+    const create = await api(manageOnly.cookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-09-02', lines: allNineLines({ 10: 1 }) });
     assert.equal(create.status, 200);
     const id = (await create.json()).sheet.id;
-    const update = await api(manageOnly.cookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-09-01', lines: allNineLines({ 10: 2 }) });
+    const update = await api(manageOnly.cookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-09-02', lines: allNineLines({ 10: 2 }), expected_version: 1 });
     assert.equal(update.status, 200);
     const finalize = await api(manageOnly.cookie, 'POST', `/api/cashier/sheets/${id}/finalize`, {});
     assert.equal(finalize.status, 200);
 });
 
 test('31. the owner can use every Cashier API without an explicit cashier role', async () => {
-    const res = await api(ownerCookie, 'GET', '/api/cashier/sheets?date=2026-09-01&type=opening');
+    const res = await api(ownerCookie, 'GET', '/api/cashier/sheets?date=2026-09-02&type=opening');
     assert.equal(res.status, 200);
 });
 

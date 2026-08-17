@@ -270,3 +270,61 @@ test('Admin Roles UI: cashier.view and cashier.manage appear in the permission c
     assert.equal(await page.locator('input[value="cashier.manage"]').count(), 1, 'cashier.manage must appear in the permission checklist');
     await ctx.close();
 });
+
+// ---- Phase 7.1: stale-write conflict ----
+// Tab A loads a draft, Tab B (a different session) saves it first, then A's stale save must be rejected with a
+// visible conflict warning (not a silent overwrite), and B's data must remain authoritative in the DB afterward.
+test('Cashier stale-write conflict: a second tab\'s stale save is rejected with a conflict warning, and the first tab\'s save remains authoritative', async () => {
+    const ctxA = await browser.newContext();
+    const ctxB = await browser.newContext();
+    const pageA = await ctxA.newPage();
+    const pageB = await ctxB.newPage();
+
+    // ทั้งสองแท็บ login ด้วย persona "cashier" คนเดียวกัน — จำลองพนักงานคนเดียวที่ใช้สองอุปกรณ์ (browser context แยกกัน = session แยกกันจริง)
+    await loginUI(pageA, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashier.username, app.personas.cashier.password);
+    await loginUI(pageB, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashier.username, app.personas.cashier.password);
+
+    const date = '2030-04-01';
+    for (const page of [pageA, pageB]) {
+        await page.click('#btn-cashier');
+        await page.waitForTimeout(400);
+        await page.evaluate((d) => { document.getElementById('cashierDate')._flatpickr.setDate(d, true); }, date);
+        await page.waitForTimeout(400);
+        await page.click('#cashierTabOpening');
+        await page.waitForTimeout(300);
+    }
+
+    // A "loads" the draft first (both tabs now see version=1, no sheet yet — first save creates it)
+    await pageA.fill('.cashier-qty-input[data-denom="10"]', '5');
+    await pageA.click('#cashierSaveBtn');
+    await pageA.waitForTimeout(500); // A creates the sheet (version becomes 1)
+
+    // B loads the SAME sheet fresh (version=1) and saves first — its save must win. cashier persona only has one module (cashier),
+    // so a reload lands right back on it — no extra nav click needed.
+    await pageB.reload();
+    await pageB.waitForTimeout(600);
+    await pageB.evaluate((d) => { document.getElementById('cashierDate')._flatpickr.setDate(d, true); }, date);
+    await pageB.waitForTimeout(400);
+    await pageB.click('#cashierTabOpening');
+    await pageB.waitForTimeout(400);
+    await pageB.fill('.cashier-qty-input[data-denom="10"]', '50');
+    await pageB.click('#cashierSaveBtn');
+    await pageB.waitForTimeout(500); // B's save succeeds — version becomes 2 in the DB
+
+    // A now attempts to save again using its stale in-memory version (1) — must be rejected, not silently overwrite B's save
+    let dialogMessage = null;
+    pageA.on('dialog', async (dialog) => { dialogMessage = dialog.message(); await dialog.accept(); });
+    await pageA.fill('.cashier-qty-input[data-denom="10"]', '999');
+    await pageA.click('#cashierSaveBtn');
+    await pageA.waitForTimeout(700);
+
+    assert.ok(dialogMessage, 'a stale save must surface a visible conflict warning, not silently succeed');
+    assert.match(dialogMessage, /แก้ไขจากอุปกรณ์อื่น|ยืนยันแล้ว/, 'the warning must explain the record changed elsewhere');
+
+    // after acknowledging the conflict, A must reload the authoritative (B's) data — never keep showing its own stale/rejected 999
+    const reconciledQty = await pageA.inputValue('.cashier-qty-input[data-denom="10"]');
+    assert.equal(reconciledQty, '50', 'after the conflict, the form must show the authoritative server value (B\'s save), not the rejected stale value');
+
+    await ctxA.close();
+    await ctxB.close();
+});

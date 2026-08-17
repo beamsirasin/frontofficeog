@@ -26,6 +26,7 @@ window.CashierModule = (function () {
     let ndQuantities = {};
     let ndCopySourceId = null;
     let ndFinalizedLocked = false;
+    let ndVersion = null; // version ของฉบับร่างวันถัดไปที่มีอยู่แล้ว (ถ้ามี) — ต้องส่งกลับไปเป็น expected_version ตอนบันทึกทับ
 
     function canManage() { return StaffApp.hasPermission('cashier.manage'); }
     function formEditable() { return canManage() && (!currentSheet || currentSheet.status === 'draft'); }
@@ -177,16 +178,27 @@ window.CashierModule = (function () {
     async function saveDraft() {
         if (!formEditable()) return;
         const lines = ALL_DENOMS.map((d) => ({ denomination: d, quantity: quantities[d] || 0 }));
+        const payload = { business_date: currentDate, lines };
+        // (Phase 7.1) ต้องส่ง version ของฉบับที่กำลังแก้อยู่กลับไปด้วยเสมอถ้ามีใบอยู่แล้ว — เซิร์ฟเวอร์ใช้ตัดสินว่ากำลังบันทึกทับข้อมูลที่ไม่ใช่ฉบับล่าสุดหรือไม่ (optimistic concurrency)
+        if (currentSheet) payload.expected_version = currentSheet.version;
         const res = await StaffApp.apiFetch(`/api/cashier/sheets/${currentType}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ business_date: currentDate, lines }),
+            body: JSON.stringify(payload),
         });
         if (!res) return;
+        if (res.status === 409) { await handleConflict(res); return; }
         if (!res.ok) { const data = await res.json().catch(() => ({})); alert(data.error || 'บันทึกไม่สำเร็จ'); return; }
         const data = await res.json();
         currentSheet = data.sheet;
         render();
+    }
+
+    // (Phase 7.1) ถูกแก้ไขจากอุปกรณ์อื่นแล้ว (409) — แจ้งเตือนให้ผู้ใช้รู้ตัวก่อนเสมอ ไม่เงียบๆ ทับข้อมูลของคนอื่น แล้วค่อยโหลดฉบับล่าสุดจากเซิร์ฟเวอร์มาแทนที่ฟอร์ม
+    async function handleConflict(res) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || 'รายการนี้ถูกแก้ไขจากอุปกรณ์อื่น กรุณาโหลดข้อมูลล่าสุด');
+        await loadSheet();
     }
 
     function confirmFinalize() {
@@ -197,6 +209,7 @@ window.CashierModule = (function () {
         if (!currentSheet) return;
         const res = await StaffApp.apiFetch(`/api/cashier/sheets/${currentSheet.id}/finalize`, { method: 'POST' });
         if (!res) return;
+        if (res.status === 409) { await handleConflict(res); return; }
         if (!res.ok) { const data = await res.json().catch(() => ({})); alert(data.error || 'ยืนยันไม่สำเร็จ'); return; }
         const data = await res.json();
         currentSheet = data.sheet;
@@ -307,6 +320,7 @@ window.CashierModule = (function () {
         ALL_DENOMS.forEach((d) => { ndQuantities[d] = 0; });
         ndCopySourceId = null;
         ndFinalizedLocked = false;
+        ndVersion = null;
         buildNdRowsIfNeeded();
         document.getElementById('cashierNdDateLabel').textContent = formatThaiDateClient(ndTargetDate);
         document.getElementById('cashierNdError').classList.add('hidden');
@@ -324,6 +338,7 @@ window.CashierModule = (function () {
         if (dateAtOpen !== ndTargetDate) return; // ผู้ใช้ปิด/เปิด modal ใหม่ระหว่างรอ fetch — ทิ้งผลลัพธ์เก่า ไม่ทับข้อมูลที่กำลังกรอกอยู่
         if (!data.sheet) return;
         data.sheet.lines.forEach((l) => { ndQuantities[l.denomination] = l.quantity; });
+        ndVersion = data.sheet.version;
         if (data.sheet.status === 'finalized') {
             ndFinalizedLocked = true;
             const errEl = document.getElementById('cashierNdError');
@@ -346,12 +361,23 @@ window.CashierModule = (function () {
     async function saveNextDay() {
         if (ndFinalizedLocked) return;
         const lines = ALL_DENOMS.map((d) => ({ denomination: d, quantity: ndQuantities[d] || 0 }));
+        const payload = { reference_business_date: currentDate, lines, source_sheet_id: ndCopySourceId };
+        // (Phase 7.1) ถ้ามีฉบับร่างวันถัดไปอยู่แล้ว (ndVersion ถูกตั้งตอนโหลดตอนเปิด modal) ต้องส่งกลับไปให้เซิร์ฟเวอร์ตรวจ optimistic concurrency เหมือน saveDraft()
+        if (ndVersion !== null) payload.expected_version = ndVersion;
         const res = await StaffApp.apiFetch('/api/cashier/sheets/prepare-next-day', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reference_business_date: currentDate, lines, source_sheet_id: ndCopySourceId }),
+            body: JSON.stringify(payload),
         });
         if (!res) return;
+        if (res.status === 409) {
+            const data = await res.json().catch(() => ({}));
+            const errEl = document.getElementById('cashierNdError');
+            errEl.textContent = data.error || 'รายการนี้ถูกแก้ไขจากอุปกรณ์อื่น กรุณาโหลดข้อมูลล่าสุด';
+            errEl.classList.remove('hidden');
+            await loadExistingNextDayDraft(ndTargetDate); // ดึง version/ค่าล่าสุดมาให้กดบันทึกซ้ำได้ทันที ไม่ต้องปิด-เปิด modal ใหม่
+            return;
+        }
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             const errEl = document.getElementById('cashierNdError');
