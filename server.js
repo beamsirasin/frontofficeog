@@ -97,7 +97,7 @@ function getSocketClientIp(socket) {
 // ตามปกติเพราะ path ไม่ตรงกับ route ที่ประกาศไว้ตรงนี้เป๊ะๆ — ไฟล์พวกนั้นไม่มีความลับ ไม่ต้องเช็ค login ก่อนโหลด
 // getAuthUser ถูกอ้างถึงก่อนถูกประกาศในไฟล์นี้โดยตั้งใจ — เป็น function declaration (hoisted) และถูกเรียกจริง
 // ตอนมี request เข้ามาเท่านั้น (หลังโหลดทั้งไฟล์เสร็จแล้วเสมอ) จึงปลอดภัย
-const STAFF_MODULE_PATHS = ['/staff', '/staff/', '/staff/kitchen', '/staff/queue', '/staff/tables', '/staff/reports'];
+const STAFF_MODULE_PATHS = ['/staff', '/staff/', '/staff/kitchen', '/staff/queue', '/staff/tables', '/staff/reports', '/staff/cashier'];
 
 app.get('/staff/login', async (req, res) => {
     const user = await getAuthUser(req);
@@ -257,6 +257,10 @@ const PERMISSIONS = {
     ROLES_EDIT: 'roles.edit',               // แก้ชื่อ/คำอธิบายของ custom role (PATCH /api/admin/roles/:id — เฉพาะฟิลด์ name/description)
     ROLES_DELETE: 'roles.delete',           // ลบ custom role ที่ไม่มีใครใช้อยู่ (DELETE /api/admin/roles/:id)
     ROLES_PERMISSIONS: 'roles.permissions', // กำหนด/แก้ไข permission ที่ผูกกับ custom role (POST /api/admin/roles และ PATCH /api/admin/roles/:id — เฉพาะฟิลด์ permission_keys)
+
+    // (Phase 7) ตรวจนับเงินสดเปิด/ปิดร้านประจำวัน — ไม่ใช่ POS/บิล ไม่คำนวณยอดขาย ไม่กระทบ role ระบบเดิมตัวใดเลย
+    CASHIER_VIEW: 'cashier.view',     // ดูใบตรวจนับเงินสด (เปิด/ปิด) ทั้งของวันนี้และย้อนหลัง + ปริ้นใบที่ดูได้ (GET /api/cashier/sheets, /api/cashier/server-time)
+    CASHIER_MANAGE: 'cashier.manage', // สร้าง/แก้ไขฉบับร่าง ยืนยันใบตรวจนับ และเตรียมเงินเปิดร้านวันถัดไป (PUT/POST /api/cashier/sheets/*)
 };
 
 const PERMISSION_CATALOGUE = [
@@ -279,11 +283,13 @@ const PERMISSION_CATALOGUE = [
     { key: PERMISSIONS.ROLES_EDIT, name: 'แก้ไขข้อมูล custom role', description: 'แก้ชื่อหรือคำอธิบายของ custom role' },
     { key: PERMISSIONS.ROLES_DELETE, name: 'ลบ custom role', description: 'ลบ custom role ที่ไม่มีบัญชีใดใช้งานอยู่' },
     { key: PERMISSIONS.ROLES_PERMISSIONS, name: 'กำหนด permission ของ custom role', description: 'ตั้ง/แก้ไขชุด permission ที่ผูกกับ custom role' },
+    { key: PERMISSIONS.CASHIER_VIEW, name: 'ดูใบตรวจนับเงินสด', description: 'ดูใบตรวจนับเงินสดเปิด/ปิดร้าน ทั้งวันนี้และย้อนหลัง พร้อมปริ้นใบที่ดูได้' },
+    { key: PERMISSIONS.CASHIER_MANAGE, name: 'จัดการใบตรวจนับเงินสด', description: 'สร้าง/แก้ไขฉบับร่าง ยืนยันใบตรวจนับ และเตรียมเงินเปิดร้านวันถัดไป' },
 ];
 
 // role ระบบชุดแรก — ข้อมูล ไม่ใช่เงื่อนไขในโค้ด (ห้าม hardcode if(role==='kitchen') ที่ไหนเลย)
 // owner ได้ทุก permission เสมอ (รวมของใหม่ที่เพิ่มในอนาคต — ดู initRbac); role อื่นให้แบบระมัดระวัง/น้อยที่สุดเท่าที่จำเป็นจริงตามโค้ดที่มีอยู่
-// ไม่สร้าง role "cashier" ในเฟสนี้ — ระบบยังไม่มีความสามารถเรื่อง POS/บิล/เงินให้ผูก permission ด้วยเลย (ดูรายงานตรวจสอบเดิม)
+// (Phase 7) role "cashier" ตรวจนับเงินสดเปิด/ปิดร้าน — ไม่ใช่ POS/บิล ไม่ผูกกับยอดขาย จึงไม่ให้ role ระบบเดิมตัวไหนได้ cashier.* เป็นค่าเริ่มต้นเด็ดขาด (รวมถึง manager)
 // "manager" ให้สิทธิ์ดูภาพรวมทุกโมดูล (อ่านอย่างเดียว) เป็นค่าเริ่มต้นที่ปลอดภัยไว้ก่อน เพราะยังไม่มีข้อกำหนดชัดเจนว่าผู้จัดการควรสั่งการอะไรได้บ้าง
 // tables.qr ให้เฉพาะ owner (ผ่าน '*') และ tables role เท่านั้น — เป็น role ที่รับผิดชอบเปิด/ปิดโต๊ะและจัดการ QR อยู่แล้วจริงๆ ตาม tables.manage
 // queue และ kitchen ต้อง "ไม่" ได้ tables.qr โดยเด็ดขาด แม้จะมี queue.manage ซึ่งยังคุม /api/tables (แบบไม่มี session_token) อยู่ก็ตาม
@@ -297,6 +303,7 @@ const ROLE_CATALOGUE = {
     queue: { name: 'คิว', description: 'ดูและจัดการคิวลูกค้า รวมถึงเรียกเข้าโต๊ะ', permissions: [PERMISSIONS.QUEUE_VIEW, PERMISSIONS.QUEUE_MANAGE] },
     tables: { name: 'โต๊ะ', description: 'ดูและจัดการสถานะโต๊ะ รวมถึง QR/session secret', permissions: [PERMISSIONS.TABLES_VIEW, PERMISSIONS.TABLES_MANAGE, PERMISSIONS.TABLES_QR] },
     manager: { name: 'ผู้จัดการ', description: 'ดูภาพรวมทุกส่วนแบบอ่านอย่างเดียว (ยังไม่ให้สิทธิ์สั่งการหรือดู QR secret)', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.QUEUE_VIEW, PERMISSIONS.TABLES_VIEW, PERMISSIONS.REPORTS_VIEW] },
+    cashier: { name: 'แคชเชียร์', description: 'ตรวจนับเงินสดเปิด/ปิดร้านประจำวัน', permissions: [PERMISSIONS.CASHIER_VIEW, PERMISSIONS.CASHIER_MANAGE] },
 };
 
 app.get('/dashboard', (req, res) => res.sendFile(__dirname + '/public/dashboard.html'));
@@ -345,6 +352,36 @@ db.serialize(() => {
         FOREIGN KEY (role_id) REFERENCES roles(id)
     )`);
 
+    // (Phase 7) ตรวจนับเงินสดเปิด/ปิดร้าน — หนึ่งใบต่อ (business_date, sheet_type) เท่านั้น (UNIQUE คุมที่ DB โดยตรง)
+    // ไม่เก็บยอดรวมที่คำนวณแล้วไว้ในตารางนี้เลย (coin_total/banknote_total/grand_total คำนวณสดจาก cash_count_lines ทุกครั้งที่อ่าน) — กัน total เพี้ยนจากยอดจริง
+    db.run(`CREATE TABLE IF NOT EXISTS cash_count_sheets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_date TEXT NOT NULL,
+        sheet_type TEXT NOT NULL CHECK (sheet_type IN ('opening', 'closing')),
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'finalized')),
+        created_by INTEGER NOT NULL,
+        updated_by INTEGER,
+        finalized_by INTEGER,
+        prepared_from_sheet_id INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        finalized_at DATETIME,
+        UNIQUE (business_date, sheet_type),
+        FOREIGN KEY (created_by) REFERENCES users(id),
+        FOREIGN KEY (updated_by) REFERENCES users(id),
+        FOREIGN KEY (finalized_by) REFERENCES users(id),
+        FOREIGN KEY (prepared_from_sheet_id) REFERENCES cash_count_sheets(id)
+    )`);
+    // denomination เก็บเป็นจำนวนเต็มบาท (1/2/5/10/20/50/100/500/1000) — หนึ่งแถวต่อชนิดเงินต่อใบเท่านั้น (UNIQUE คุมซ้ำ)
+    db.run(`CREATE TABLE IF NOT EXISTS cash_count_lines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sheet_id INTEGER NOT NULL,
+        denomination INTEGER NOT NULL,
+        quantity INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (sheet_id, denomination),
+        FOREIGN KEY (sheet_id) REFERENCES cash_count_sheets(id)
+    )`);
+
     db.run("ALTER TABLE queues ADD COLUMN adults INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE queues ADD COLUMN children INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE queues ADD COLUMN is_foreign BOOLEAN DEFAULT 0", () => {});
@@ -367,6 +404,8 @@ db.serialize(() => {
     db.run("CREATE INDEX IF NOT EXISTS idx_session_history_opened_at ON session_history(opened_at)", () => {});
     db.run("CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash)", () => {});
     db.run("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)", () => {});
+    db.run("CREATE INDEX IF NOT EXISTS idx_cash_count_sheets_business_date ON cash_count_sheets(business_date)", () => {});
+    db.run("CREATE INDEX IF NOT EXISTS idx_cash_count_lines_sheet_id ON cash_count_lines(sheet_id)", () => {});
 
     for(let i=1; i<=27; i++) {
         db.run("INSERT OR IGNORE INTO tables (table_no, is_open, can_order) VALUES (?, false, true)", [i.toString()]);
@@ -1778,6 +1817,256 @@ app.delete('/api/admin/roles/:id', requireAuth, requirePermission(PERMISSIONS.RO
         res.json({ success: true });
     } catch (e) {
         console.error(`[admin] ลบ role ไม่สำเร็จ (id=${roleId}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// ================== Cashier: ตรวจนับเงินสดเปิด/ปิดร้านประจำวัน (Phase 7) ==================
+// ไม่ใช่ POS/ระบบบิล — บันทึกแค่ "นับเงินสดจริงในลิ้นชักได้เท่าไหร่" ตอนเปิดร้าน/ปิดร้านเท่านั้น ไม่คำนวณยอดขาย ไม่กระทบราคา/ออเดอร์/โต๊ะ/คิวใดๆ ทั้งสิ้น
+// ยอดรวมทุกตัว (subtotal/coin_total/banknote_total/grand_total) คำนวณฝั่งเซิร์ฟเวอร์เสมอจาก denomination × quantity ที่เก็บจริงใน DB — ไม่เคยเชื่อค่าที่ browser ส่งมาตรงๆ เลย
+
+// ---- เวลา/วันที่ Asia/Bangkok แบบ explicit ไม่พึ่งพา timezone ที่ตั้งไว้บนเครื่อง VPS/Ubuntu เลย (offset คงที่ +7 ชม. ไม่มี DST ในไทย) ----
+const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
+const THAI_MONTH_NAMES = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
+
+// คืนค่า Date object ที่ getUTC* ต่างๆ อ่านได้ตรงเป็น "เวลาท้องถิ่นกรุงเทพฯ" ของช่วงเวลานั้นเป๊ะ (ใช้แค่ภายในไฟล์นี้ ไม่เคยส่งออกไปเป็น Date จริงที่ไหน)
+function toBangkokWallClock(date) {
+    return new Date(date.getTime() + BANGKOK_OFFSET_MS);
+}
+function bangkokBusinessDateStr(date) {
+    const bkk = toBangkokWallClock(date || new Date());
+    const y = bkk.getUTCFullYear(), m = String(bkk.getUTCMonth() + 1).padStart(2, '0'), d = String(bkk.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+function bangkokTimeHHMM(date) {
+    const bkk = toBangkokWallClock(date || new Date());
+    return `${String(bkk.getUTCHours()).padStart(2, '0')}:${String(bkk.getUTCMinutes()).padStart(2, '0')}`;
+}
+function isValidBusinessDate(v) {
+    if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    const [y, m, d] = v.split('-').map(Number);
+    if (m < 1 || m > 12) return false;
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d; // ปฏิเสธวันที่ไม่มีจริง เช่น 2026-02-30
+}
+// business_date ถัดไปตามปฏิทินกรุงเทพฯ — คำนวณล้วนๆ จากตัวเลขในสตริง ไม่ผ่าน timezone ของเครื่องเลย จึงไม่มีทางเพี้ยนไม่ว่า VPS จะตั้ง timezone เป็นอะไร
+function nextBangkokBusinessDate(dateStr) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    dt.setUTCDate(dt.getUTCDate() + 1);
+    return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+}
+function formatThaiDate(dateStr) {
+    if (!isValidBusinessDate(dateStr)) return dateStr;
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return `${d} ${THAI_MONTH_NAMES[m - 1]} ${y + 543}`; // ปี พ.ศ. ตามธรรมเนียมใบเสร็จ/เอกสารไทย
+}
+
+// ---- ชนิดเงินสดที่รองรับ — รายการเดียวนี้คือความจริงหนึ่งเดียวฝั่งเซิร์ฟเวอร์ ห้ามเชื่อ denomination ที่ browser ส่งเข้ามานอกเหนือจากนี้เด็ดขาด ----
+const CASH_COIN_DENOMINATIONS = [1, 2, 5, 10];
+const CASH_BANKNOTE_DENOMINATIONS = [20, 50, 100, 500, 1000];
+const CASH_DENOMINATIONS = [...CASH_COIN_DENOMINATIONS, ...CASH_BANKNOTE_DENOMINATIONS];
+// เพดานจำนวนต่อชนิดเงินต่อใบ — เผื่อไว้กว้างกว่าที่ลิ้นชักเงินสดจริงจะมีได้มาก (กัน overflow ทางบัญชี/ค่าที่ผิดปกติชัดเจน ไม่ใช่เพดานเชิงธุรกิจ)
+const CASH_QUANTITY_MAX = 100000;
+
+// ตรวจ + normalize lines ที่ client ส่งมา: ต้องเป็น denomination ที่รู้จักเท่านั้น, ไม่ซ้ำกัน, quantity เป็นจำนวนเต็ม 0..CASH_QUANTITY_MAX เท่านั้น
+// denomination ที่ไม่ได้ส่งมาเลยถือว่า quantity = 0 (เติมให้ครบทุกชนิดเสมอ) — กันกรณี client ส่งมาไม่ครบ 9 ชนิด
+function validateCashLines(rawLines) {
+    if (!Array.isArray(rawLines)) return { error: 'lines ต้องเป็น array' };
+    const qtyByDenom = new Map();
+    for (const line of rawLines) {
+        if (!line || typeof line !== 'object' || Array.isArray(line)) return { error: 'แต่ละ line ต้องเป็น object' };
+        const denom = Number(line.denomination);
+        if (!CASH_DENOMINATIONS.includes(denom)) return { error: `ชนิดเงินไม่ถูกต้อง: ${line.denomination}` };
+        if (qtyByDenom.has(denom)) return { error: `ชนิดเงิน ${denom} บาท ถูกส่งมาซ้ำกัน` };
+        const qty = line.quantity;
+        if (typeof qty !== 'number' || !Number.isInteger(qty) || qty < 0 || qty > CASH_QUANTITY_MAX) {
+            return { error: `จำนวนของชนิดเงิน ${denom} บาท ไม่ถูกต้อง (ต้องเป็นจำนวนเต็ม 0-${CASH_QUANTITY_MAX})` };
+        }
+        qtyByDenom.set(denom, qty);
+    }
+    for (const denom of CASH_DENOMINATIONS) if (!qtyByDenom.has(denom)) qtyByDenom.set(denom, 0);
+    return { qtyByDenom };
+}
+
+// คำนวณ subtotal/coin_total/banknote_total/grand_total ล้วนๆ จาก denomination × quantity — จุดเดียวที่ตัวเลขเงินของทั้งฟีเจอร์นี้ถูกคำนวณจริง
+function computeCashTotals(qtyByDenom) {
+    const lines = CASH_DENOMINATIONS.map((denomination) => {
+        const quantity = qtyByDenom.get(denomination) || 0;
+        return { denomination, quantity, subtotal: denomination * quantity };
+    });
+    const sumOf = (denoms) => lines.filter((l) => denoms.includes(l.denomination)).reduce((s, l) => s + l.subtotal, 0);
+    const coin_total = sumOf(CASH_COIN_DENOMINATIONS);
+    const banknote_total = sumOf(CASH_BANKNOTE_DENOMINATIONS);
+    return { lines, coin_total, banknote_total, grand_total: coin_total + banknote_total };
+}
+
+async function getCashSheetRow(businessDate, sheetType) {
+    return dbGetAsync("SELECT * FROM cash_count_sheets WHERE business_date = ? AND sheet_type = ?", [businessDate, sheetType]);
+}
+async function getCashSheetById(id) {
+    return dbGetAsync("SELECT * FROM cash_count_sheets WHERE id = ?", [id]);
+}
+
+// ผู้ใช้แบบย่อสำหรับฝัง created_by/updated_by/finalized_by — เฉพาะ id + display_name เท่านั้น ไม่มี username/password/session ใดๆ หลุดออกไป
+async function summarizeCashActor(userId) {
+    if (!userId) return null;
+    const row = await dbGetAsync("SELECT id, display_name, username FROM users WHERE id = ?", [userId]);
+    if (!row) return null;
+    return { id: row.id, display_name: row.display_name || row.username };
+}
+
+async function summarizeCashSheet(sheetRow) {
+    if (!sheetRow) return null;
+    const lineRows = await dbAllAsync("SELECT denomination, quantity FROM cash_count_lines WHERE sheet_id = ?", [sheetRow.id]);
+    const qtyByDenom = new Map(lineRows.map((r) => [r.denomination, r.quantity]));
+    const { lines, coin_total, banknote_total, grand_total } = computeCashTotals(qtyByDenom);
+    return {
+        id: sheetRow.id,
+        business_date: sheetRow.business_date,
+        business_date_display: formatThaiDate(sheetRow.business_date),
+        sheet_type: sheetRow.sheet_type,
+        status: sheetRow.status,
+        lines, coin_total, banknote_total, grand_total,
+        created_by: await summarizeCashActor(sheetRow.created_by),
+        updated_by: await summarizeCashActor(sheetRow.updated_by),
+        finalized_by: await summarizeCashActor(sheetRow.finalized_by),
+        prepared_from_sheet_id: sheetRow.prepared_from_sheet_id,
+        created_at: sheetRow.created_at,
+        updated_at: sheetRow.updated_at,
+        finalized_at: sheetRow.finalized_at,
+    };
+}
+
+// GET /api/cashier/sheets?date=YYYY-MM-DD&type=opening|closing — ดึงใบตรวจนับของวัน/ประเภทที่ระบุ (sheet: null ถ้ายังไม่มีใบ)
+app.get('/api/cashier/sheets', requireAuth, requirePermission(PERMISSIONS.CASHIER_VIEW, PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
+    const { date, type } = req.query;
+    if (!isValidBusinessDate(date)) return res.status(400).json({ error: 'ต้องระบุ business date ให้ถูกต้อง (YYYY-MM-DD)' });
+    if (!['opening', 'closing'].includes(type)) return res.status(400).json({ error: 'ต้องระบุประเภทเป็น opening หรือ closing' });
+    try {
+        const row = await getCashSheetRow(date, type);
+        res.json({ sheet: await summarizeCashSheet(row) });
+    } catch (e) {
+        console.error('[cashier] ดึงใบตรวจนับไม่สำเร็จ:', e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// GET /api/cashier/server-time — เวลา/วันที่กรุงเทพฯ ที่เซิร์ฟเวอร์เป็นผู้รับรอง ใช้ประทับ "เวลาพิมพ์" บนใบเสร็จแทนนาฬิกาเครื่อง client ที่อาจตั้งผิด
+app.get('/api/cashier/server-time', requireAuth, requirePermission(PERMISSIONS.CASHIER_VIEW, PERMISSIONS.CASHIER_MANAGE), (req, res) => {
+    const now = new Date();
+    const businessDate = bangkokBusinessDateStr(now);
+    res.json({ business_date: businessDate, display_date: formatThaiDate(businessDate), time_hhmm: bangkokTimeHHMM(now), iso: now.toISOString() });
+});
+
+// PUT /api/cashier/sheets/:type (opening|closing) — สร้างฉบับร่างใหม่ หรือบันทึกทับฉบับร่างเดิม (ยืนยันแล้วแก้ไม่ได้ผ่าน endpoint นี้เด็ดขาด)
+app.put('/api/cashier/sheets/:type', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
+    const sheetType = req.params.type;
+    if (!['opening', 'closing'].includes(sheetType)) return res.status(400).json({ error: 'ประเภทใบตรวจนับไม่ถูกต้อง' });
+    const body = req.body || {};
+    if (!isValidBusinessDate(body.business_date)) return res.status(400).json({ error: 'ต้องระบุ business date ให้ถูกต้อง (YYYY-MM-DD)' });
+    const linesCheck = validateCashLines(body.lines ?? []);
+    if (linesCheck.error) return res.status(400).json({ error: linesCheck.error });
+
+    try {
+        const existing = await getCashSheetRow(body.business_date, sheetType);
+        if (existing && existing.status === 'finalized') return res.status(409).json({ error: 'ใบตรวจนับนี้ยืนยันแล้ว ไม่สามารถแก้ไขได้' });
+
+        const sheetId = await withTransaction(async () => {
+            let id;
+            if (existing) {
+                id = existing.id;
+                await dbRunAsync("UPDATE cash_count_sheets SET updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [req.authUser.id, id]);
+                await dbRunAsync("DELETE FROM cash_count_lines WHERE sheet_id = ?", [id]);
+            } else {
+                const result = await dbRunAsync(
+                    "INSERT INTO cash_count_sheets (business_date, sheet_type, status, created_by, updated_by) VALUES (?, ?, 'draft', ?, ?)",
+                    [body.business_date, sheetType, req.authUser.id, req.authUser.id]
+                );
+                id = result.lastID;
+            }
+            for (const [denomination, quantity] of linesCheck.qtyByDenom) {
+                await dbRunAsync("INSERT INTO cash_count_lines (sheet_id, denomination, quantity) VALUES (?, ?, ?)", [id, denomination, quantity]);
+            }
+            return id;
+        });
+
+        res.json({ sheet: await summarizeCashSheet(await getCashSheetById(sheetId)) });
+    } catch (e) {
+        if (e && e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'มีใบตรวจนับของวันที่/ประเภทนี้ถูกสร้างไปแล้ว กรุณาโหลดใหม่' });
+        console.error('[cashier] บันทึกฉบับร่างไม่สำเร็จ:', e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// POST /api/cashier/sheets/:id/finalize — ยืนยันใบตรวจนับ (immutable ผ่าน API ปกติหลังจากนี้)
+app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
+    const sheetId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(sheetId)) return res.status(400).json({ error: 'invalid_id' });
+    try {
+        const row = await getCashSheetById(sheetId);
+        if (!row) return res.status(404).json({ error: 'not_found' });
+        if (row.status === 'finalized') return res.status(409).json({ error: 'ใบตรวจนับนี้ยืนยันไปแล้ว' });
+        await dbRunAsync(
+            "UPDATE cash_count_sheets SET status = 'finalized', finalized_by = ?, finalized_at = CURRENT_TIMESTAMP, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            [req.authUser.id, req.authUser.id, sheetId]
+        );
+        res.json({ sheet: await summarizeCashSheet(await getCashSheetById(sheetId)) });
+    } catch (e) {
+        console.error(`[cashier] ยืนยันใบตรวจนับไม่สำเร็จ (id=${sheetId}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// POST /api/cashier/sheets/prepare-next-day — เตรียม "เงินเปิดร้านวันถัดไป" จากวันที่อ้างอิง (ปกติคือวันนี้) ตามปฏิทินกรุงเทพฯ
+// โหลด/แก้ไขฉบับร่างเดิมของวันถัดไปถ้ามีอยู่แล้ว (ไม่สร้างซ้ำ) — ถ้าวันถัดไปถูกยืนยันไปแล้วปฏิเสธการแก้ไขเหมือน PUT ปกติ
+// source_sheet_id (ถ้ามี) เก็บไว้เป็น prepared_from_sheet_id เพื่อสืบย้อนได้ว่าเตรียมมาจาก workflow ไหน — "ไม่" ใช้ค่าจากใบต้นทางมาเติมยอดให้อัตโนมัติเด็ดขาด (ต้องเป็น lines ที่ผู้ใช้กรอก/เลือกคัดลอกเองเท่านั้น)
+app.post('/api/cashier/sheets/prepare-next-day', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
+    const body = req.body || {};
+    if (!isValidBusinessDate(body.reference_business_date)) return res.status(400).json({ error: 'ต้องระบุ business date อ้างอิงให้ถูกต้อง (YYYY-MM-DD)' });
+    const targetDate = nextBangkokBusinessDate(body.reference_business_date);
+    const linesCheck = validateCashLines(body.lines ?? []);
+    if (linesCheck.error) return res.status(400).json({ error: linesCheck.error });
+
+    let sourceSheetId = null;
+    if (body.source_sheet_id !== undefined && body.source_sheet_id !== null) {
+        const parsed = Number(body.source_sheet_id);
+        if (!Number.isInteger(parsed)) return res.status(400).json({ error: 'source_sheet_id ไม่ถูกต้อง' });
+        const sourceRow = await getCashSheetById(parsed);
+        if (!sourceRow) return res.status(400).json({ error: 'ไม่พบใบตรวจนับต้นทางที่ระบุ' });
+        sourceSheetId = parsed;
+    }
+
+    try {
+        const existing = await getCashSheetRow(targetDate, 'opening');
+        if (existing && existing.status === 'finalized') return res.status(409).json({ error: 'เงินเปิดร้านวันถัดไปถูกยืนยันไปแล้ว ไม่สามารถแก้ไขได้' });
+
+        const sheetId = await withTransaction(async () => {
+            let id;
+            if (existing) {
+                id = existing.id;
+                await dbRunAsync(
+                    "UPDATE cash_count_sheets SET updated_by = ?, updated_at = CURRENT_TIMESTAMP, prepared_from_sheet_id = COALESCE(?, prepared_from_sheet_id) WHERE id = ?",
+                    [req.authUser.id, sourceSheetId, id]
+                );
+                await dbRunAsync("DELETE FROM cash_count_lines WHERE sheet_id = ?", [id]);
+            } else {
+                const result = await dbRunAsync(
+                    "INSERT INTO cash_count_sheets (business_date, sheet_type, status, created_by, updated_by, prepared_from_sheet_id) VALUES (?, 'opening', 'draft', ?, ?, ?)",
+                    [targetDate, req.authUser.id, req.authUser.id, sourceSheetId]
+                );
+                id = result.lastID;
+            }
+            for (const [denomination, quantity] of linesCheck.qtyByDenom) {
+                await dbRunAsync("INSERT INTO cash_count_lines (sheet_id, denomination, quantity) VALUES (?, ?, ?)", [id, denomination, quantity]);
+            }
+            return id;
+        });
+
+        res.json({ sheet: await summarizeCashSheet(await getCashSheetById(sheetId)), business_date: targetDate });
+    } catch (e) {
+        if (e && e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'มีใบตรวจนับของวันถัดไปถูกสร้างไปแล้ว กรุณาโหลดใหม่' });
+        console.error('[cashier] เตรียมเงินเปิดร้านวันถัดไปไม่สำเร็จ:', e.message);
         res.status(500).json({ error: 'internal_error' });
     }
 });

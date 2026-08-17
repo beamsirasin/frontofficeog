@@ -34,8 +34,9 @@ window.StaffApp = (function () {
         { key: 'queue', label: 'จัดการคิว', requires: ['queue.view', 'queue.manage'] },
         { key: 'tables', label: 'จัดการโต๊ะ', requires: ['tables.view', 'tables.manage', 'tables.qr'] },
         { key: 'reports', label: 'สถิติ', requires: ['reports.view'] },
+        { key: 'cashier', label: 'Cashier / ตรวจนับเงินสด', requires: ['cashier.view', 'cashier.manage'] },
     ];
-    const MODULE_SECTION_IDS = { kitchen: 'module-kitchen', queue: 'module-queue', tables: 'module-tables', reports: 'module-reports' };
+    const MODULE_SECTION_IDS = { kitchen: 'module-kitchen', queue: 'module-queue', tables: 'module-tables', reports: 'module-reports', cashier: 'module-cashier' };
 
     function hasPermission(key) { return permissions.has(key); }
     function hasAny(keys) { return keys.some((k) => permissions.has(k)); }
@@ -146,7 +147,7 @@ window.StaffApp = (function () {
     }
 
     function moduleImpl(key) {
-        return { kitchen: window.KitchenModule, queue: window.QueueModule, tables: window.TablesModule, reports: window.ReportsModule }[key];
+        return { kitchen: window.KitchenModule, queue: window.QueueModule, tables: window.TablesModule, reports: window.ReportsModule, cashier: window.CashierModule }[key];
     }
 
     function moduleKeyFromPath(pathname) {
@@ -199,6 +200,9 @@ window.StaffApp = (function () {
         if (document.getElementById('historyDate')) {
             flatpickr('#historyDate', { ...fpOpts, onChange: () => window.TablesModule && TablesModule.loadDailyHistory() });
         }
+        if (document.getElementById('cashierDate')) {
+            flatpickr('#cashierDate', { ...fpOpts, onChange: () => window.CashierModule && CashierModule.onDateChange() });
+        }
         if (document.getElementById('statsDate')) {
             statsPicker = flatpickr('#statsDate', {
                 ...fpOpts,
@@ -218,7 +222,8 @@ window.StaffApp = (function () {
 
     function initPrinter() {
         if (!navigator.usb) return;
-        if (!hasPermission('queue.manage') && !hasPermission('tables.qr')) return; // ไม่มี action ที่ต้องพิมพ์เลย ไม่ต้องโชว์ปุ่ม
+        // (Phase 7) เพิ่ม cashier.view/cashier.manage เข้าเงื่อนไข — ใบตรวจนับเงินสดปริ้นได้ทั้งฉบับร่าง(view)และยืนยันแล้ว(manage) ผ่านเครื่องพิมพ์เดียวกันนี้
+        if (!hasPermission('queue.manage') && !hasPermission('tables.qr') && !hasPermission('cashier.view') && !hasPermission('cashier.manage')) return; // ไม่มี action ที่ต้องพิมพ์เลย ไม่ต้องโชว์ปุ่ม
         const btn = document.getElementById('usbPrinterBtn');
         if (!btn) return;
         btn.classList.remove('hidden');

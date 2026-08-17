@@ -188,6 +188,88 @@
                 </div>
             </section>
 
+            <!-- ================= Cashier (Phase 7) ================= -->
+            <section id="module-cashier" class="hidden flex-1 p-2 md:p-6 pb-24">
+                <div class="max-w-2xl mx-auto">
+                    <div class="bg-white rounded-lg shadow-md border-t-4 border-gray-700 overflow-hidden mb-4">
+                        <div class="p-3 md:p-4 bg-gray-100 border-b flex flex-wrap items-center justify-between gap-3">
+                            <h2 class="text-lg md:text-2xl font-bold text-gray-800">Cashier / ตรวจนับเงินสด</h2>
+                            <div class="flex items-center gap-2">
+                                <label class="font-bold text-gray-700 text-sm whitespace-nowrap">วันที่:</label>
+                                <input type="text" id="cashierDate" class="border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500 w-32 text-center" readonly>
+                            </div>
+                        </div>
+                        <div class="p-3 md:p-4 flex items-center gap-2 border-b bg-white">
+                            <button id="cashierTabOpening" onclick="CashierModule.switchType('opening')" class="flex-1 py-3 rounded-lg font-bold text-sm md:text-base border-2 transition">เปิดร้าน</button>
+                            <button id="cashierTabClosing" onclick="CashierModule.switchType('closing')" class="flex-1 py-3 rounded-lg font-bold text-sm md:text-base border-2 transition">ปิดร้าน</button>
+                        </div>
+                        <div class="px-3 md:px-4 pt-3 flex items-center gap-2 flex-wrap">
+                            <span id="cashierDateDisplay" class="text-sm text-gray-500"></span>
+                            <span id="cashierStatusBadge" class="hidden inline-block text-xs font-bold px-3 py-1 rounded-full"></span>
+                        </div>
+
+                        <div id="cashierNoDataState" class="hidden text-center text-gray-400 py-16 px-4">
+                            <div class="text-4xl mb-3">🗒️</div>
+                            <p class="font-bold">ยังไม่มีรายการ</p>
+                        </div>
+
+                        <div id="cashierFormArea" class="hidden p-3 md:p-4 space-y-5">
+                            <div>
+                                <h3 class="font-bold text-gray-700 mb-2 border-b pb-1">เหรียญ</h3>
+                                <table class="w-full text-sm md:text-base">
+                                    <thead>
+                                        <tr class="text-gray-500 text-xs md:text-sm">
+                                            <th class="text-left font-bold pb-1">ชนิด</th>
+                                            <th class="text-center font-bold pb-1 w-24 md:w-28">จำนวน</th>
+                                            <th class="text-right font-bold pb-1 w-24 md:w-28">ยอดรวม</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="cashierCoinRows"></tbody>
+                                    <tfoot>
+                                        <tr class="font-bold border-t">
+                                            <td class="py-2">รวมเหรียญ</td>
+                                            <td></td>
+                                            <td id="cashierCoinTotal" class="text-right py-2">฿0</td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                            <div>
+                                <h3 class="font-bold text-gray-700 mb-2 border-b pb-1">ธนบัตร</h3>
+                                <table class="w-full text-sm md:text-base">
+                                    <thead>
+                                        <tr class="text-gray-500 text-xs md:text-sm">
+                                            <th class="text-left font-bold pb-1">ชนิด</th>
+                                            <th class="text-center font-bold pb-1 w-24 md:w-28">จำนวน</th>
+                                            <th class="text-right font-bold pb-1 w-24 md:w-28">ยอดรวม</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="cashierBanknoteRows"></tbody>
+                                    <tfoot>
+                                        <tr class="font-bold border-t">
+                                            <td class="py-2">รวมธนบัตร</td>
+                                            <td></td>
+                                            <td id="cashierBanknoteTotal" class="text-right py-2">฿0</td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                            <div class="bg-blue-50 border-2 border-blue-300 rounded-lg p-4 flex items-center justify-between">
+                                <span class="font-bold text-blue-900 text-lg">รวมเงินทั้งหมด</span>
+                                <span id="cashierGrandTotal" class="font-black text-blue-900 text-2xl md:text-3xl">฿0</span>
+                            </div>
+                            <p id="cashierMetaInfo" class="text-xs text-gray-500"></p>
+                            <div class="flex flex-wrap gap-2">
+                                <button id="cashierSaveBtn" onclick="CashierModule.saveDraft()" class="hidden flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow">บันทึกฉบับร่าง</button>
+                                <button id="cashierFinalizeBtn" onclick="CashierModule.confirmFinalize()" class="hidden flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg shadow">ยืนยันรายการ</button>
+                                <button id="cashierPrintBtn" onclick="CashierModule.printSheet()" class="hidden flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 rounded-lg shadow">ปริ้นใบตรวจนับ</button>
+                            </div>
+                            <button id="cashierNextDayBtn" onclick="CashierModule.openNextDayModal()" class="hidden w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-lg shadow">ตั้งเงินเปิดร้านวันถัดไป</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
         </main>
     </div>
 
@@ -479,6 +561,45 @@
         </div>
     </div>
 
+    <!-- ================= Modal: Cashier next-day opening (Phase 7) ================= -->
+    <div id="cashierNextDayModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-4" onclick="if(event.target===this)CashierModule.closeNextDayModal()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-xl relative flex flex-col max-h-[95vh]">
+            <div class="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 border-b flex-shrink-0">
+                <div>
+                    <h2 class="text-lg md:text-xl font-bold text-gray-800">ตั้งเงินเปิดร้านวันถัดไป</h2>
+                    <p class="text-sm text-gray-500">วันที่ <span id="cashierNdDateLabel" class="font-bold"></span></p>
+                </div>
+                <button onclick="CashierModule.closeNextDayModal()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+            </div>
+            <div class="p-4 md:p-6 space-y-4 overflow-y-auto">
+                <div class="flex flex-wrap gap-2">
+                    <button onclick="CashierModule.copyIntoNextDay('opening')" class="flex-1 bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-700 font-bold py-2 rounded text-xs md:text-sm">คัดลอกยอดเปิดวันนี้</button>
+                    <button onclick="CashierModule.copyIntoNextDay('closing')" class="flex-1 bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-700 font-bold py-2 rounded text-xs md:text-sm">คัดลอกยอดปิดวันนี้</button>
+                </div>
+                <div>
+                    <h3 class="font-bold text-gray-700 mb-2 border-b pb-1">เหรียญ</h3>
+                    <table class="w-full text-sm md:text-base">
+                        <tbody id="cashierNdCoinRows"></tbody>
+                    </table>
+                </div>
+                <div>
+                    <h3 class="font-bold text-gray-700 mb-2 border-b pb-1">ธนบัตร</h3>
+                    <table class="w-full text-sm md:text-base">
+                        <tbody id="cashierNdBanknoteRows"></tbody>
+                    </table>
+                </div>
+                <div class="bg-orange-50 border-2 border-orange-300 rounded-lg p-4 flex items-center justify-between">
+                    <span class="font-bold text-orange-900">รวมเงินเปิดวันถัดไป</span>
+                    <span id="cashierNdGrandTotal" class="font-black text-orange-900 text-xl">฿0</span>
+                </div>
+                <p id="cashierNdError" class="hidden text-sm text-red-600 font-bold"></p>
+            </div>
+            <div class="px-4 md:px-6 py-3 md:py-4 border-t flex-shrink-0">
+                <button onclick="CashierModule.saveNextDay()" class="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-lg text-lg shadow-lg">บันทึกเป็นฉบับร่างวันถัดไป</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ================= Shared: confirm modal + print area ================= -->
     <div id="confirmModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[200] px-4">
         <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
@@ -499,6 +620,8 @@
     <script src="/staff/queue.js"></script>
     <script src="/staff/tables.js"></script>
     <script src="/staff/reports.js"></script>
+    <script src="/staff/cashier-print.js"></script>
+    <script src="/staff/cashier.js"></script>
     <script>StaffApp.boot();</script>
 </body>
 </html>

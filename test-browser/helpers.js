@@ -42,10 +42,23 @@ async function bootAppWithPersonas() {
 
     const noRoleId = (await dbRun(db, "INSERT INTO users (username, password_hash, display_name, is_active) VALUES (?, ?, ?, 1)", ['bt_norole', hashPasswordForSeed(PASS), 'ไม่มีสิทธิ์'])).lastID;
 
+    // (Phase 7) cashier: cashier ระบบตัวเต็ม (view+manage) และ cashier.view ล้วนๆ (view-only) สำหรับเทส Cashier UI
+    const cashierRoleId = (await dbGet(db, "SELECT id FROM roles WHERE key = 'cashier'")).id;
+    const cashierId = (await dbRun(db, "INSERT INTO users (username, password_hash, display_name, is_active) VALUES (?, ?, ?, 1)", ['bt_cashier', hashPasswordForSeed(PASS), 'แคชเชียร์'])).lastID;
+    await dbRun(db, 'INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', [cashierId, cashierRoleId]);
+
+    const cashierViewRoleId = (await dbRun(db, "INSERT INTO roles (key, name, description, is_system) VALUES (?, ?, ?, 0)", ['test_cashier_view_only', 'Cashier View Only (test)', 'test-only role', ])).lastID;
+    const cashierViewPermId = (await dbGet(db, "SELECT id FROM permissions WHERE key = 'cashier.view'")).id;
+    await dbRun(db, 'INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [cashierViewRoleId, cashierViewPermId]);
+    const cashierViewId = (await dbRun(db, "INSERT INTO users (username, password_hash, display_name, is_active) VALUES (?, ?, ?, 1)", ['bt_cashier_view', hashPasswordForSeed(PASS), 'แคชเชียร์ (ดูอย่างเดียว)'])).lastID;
+    await dbRun(db, 'INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', [cashierViewId, cashierViewRoleId]);
+
     const personas = {
         owner: { username: process.env.ADMIN_USER, password: process.env.ADMIN_PASS },
         kitchenOnly: { username: 'bt_kitchen', password: PASS, id: kitchenId },
         noRole: { username: 'bt_norole', password: PASS, id: noRoleId },
+        cashier: { username: 'bt_cashier', password: PASS, id: cashierId },
+        cashierViewOnly: { username: 'bt_cashier_view', password: PASS, id: cashierViewId },
     };
 
     return {
