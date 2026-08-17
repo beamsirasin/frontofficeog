@@ -67,6 +67,20 @@ async function createCustomRoleWithPermissions(roleKey, permissionKeys) {
     return role.id;
 }
 
+// สร้าง staff account ที่ "ไม่ใช่" owner แต่ถือ permission users.* ตามที่ระบุเป๊ะๆ (ผ่าน custom role) — ใช้ทดสอบขอบเขต delegated admin (Phase 5A.1)
+let delegatedAdminCounter = 0;
+async function createDelegatedAdmin(permissionKeys, label) {
+    delegatedAdminCounter += 1;
+    const roleKey = `test_delegated_${label}_${delegatedAdminCounter}`;
+    const username = `delegated_${label}_${delegatedAdminCounter}`;
+    const password = `delegated-${label}-pass-123`;
+    const roleId = await createCustomRoleWithPermissions(roleKey, permissionKeys);
+    const uid = await createTestUser(username, password);
+    await dbRun('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', [uid, roleId]);
+    const cookie = await loginAs(username, password);
+    return { uid, username, password, cookie };
+}
+
 function extractSessionCookie(res) {
     const raw = typeof res.headers.getSetCookie === 'function'
         ? res.headers.getSetCookie()
@@ -507,35 +521,318 @@ test('G2. the owner cannot remove their own owner role via PATCH role_ids (400)'
     assert.equal(res.status, 400);
 });
 
-test('G3. the system can never be left with zero active owners, even when the actor is not the owner being disabled; a blocked mutation leaves the DB completely unchanged', async () => {
-    // ตั้งฉาก: owner คนที่สอง (ผ่าน DB ตรง — ไม่มีทางสร้างผ่าน API) + staff ที่มีสิทธิ์ users.disable แต่ไม่ใช่ owner
+test('G3 (Phase 5A.1). a non-owner delegated admin can NEVER disable an owner account — even one with users.disable and even when another owner exists — and a blocked mutation leaves the DB completely unchanged', async () => {
+    // ตั้งฉาก: owner คนที่สอง (ผ่าน DB ตรง — ไม่มีทางสร้างผ่าน API) + staff ที่มีสิทธิ์ users.disable ครบแต่ไม่ใช่ owner
     const secondOwnerId = await createTestUser('second_owner', 'second-owner-pass-123');
     await assignRole(secondOwnerId, 'owner');
     const disablerRoleId = await createCustomRoleWithPermissions('test_disabler_only', ['users.disable']);
     const disablerId = await createTestUser('disabler_staff', 'disabler-pass-123');
     await dbRun('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', [disablerId, disablerRoleId]);
     const disablerCookie = await loginAs('disabler_staff', 'disabler-pass-123');
-    await loginAs('second_owner', 'second-owner-pass-123'); // สร้าง session ให้ second_owner ไว้ตรวจ "ไม่ถูกเพิกถอน" ด้านล่างด้วย
 
-    // ตอนนี้มี owner 2 คน (bootstrap owner + second_owner) — ปิดคนแรกได้ เพราะยังเหลืออีกคน
-    const res1 = await adminApi(disablerCookie, 'POST', `/api/admin/users/${ownerUserId}/disable`);
+    // ตอนนี้มี owner 2 คนที่ active อยู่ (bootstrap owner + second_owner) — ต่อให้เหลือ owner คนอื่นอยู่ก็ตาม
+    // delegated admin ที่ไม่ใช่ owner ต้องปิดใช้งาน owner คนไหนไม่ได้เลยแม้แต่คนเดียว (Phase 5A.1 — เข้มกว่าแค่ zero-owner invariant)
+    const beforeActive = await dbGet('SELECT is_active FROM users WHERE id = ?', [ownerUserId]);
+    const beforeSessions = await dbAll('SELECT revoked_at FROM sessions WHERE user_id = ?', [ownerUserId]);
+
+    const res = await adminApi(disablerCookie, 'POST', `/api/admin/users/${ownerUserId}/disable`);
+    assert.equal(res.status, 403);
+
+    const afterActive = await dbGet('SELECT is_active FROM users WHERE id = ?', [ownerUserId]);
+    assert.equal(afterActive.is_active, beforeActive.is_active, 'is_active ของ owner ต้องไม่เปลี่ยนเลยเมื่อถูกบล็อกด้วย owner-target protection');
+    const afterSessions = await dbAll('SELECT revoked_at FROM sessions WHERE user_id = ?', [ownerUserId]);
+    assert.deepEqual(afterSessions.map((s) => s.revoked_at), beforeSessions.map((s) => s.revoked_at), 'session ของ owner ต้องไม่ถูกเพิกถอนถ้า mutation ถูกบล็อก');
+});
+
+test('G4 (Phase 5A.1). an owner CAN legitimately disable another owner account when 2+ owners exist, but the resulting sole owner still cannot disable themselves (zero-owner invariant holds via the pre-existing self-disable rule)', async () => {
+    const secondOwnerId = (await dbGet('SELECT id FROM users WHERE username = ?', ['second_owner'])).id;
+
+    // owner ตัวจริงปิดใช้งาน owner อีกคนได้ตามปกติ — ยังเหลือ owner ตัวจริงเอง active อยู่
+    const res1 = await adminApi(ownerCookie, 'POST', `/api/admin/users/${secondOwnerId}/disable`);
     assert.equal(res1.status, 200);
+    const row = await dbGet('SELECT is_active FROM users WHERE id = ?', [secondOwnerId]);
+    assert.equal(!!row.is_active, false);
 
-    // เหลือ owner active แค่ second_owner คนเดียว — ปิดคนนี้ต้องถูกบล็อก และ DB ต้องไม่เปลี่ยนแปลงใดๆ เลย (all-or-nothing)
-    const beforeActive = await dbGet('SELECT is_active FROM users WHERE id = ?', [secondOwnerId]);
-    const beforeSessions = await dbAll('SELECT revoked_at FROM sessions WHERE user_id = ?', [secondOwnerId]);
+    // ตอนนี้ bootstrap owner เป็น owner active คนเดียวในระบบ — ยืนยันว่ายังปิดตัวเองไม่ได้ (G1 คุมเคสนี้อยู่แล้ว แต่ตรวจซ้ำในบริบทนี้)
+    const selfRes = await adminApi(ownerCookie, 'POST', `/api/admin/users/${ownerUserId}/disable`);
+    assert.equal(selfRes.status, 400);
+});
 
-    const res2 = await adminApi(disablerCookie, 'POST', `/api/admin/users/${secondOwnerId}/disable`);
-    assert.equal(res2.status, 400);
+// ==================== Create + Role assignment boundary (Phase 5A.1, section 12) ====================
 
-    const afterActive = await dbGet('SELECT is_active FROM users WHERE id = ?', [secondOwnerId]);
-    assert.equal(afterActive.is_active, beforeActive.is_active, 'is_active ต้องไม่เปลี่ยนเลยเมื่อถูกบล็อกด้วย zero-owner invariant');
-    const afterSessions = await dbAll('SELECT revoked_at FROM sessions WHERE user_id = ?', [secondOwnerId]);
-    assert.deepEqual(afterSessions.map((s) => s.revoked_at), beforeSessions.map((s) => s.revoked_at), 'session ต้องไม่ถูกเพิกถอนถ้า mutation ถูกบล็อก');
+test('L1. a users.create-only actor can create a no-role account', async () => {
+    const actor = await createDelegatedAdmin(['users.create'], 'create_only_l1');
+    const res = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
+        display_name: 'x', username: 'l1_noroles', password: 'l1-noroles-pass-123', role_ids: [],
+    });
+    assert.equal(res.status, 201);
+    const body = await res.json();
+    assert.deepEqual(body.roles, []);
+});
 
-    // คืนสถานะ bootstrap owner กลับมาให้เทสต์อื่นๆ ที่รันหลังจากนี้ยังใช้ ownerCookie ได้ตามปกติ
-    await adminApi(disablerCookie, 'POST', `/api/admin/users/${ownerUserId}/enable`);
-    ownerCookie = await loginAs(process.env.ADMIN_USER, process.env.ADMIN_PASS);
+test('L2. a users.create-only actor cannot create an account WITH role_ids (403)', async () => {
+    const actor = await createDelegatedAdmin(['users.create'], 'create_only_l2');
+    const kitchenRoleId = await roleIdByKey('kitchen');
+    const res = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
+        display_name: 'x', username: 'l2_withroles', password: 'l2-withroles-pass-123', role_ids: [kitchenRoleId],
+    });
+    assert.equal(res.status, 403);
+});
+
+test('L3. a rejected role-bearing create (actor lacks users.roles) leaves no new user row at all', async () => {
+    const actor = await createDelegatedAdmin(['users.create'], 'create_only_l3');
+    const kitchenRoleId = await roleIdByKey('kitchen');
+    const res = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
+        display_name: 'x', username: 'l3_should_not_exist', password: 'l3-pass-123', role_ids: [kitchenRoleId],
+    });
+    assert.equal(res.status, 403);
+    const row = await dbGet('SELECT id FROM users WHERE username = ?', ['l3_should_not_exist']);
+    assert.equal(row, undefined, 'ไม่ควรมีการสร้าง user แม้จะสร้างสำเร็จแล้วค่อยติด role ไม่ได้ — ต้อง reject ทั้งคำขอตั้งแต่แรก');
+});
+
+test('L4. an actor with BOTH users.create and users.roles can create an account with allowed roles', async () => {
+    const actor = await createDelegatedAdmin(['users.create', 'users.roles'], 'create_and_roles_l4');
+    const kitchenRoleId = await roleIdByKey('kitchen');
+    const res = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
+        display_name: 'x', username: 'l4_withroles', password: 'l4-withroles-pass-123', role_ids: [kitchenRoleId],
+    });
+    assert.equal(res.status, 201);
+    const body = await res.json();
+    assert.deepEqual(body.roles.map((r) => r.key), ['kitchen']);
+});
+
+test('L5. the owner role remains unassignable at creation regardless of the actor\'s permissions (even users.create + users.roles)', async () => {
+    const actor = await createDelegatedAdmin(['users.create', 'users.roles'], 'create_and_roles_l5');
+    const ownerRoleId = await roleIdByKey('owner');
+    const res = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
+        display_name: 'x', username: 'l5_owner_escalation', password: 'l5-pass-123', role_ids: [ownerRoleId],
+    });
+    assert.equal(res.status, 400);
+    const row = await dbGet('SELECT id FROM users WHERE username = ?', ['l5_owner_escalation']);
+    assert.equal(row, undefined);
+});
+
+test('L6. a fake/nonexistent role id in a create request fails, even for an actor with users.create + users.roles', async () => {
+    const actor = await createDelegatedAdmin(['users.create', 'users.roles'], 'create_and_roles_l6');
+    const res = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
+        display_name: 'x', username: 'l6_fake_role', password: 'l6-pass-123', role_ids: [999999],
+    });
+    assert.equal(res.status, 400);
+    const row = await dbGet('SELECT id FROM users WHERE username = ?', ['l6_fake_role']);
+    assert.equal(row, undefined);
+});
+
+test('L7. duplicate username and invalid-field create requests continue to behave safely for a create+roles actor', async () => {
+    const actor = await createDelegatedAdmin(['users.create', 'users.roles'], 'create_and_roles_l7');
+    const kitchenRoleId = await roleIdByKey('kitchen');
+    const ok = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
+        display_name: 'x', username: 'l7_dupe', password: 'l7-pass-123', role_ids: [kitchenRoleId],
+    });
+    assert.equal(ok.status, 201);
+    const dupe = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
+        display_name: 'y', username: 'l7_dupe', password: 'l7-pass-456', role_ids: [kitchenRoleId],
+    });
+    assert.equal(dupe.status, 409);
+    const invalid = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
+        username: 'l7_missing_display', password: 'l7-pass-789', role_ids: [],
+    });
+    assert.equal(invalid.status, 400);
+});
+
+// ==================== Delegated admin cannot compromise owner accounts (Phase 5A.1, section 13) ====================
+
+test('M1 (item 8-10). a non-owner actor with users.reset_password cannot reset the owner\'s password, and no partial mutation occurs', async () => {
+    const actor = await createDelegatedAdmin(['users.reset_password'], 'reset_m1');
+    const before = await dbGet('SELECT password_hash FROM users WHERE id = ?', [ownerUserId]);
+    const beforeSessions = await dbAll('SELECT revoked_at FROM sessions WHERE user_id = ?', [ownerUserId]);
+
+    const res = await adminApi(actor.cookie, 'POST', `/api/admin/users/${ownerUserId}/reset-password`, { new_password: 'takeover-pass-123' });
+    assert.equal(res.status, 403);
+
+    const after = await dbGet('SELECT password_hash FROM users WHERE id = ?', [ownerUserId]);
+    assert.equal(after.password_hash, before.password_hash, 'owner password hash ต้องไม่เปลี่ยนเลย');
+    const afterSessions = await dbAll('SELECT revoked_at FROM sessions WHERE user_id = ?', [ownerUserId]);
+    assert.deepEqual(afterSessions.map((s) => s.revoked_at), beforeSessions.map((s) => s.revoked_at), 'owner session ต้องไม่ถูกเพิกถอนเลย');
+
+    // ยืนยันด้วยว่ารหัสผ่านเดิมของ owner ยัง login ได้ตามปกติ — ไม่มีผลข้างเคียงใดๆ หลุดออกมา
+    const loginRes = await fetch(`${baseURL}/api/login`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: process.env.ADMIN_USER, pin: process.env.ADMIN_PASS }),
+    });
+    assert.equal(loginRes.status, 200);
+});
+
+test('M2 (item 11). a non-owner actor with users.disable cannot disable the owner', async () => {
+    const actor = await createDelegatedAdmin(['users.disable'], 'disable_m2');
+    const res = await adminApi(actor.cookie, 'POST', `/api/admin/users/${ownerUserId}/disable`);
+    assert.equal(res.status, 403);
+    const row = await dbGet('SELECT is_active FROM users WHERE id = ?', [ownerUserId]);
+    assert.equal(!!row.is_active, true);
+});
+
+test('M3 (item 12). a non-owner actor with users.edit cannot alter the owner\'s username or display_name', async () => {
+    const actor = await createDelegatedAdmin(['users.edit'], 'edit_m3');
+    const before = await dbGet('SELECT username, display_name FROM users WHERE id = ?', [ownerUserId]);
+    const res = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${ownerUserId}`, { display_name: 'hijacked name' });
+    assert.equal(res.status, 403);
+    const after = await dbGet('SELECT username, display_name FROM users WHERE id = ?', [ownerUserId]);
+    assert.deepEqual(after, before);
+});
+
+test('M4 (item 13). a non-owner actor with users.roles cannot alter the owner\'s roles', async () => {
+    const actor = await createDelegatedAdmin(['users.roles'], 'roles_m4');
+    const queueRoleId = await roleIdByKey('queue');
+    const res = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${ownerUserId}`, { role_ids: [queueRoleId] });
+    assert.notEqual(res.status, 200);
+    const stillOwner = await dbGet(
+        `SELECT 1 AS x FROM user_roles JOIN roles ON roles.id = user_roles.role_id WHERE user_roles.user_id = ? AND roles.key = 'owner'`,
+        [ownerUserId]
+    );
+    assert.ok(stillOwner, 'owner ต้องยังถือ role owner อยู่เหมือนเดิม');
+});
+
+test('M5 (item 14). a non-owner actor with users.roles cannot assign the owner role to themselves or to anyone else', async () => {
+    const actor = await createDelegatedAdmin(['users.roles'], 'roles_m5');
+    const ownerRoleId = await roleIdByKey('owner');
+
+    const selfRes = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${actor.uid}`, { role_ids: [ownerRoleId] });
+    assert.equal(selfRes.status, 400);
+
+    const otherStaffId = await createTestUser('m5_other_staff', 'm5-pass-123');
+    const otherRes = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${otherStaffId}`, { role_ids: [ownerRoleId] });
+    assert.equal(otherRes.status, 400);
+});
+
+test('M6 (item 15). the owner can still fully administer normal (non-owner) staff accounts', async () => {
+    const create = await adminApi(ownerCookie, 'POST', '/api/admin/users', {
+        display_name: 'x', username: 'm6_normal_staff', password: 'm6-pass-123', role_ids: [],
+    });
+    assert.equal(create.status, 201);
+    const uid = (await create.json()).id;
+    const edit = await adminApi(ownerCookie, 'PATCH', `/api/admin/users/${uid}`, { display_name: 'm6 edited' });
+    assert.equal(edit.status, 200);
+    const disable = await adminApi(ownerCookie, 'POST', `/api/admin/users/${uid}/disable`);
+    assert.equal(disable.status, 200);
+    const enable = await adminApi(ownerCookie, 'POST', `/api/admin/users/${uid}/enable`);
+    assert.equal(enable.status, 200);
+});
+
+test('M7 (item 16). a delegated admin with users.reset_password can still reset a NON-owner staff member\'s password', async () => {
+    const actor = await createDelegatedAdmin(['users.reset_password'], 'reset_m7');
+    const targetId = await createTestUser('m7_target_staff', 'm7-old-pass-123');
+    const res = await adminApi(actor.cookie, 'POST', `/api/admin/users/${targetId}/reset-password`, { new_password: 'm7-new-pass-456' });
+    assert.equal(res.status, 200);
+    const loginRes = await fetch(`${baseURL}/api/login`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: 'm7_target_staff', pin: 'm7-new-pass-456' }),
+    });
+    assert.equal(loginRes.status, 200);
+});
+
+test('M8 (item 17). a delegated admin with users.disable can still disable a NON-owner staff account', async () => {
+    const actor = await createDelegatedAdmin(['users.disable'], 'disable_m8');
+    const targetId = await createTestUser('m8_target_staff', 'm8-pass-123');
+    const res = await adminApi(actor.cookie, 'POST', `/api/admin/users/${targetId}/disable`);
+    assert.equal(res.status, 200);
+    const row = await dbGet('SELECT is_active FROM users WHERE id = ?', [targetId]);
+    assert.equal(!!row.is_active, false);
+});
+
+test('M9 (item 18). the final-active-owner invariant remains enforced (sole owner still cannot disable self)', async () => {
+    const res = await adminApi(ownerCookie, 'POST', `/api/admin/users/${ownerUserId}/disable`);
+    assert.equal(res.status, 400);
+});
+
+test('M10 (item 19). a failed owner-target profile mutation leaves the database state completely unchanged', async () => {
+    const actor = await createDelegatedAdmin(['users.edit', 'users.roles'], 'combo_m10');
+    const before = await dbGet('SELECT username, display_name FROM users WHERE id = ?', [ownerUserId]);
+    const beforeRoles = await dbAll('SELECT role_id FROM user_roles WHERE user_id = ?', [ownerUserId]);
+
+    const res = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${ownerUserId}`, { username: 'stolen_username', display_name: 'stolen', role_ids: [] });
+    assert.notEqual(res.status, 200);
+
+    const after = await dbGet('SELECT username, display_name FROM users WHERE id = ?', [ownerUserId]);
+    assert.deepEqual(after, before);
+    const afterRoles = await dbAll('SELECT role_id FROM user_roles WHERE user_id = ?', [ownerUserId]);
+    assert.deepEqual(afterRoles, beforeRoles);
+});
+
+// ==================== Permission-specific admin boundaries (Phase 5A.1, section 14) ====================
+
+test('N1 (item 20). a users.view-only account can list users but cannot perform any mutation', async () => {
+    const actor = await createDelegatedAdmin(['users.view'], 'view_only_n1');
+    const list = await adminApi(actor.cookie, 'GET', '/api/admin/users');
+    assert.equal(list.status, 200);
+
+    const targetId = await createTestUser('n1_target', 'n1-pass-123');
+    assert.equal((await adminApi(actor.cookie, 'POST', '/api/admin/users', { display_name: 'x', username: 'n1_new', password: 'n1-new-pass-123', role_ids: [] })).status, 403);
+    assert.equal((await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { display_name: 'y' })).status, 403);
+    assert.equal((await adminApi(actor.cookie, 'POST', `/api/admin/users/${targetId}/disable`)).status, 403);
+    assert.equal((await adminApi(actor.cookie, 'POST', `/api/admin/users/${targetId}/reset-password`, { new_password: 'n1-pass-456' })).status, 403);
+});
+
+test('N2 (item 21). a users.create-only account gets only the create capability (no list/edit/disable/reset/roles)', async () => {
+    const actor = await createDelegatedAdmin(['users.create'], 'create_meta_n2');
+    assert.equal((await adminApi(actor.cookie, 'GET', '/api/admin/users')).status, 403);
+    assert.equal((await adminApi(actor.cookie, 'GET', '/api/admin/roles')).status, 403);
+    const created = await adminApi(actor.cookie, 'POST', '/api/admin/users', { display_name: 'x', username: 'n2_created', password: 'n2-pass-123', role_ids: [] });
+    assert.equal(created.status, 201);
+    const targetId = (await created.json()).id;
+    assert.equal((await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { display_name: 'y' })).status, 403);
+    assert.equal((await adminApi(actor.cookie, 'POST', `/api/admin/users/${targetId}/disable`)).status, 403);
+});
+
+test('N3 (item 22). a users.edit-only account cannot modify roles', async () => {
+    const actor = await createDelegatedAdmin(['users.edit'], 'edit_meta_n3');
+    const targetId = await createTestUser('n3_target', 'n3-pass-123');
+    const okProfile = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { display_name: 'edited by n3' });
+    assert.equal(okProfile.status, 200);
+    const kitchenRoleId = await roleIdByKey('kitchen');
+    const roleAttempt = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [kitchenRoleId] });
+    assert.equal(roleAttempt.status, 403);
+});
+
+test('N4 (item 23). a users.roles-only account cannot modify username/display_name', async () => {
+    const actor = await createDelegatedAdmin(['users.roles'], 'roles_meta_n4');
+    const targetId = await createTestUser('n4_target', 'n4-pass-123');
+    const kitchenRoleId = await roleIdByKey('kitchen');
+    const okRoles = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [kitchenRoleId] });
+    assert.equal(okRoles.status, 200);
+    const profileAttempt = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { display_name: 'nope' });
+    assert.equal(profileAttempt.status, 403);
+});
+
+test('N5 (item 24). a users.disable-only account cannot reset passwords', async () => {
+    const actor = await createDelegatedAdmin(['users.disable'], 'disable_meta_n5');
+    const targetId = await createTestUser('n5_target', 'n5-pass-123');
+    const disableRes = await adminApi(actor.cookie, 'POST', `/api/admin/users/${targetId}/disable`);
+    assert.equal(disableRes.status, 200);
+    const resetRes = await adminApi(actor.cookie, 'POST', `/api/admin/users/${targetId}/reset-password`, { new_password: 'n5-pass-456' });
+    assert.equal(resetRes.status, 403);
+});
+
+test('N6 (item 25). a users.reset_password-only account cannot disable accounts', async () => {
+    const actor = await createDelegatedAdmin(['users.reset_password'], 'reset_meta_n6');
+    const targetId = await createTestUser('n6_target', 'n6-pass-123');
+    const resetRes = await adminApi(actor.cookie, 'POST', `/api/admin/users/${targetId}/reset-password`, { new_password: 'n6-pass-456' });
+    assert.equal(resetRes.status, 200);
+    const disableRes = await adminApi(actor.cookie, 'POST', `/api/admin/users/${targetId}/disable`);
+    assert.equal(disableRes.status, 403);
+});
+
+test('N7 (item 26). the admin frontend source encodes the same permission-to-action gating as the backend (no browser available — structural check of shipped JS/HTML)', () => {
+    const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'app.js'), 'utf8');
+    const usersJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'users.js'), 'utf8');
+    const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'admin', 'index.html'), 'utf8');
+
+    assert.match(indexHtml, /data-requires="users\.create"/, '+เพิ่มพนักงาน ต้องถูกกันด้วย users.create');
+    assert.match(indexHtml, /data-requires="users\.edit"/, 'ฟอร์มแก้ไขข้อมูลบัญชีต้องถูกกันด้วย users.edit');
+    assert.match(indexHtml, /data-requires="users\.roles"/, 'ฟอร์มแก้ไข role ต้องถูกกันด้วย users.roles');
+    assert.match(usersJs, /hasPermission\('users\.edit'\)/, 'ปุ่มแก้ไขต้องเช็ค users.edit ฝั่ง client');
+    assert.match(usersJs, /hasPermission\('users\.reset_password'\)/, 'ปุ่มรีเซ็ตรหัสผ่านต้องเช็ค users.reset_password ฝั่ง client');
+    assert.match(usersJs, /hasPermission\('users\.disable'\)/, 'ปุ่มปิด/เปิดใช้งานต้องเช็ค users.disable ฝั่ง client');
+    assert.match(usersJs, /hasPermission\('users\.roles'\)/, 'roleChecklist ต้องเช็ค users.roles ก่อนโหลด role list ฝั่ง client');
+    assert.match(appJs, /apiFetch/, 'ต้องมี fetch กลางที่จัดการ 401/403 — UI gating เป็นแค่ UX เสริม server ยังเป็นผู้ตัดสินใจจริง');
 });
 
 // ==================== Frontend / Permission-safety of API responses ====================

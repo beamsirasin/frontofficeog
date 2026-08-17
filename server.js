@@ -1105,6 +1105,18 @@ async function userHasOwnerRole(userId) {
     return !!row;
 }
 
+// (Phase 5A.1) delegated admin — คือคนที่ถือ permission users.* ทั่วไป (แม้จะครบทุกตัว) แต่ "ไม่ใช่" owner เอง —
+// ต้องไม่สามารถแก้ไข/ปิดใช้งาน/เปิดใช้งาน/รีเซ็ตรหัสผ่านบัญชี owner คนอื่นได้เด็ดขาด ไม่ว่ากรณีใด
+// เพราะ permission ปกติ (ไม่ใช่ role พิเศษ) ไม่ควรพอจะ "ยึด" บัญชีเจ้าของร้านได้ — นี่คือขอบเขตที่ users.* ธรรมดาไปไม่ถึง
+// เช็คจาก DB จริงเสมอ (userHasOwnerRole ทั้งฝั่ง actor และ target) ไม่เชื่อ claim ใดๆ จากฝั่ง browser
+// คืน error message (string) ถ้าไม่อนุญาต, null ถ้าอนุญาตให้ทำต่อ
+async function ownerTargetProtectionError(req, targetId) {
+    if (!(await userHasOwnerRole(targetId))) return null; // เป้าหมายไม่ใช่ owner — กฎนี้ไม่เกี่ยวข้องเลย
+    const actorIsOwner = await userHasOwnerRole(req.authUser.id);
+    if (actorIsOwner) return null; // owner จัดการบัญชี owner คนอื่น (หรือของตัวเอง) ได้ตามปกติ
+    return 'บัญชีนี้เป็นบัญชีเจ้าของร้าน ต้องเป็นเจ้าของร้านเท่านั้นถึงจะจัดการบัญชีนี้ได้';
+}
+
 // role ที่แสดง/รับสมัครผ่าน /admin/ ทั้งหมด "ยกเว้น" owner เสมอ (ห้ามสร้าง/กำหนด owner คนที่สองผ่านหน้านี้เด็ดขาด)
 // กรองที่ต้นทาง (server) ไม่ใช่แค่ซ่อนที่ frontend — เพื่อไม่ให้ role นี้ถูกกำหนดได้เลยไม่ว่าทางไหน
 async function assignableRoles() {
@@ -1192,6 +1204,16 @@ app.post('/api/admin/users', requireAuth, requirePermission(PERMISSIONS.USERS_CR
     const roleIdsCheck = await validateRoleIds(body.role_ids ?? []);
     if (roleIdsCheck.error) return res.status(400).json({ error: roleIdsCheck.error });
 
+    // (Phase 5A.1) การ "สร้างบัญชี" (users.create) กับ "กำหนด role ให้บัญชี" (users.roles) เป็นคนละสิทธิ์กัน เหมือนที่ PATCH แยกไว้แล้ว
+    // สร้างบัญชีแบบไม่มี role เลยได้ด้วย users.create เพียวๆ แต่ถ้าจะแนบ role มาพร้อมตอนสร้างต้องมี users.roles เพิ่มด้วย
+    // เช็คก่อนแตะ DB เสมอ (ห้ามสร้าง user ค้างไว้บางส่วนแล้วค่อยพบว่ากำหนด role ไม่ได้ — reject ทั้งคำขอ ไม่ใช่เงียบๆ ทิ้ง role ที่ขอมา)
+    if (roleIdsCheck.ids.length > 0) {
+        const perms = await getUserPermissions(req.authUser.id);
+        if (!perms.has(PERMISSIONS.USERS_ROLES)) {
+            return res.status(403).json({ error: 'ต้องมีสิทธิ์ users.roles เพิ่มเติมถึงจะกำหนด role ตอนสร้างบัญชีได้ — สามารถสร้างบัญชีแบบไม่มี role ได้ด้วย users.create อย่างเดียว' });
+        }
+    }
+
     try {
         const passwordHash = hashPassword(body.password); // ไม่ log รหัสผ่านดิบเด็ดขาด ไม่ว่ากรณีไหน
         const newUserId = await withTransaction(async () => {
@@ -1232,6 +1254,13 @@ app.patch('/api/admin/users/:id', requireAuth, async (req, res) => {
     try {
         const target = await dbGetAsync("SELECT id, username, display_name, is_active FROM users WHERE id = ?", [targetId]);
         if (!target) return res.status(404).json({ error: 'not_found' });
+
+        // (Phase 5A.1) delegated admin (ไม่ใช่ owner เอง) ห้ามแก้ username/display_name ของบัญชี owner คนอื่นเด็ดขาด —
+        // username ของ owner ใช้ล็อกอินอยู่ แก้ได้ก็เท่ากับแทรกแซงการเข้าระบบของ owner ได้ทางอ้อม ใช้กฎเดียวกับ role/disable/reset ด้านล่างเพื่อความสม่ำเสมอ
+        if (wantsProfileChange) {
+            const ownerProtectionErr = await ownerTargetProtectionError(req, targetId);
+            if (ownerProtectionErr) return res.status(403).json({ error: ownerProtectionErr });
+        }
 
         let usernameValue, displayNameValue;
         if (Object.prototype.hasOwnProperty.call(body, 'username')) {
@@ -1290,6 +1319,10 @@ app.post('/api/admin/users/:id/disable', requireAuth, requirePermission(PERMISSI
     try {
         const target = await dbGetAsync("SELECT id FROM users WHERE id = ?", [targetId]);
         if (!target) return res.status(404).json({ error: 'not_found' });
+        // (Phase 5A.1) delegated admin (ไม่ใช่ owner เอง) ห้ามปิดใช้งานบัญชี owner คนอื่นเด็ดขาด แม้จะมี users.disable ครบก็ตาม
+        // ต้องเช็คก่อน invariant ด้านล่าง — ไม่งั้น delegated admin จะปิด owner ได้ตราบใดที่ยังมี owner คนอื่นเหลืออยู่ ซึ่งไม่ควรทำได้เลยไม่ว่ากรณีไหน
+        const ownerProtectionErr = await ownerTargetProtectionError(req, targetId);
+        if (ownerProtectionErr) return res.status(403).json({ error: ownerProtectionErr });
         if (await userHasOwnerRole(targetId)) {
             const remaining = await countActiveOwners(targetId);
             if (remaining === 0) return res.status(400).json({ error: 'ไม่สามารถปิดใช้งานบัญชีเจ้าของร้านคนสุดท้ายที่เหลืออยู่ได้' });
@@ -1313,6 +1346,9 @@ app.post('/api/admin/users/:id/enable', requireAuth, requirePermission(PERMISSIO
     try {
         const target = await dbGetAsync("SELECT id FROM users WHERE id = ?", [targetId]);
         if (!target) return res.status(404).json({ error: 'not_found' });
+        // (Phase 5A.1) ขอบเขตเดียวกับ disable — delegated admin ที่ไม่ใช่ owner ต้องไม่ยุ่งกับบัญชี owner แม้แต่การเปิดใช้งานคืน
+        const ownerProtectionErr = await ownerTargetProtectionError(req, targetId);
+        if (ownerProtectionErr) return res.status(403).json({ error: ownerProtectionErr });
         await dbRunAsync("UPDATE users SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetId]);
         const row = await dbGetAsync("SELECT id, username, display_name, is_active FROM users WHERE id = ?", [targetId]);
         res.json(await summarizeUser(row));
@@ -1331,6 +1367,10 @@ app.post('/api/admin/users/:id/reset-password', requireAuth, requirePermission(P
     try {
         const target = await dbGetAsync("SELECT id FROM users WHERE id = ?", [targetId]);
         if (!target) return res.status(404).json({ error: 'not_found' });
+        // (Phase 5A.1) จุดวิกฤต: delegated admin ที่ไม่ใช่ owner ต้อง "ไม่มีทาง" รีเซ็ตรหัสผ่านบัญชี owner ได้เด็ดขาด
+        // ต้องเช็คก่อน hash/แตะ DB ใดๆ ทั้งสิ้น — owner เองยังรีเซ็ตรหัสผ่านของตัวเอง (หรือ owner คนอื่นถ้ามีในอนาคต) ได้ตามปกติ
+        const ownerProtectionErr = await ownerTargetProtectionError(req, targetId);
+        if (ownerProtectionErr) return res.status(403).json({ error: ownerProtectionErr });
         const passwordHash = hashPassword(req.body.new_password); // ไม่ log/ไม่ตอบรหัสผ่านหรือ hash กลับเด็ดขาด
         await withTransaction(async () => {
             await dbRunAsync("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [passwordHash, targetId]);

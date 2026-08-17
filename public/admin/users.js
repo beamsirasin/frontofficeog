@@ -99,7 +99,9 @@ const UsersModule = (function () {
 
     function roleChecklistHtml(prefix, selectedIds) {
         selectedIds = selectedIds || [];
-        if (!roles.length) return '<p class="text-gray-400 text-sm">ไม่มีสิทธิ์ดูรายชื่อ role (users.roles)</p>';
+        // (Phase 5A.1) บัญชีที่มี users.create แต่ไม่มี users.roles ยังสร้างบัญชีได้ปกติ แค่กำหนด role ตอนสร้าง/แก้ไขไม่ได้ —
+        // ไม่แสดง checklist ให้ติ๊กเลย (role_ids ที่ส่งไปจึงเป็น [] เสมอ) ตรงกับที่ server บังคับไว้อีกชั้นอยู่แล้ว
+        if (!roles.length) return '<p class="text-gray-400 text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">บัญชีนี้ไม่มีสิทธิ์ users.roles จึงกำหนด role ให้บัญชีนี้ไม่ได้ (จะถูกสร้าง/คงไว้แบบไม่มี role ใดๆ) — ถ้าต้องการกำหนด role ให้ติดต่อผู้ที่มีสิทธิ์ users.roles</p>';
         return roles.map((r) => {
             const checked = selectedIds.includes(r.id) ? 'checked' : '';
             const checkedClass = selectedIds.includes(r.id) ? 'checked' : '';
