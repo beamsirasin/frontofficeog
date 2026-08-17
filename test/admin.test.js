@@ -590,8 +590,9 @@ test('L3. a rejected role-bearing create (actor lacks users.roles) leaves no new
     assert.equal(row, undefined, 'ไม่ควรมีการสร้าง user แม้จะสร้างสำเร็จแล้วค่อยติด role ไม่ได้ — ต้อง reject ทั้งคำขอตั้งแต่แรก');
 });
 
-test('L4. an actor with BOTH users.create and users.roles can create an account with allowed roles', async () => {
-    const actor = await createDelegatedAdmin(['users.create', 'users.roles'], 'create_and_roles_l4');
+test('L4. an actor with BOTH users.create and users.roles can create an account with allowed roles (within their own permission ceiling)', async () => {
+    // (Phase 5B) ต้องมี kitchen.view/kitchen.manage เองด้วย ไม่งั้นเพดานสิทธิ์ (roleAssignmentCeilingError) จะบล็อกการมอบ role kitchen ให้คนอื่น
+    const actor = await createDelegatedAdmin(['users.create', 'users.roles', 'kitchen.view', 'kitchen.manage'], 'create_and_roles_l4');
     const kitchenRoleId = await roleIdByKey('kitchen');
     const res = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
         display_name: 'x', username: 'l4_withroles', password: 'l4-withroles-pass-123', role_ids: [kitchenRoleId],
@@ -623,7 +624,7 @@ test('L6. a fake/nonexistent role id in a create request fails, even for an acto
 });
 
 test('L7. duplicate username and invalid-field create requests continue to behave safely for a create+roles actor', async () => {
-    const actor = await createDelegatedAdmin(['users.create', 'users.roles'], 'create_and_roles_l7');
+    const actor = await createDelegatedAdmin(['users.create', 'users.roles', 'kitchen.view', 'kitchen.manage'], 'create_and_roles_l7');
     const kitchenRoleId = await roleIdByKey('kitchen');
     const ok = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
         display_name: 'x', username: 'l7_dupe', password: 'l7-pass-123', role_ids: [kitchenRoleId],
@@ -793,7 +794,8 @@ test('N3 (item 22). a users.edit-only account cannot modify roles', async () => 
 });
 
 test('N4 (item 23). a users.roles-only account cannot modify username/display_name', async () => {
-    const actor = await createDelegatedAdmin(['users.roles'], 'roles_meta_n4');
+    // (Phase 5B) actor ต้องมี kitchen.view/kitchen.manage เองด้วย ไม่งั้นเพดานสิทธิ์จะบล็อกการมอบ role kitchen ให้เป้าหมาย
+    const actor = await createDelegatedAdmin(['users.roles', 'kitchen.view', 'kitchen.manage'], 'roles_meta_n4');
     const targetId = await createTestUser('n4_target', 'n4-pass-123');
     const kitchenRoleId = await roleIdByKey('kitchen');
     const okRoles = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [kitchenRoleId] });
@@ -860,10 +862,12 @@ test('H2. a user assigned two roles has both represented in the roles array', as
     assert.deepEqual(u.roles.map((r) => r.key).sort(), ['kitchen', 'queue']);
 });
 
-test('H3. the owner role is never offered by GET /api/admin/roles — unavailable as an assignment option in the UI', async () => {
+test('H3 (Phase 5B). GET /api/admin/roles now includes the owner role (for the Role Management page to show it as a locked system role), flagged is_system — but it remains impossible to actually ASSIGN via any staff-account mutation (see C9/L5/M5)', async () => {
     const res = await adminApi(ownerCookie, 'GET', '/api/admin/roles');
     const roles = await res.json();
-    assert.equal(roles.some((r) => r.key === 'owner'), false);
+    const owner = roles.find((r) => r.key === 'owner');
+    assert.ok(owner, 'Role Management ต้องเห็น owner เป็น locked role ได้ — endpoint นี้จึงคืน owner มาด้วยตั้งแต่ Phase 5B');
+    assert.equal(owner.is_system, true);
     assert.ok(roles.some((r) => r.key === 'kitchen'), 'role ระบบปกติอื่นๆ ต้องยังอยู่ครบ');
 });
 

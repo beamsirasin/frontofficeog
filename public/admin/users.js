@@ -90,18 +90,31 @@ const UsersModule = (function () {
         render();
     }
 
+    // role หนึ่งจะ "มอบให้พนักงานคนอื่นได้จริง" ก็ต่อเมื่อ actor เองมี permission ครบทุกตัวที่ role นั้นให้ (เพดานสิทธิ์ฝั่ง server บังคับอยู่แล้ว —
+    // ตรงนี้แค่ไม่โชว์ตัวเลือกที่กดไปก็โดน 403 อยู่ดี เป็น UX เท่านั้น ไม่ใช่การป้องกันความปลอดภัยจริง)
+    function withinActorCeiling(role) {
+        return (role.permissions || []).every((p) => AdminApp.hasPermission(p));
+    }
+
     async function loadRoles() {
         if (!AdminApp.hasPermission('users.roles')) { roles = []; return; }
         const res = await AdminApp.apiFetch('/api/admin/roles');
         if (!res) return;
-        roles = await res.json();
+        // (Phase 5B) GET /api/admin/roles ตอนนี้คืน owner มาด้วย (ให้หน้า Role Management ใช้) — ตัด owner ออกเสมอสำหรับ checklist มอบ role ให้พนักงานที่นี่
+        // และตัด role ที่เกินเพดานสิทธิ์ของ actor ออกด้วย (ดู withinActorCeiling ด้านบน)
+        roles = (await res.json()).filter((r) => r.key !== 'owner' && withinActorCeiling(r));
     }
 
     function roleChecklistHtml(prefix, selectedIds) {
         selectedIds = selectedIds || [];
-        // (Phase 5A.1) บัญชีที่มี users.create แต่ไม่มี users.roles ยังสร้างบัญชีได้ปกติ แค่กำหนด role ตอนสร้าง/แก้ไขไม่ได้ —
-        // ไม่แสดง checklist ให้ติ๊กเลย (role_ids ที่ส่งไปจึงเป็น [] เสมอ) ตรงกับที่ server บังคับไว้อีกชั้นอยู่แล้ว
-        if (!roles.length) return '<p class="text-gray-400 text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">บัญชีนี้ไม่มีสิทธิ์ users.roles จึงกำหนด role ให้บัญชีนี้ไม่ได้ (จะถูกสร้าง/คงไว้แบบไม่มี role ใดๆ) — ถ้าต้องการกำหนด role ให้ติดต่อผู้ที่มีสิทธิ์ users.roles</p>';
+        // (Phase 5A.1 + 5B) ไม่แสดง checklist เลยถ้าไม่มี users.roles หรือถ้ามีแต่ไม่มี role ไหนอยู่ในเพดานสิทธิ์ของตัวเองเลยสักตัว —
+        // role_ids ที่ส่งไปจึงเป็น [] เสมอในกรณีนี้ ตรงกับที่ server บังคับไว้อีกชั้นอยู่แล้ว (roleAssignmentCeilingError)
+        if (!roles.length) {
+            const reason = AdminApp.hasPermission('users.roles')
+                ? 'บัญชีนี้ไม่มี permission ที่ตรงกับ role ใดเลย จึงมอบ role ให้บัญชีนี้ไม่ได้ (มอบได้แค่ role ที่ permission ทั้งหมดอยู่ในสิทธิ์ของตัวเองเท่านั้น)'
+                : 'บัญชีนี้ไม่มีสิทธิ์ users.roles จึงกำหนด role ให้บัญชีนี้ไม่ได้';
+            return `<p class="text-gray-400 text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">${AdminApp.esc(reason)} (จะถูกสร้าง/คงไว้แบบไม่มี role ใดๆ)</p>`;
+        }
         return roles.map((r) => {
             const checked = selectedIds.includes(r.id) ? 'checked' : '';
             const checkedClass = selectedIds.includes(r.id) ? 'checked' : '';

@@ -55,6 +55,58 @@
 .role-checkbox-card:hover { border-color: #93c5fd; }
 .role-checkbox-card.checked { border-color: #2563eb; background: #eff6ff; }
 
+/* ===== Roles panel (Phase 5B) ===== */
+.role-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    padding: 14px 16px;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .04);
+}
+.role-card-locked {
+    background: #f9fafb;
+    border-style: dashed;
+}
+.role-locked-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #f3f4f6;
+    border: 1px solid #d1d5db;
+    color: #6b7280;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+}
+.role-custom-badge {
+    display: inline-flex;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    color: #3730a3;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+}
+.perm-checkbox-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: border-color .1s, background-color .1s;
+}
+.perm-checkbox-row:hover { border-color: #93c5fd; }
+.perm-checkbox-row-disabled {
+    cursor: not-allowed;
+    opacity: .55;
+    background: #f9fafb;
+}
+
 @media (max-width: 767px) {
     #usersTable, #usersTable tbody, #usersTable tr, #usersTable td { display: block; width: 100%; }
     #usersTable thead { display: none; }

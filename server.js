@@ -226,6 +226,14 @@ const PERMISSIONS = {
     USERS_DISABLE: 'users.disable',               // ปิด/เปิดใช้งานบัญชี (POST /api/admin/users/:id/disable, /enable)
     USERS_RESET_PASSWORD: 'users.reset_password', // รีเซ็ตรหัสผ่านบัญชีพนักงานคนอื่น (POST /api/admin/users/:id/reset-password)
     USERS_ROLES: 'users.roles',                   // แก้ไข role ที่ผูกกับบัญชี (PATCH /api/admin/users/:id — เฉพาะฟิลด์ role_ids) + ดูรายชื่อ role ที่มี
+
+    // (Phase 5B) จัดการ "role" เอง (สร้าง/แก้ไข/ลบ custom role + แก้ permission ของ role) — คนละเรื่องกับ users.roles ซึ่งแค่ "ผูก role ที่มีอยู่แล้วเข้ากับบัญชี"
+    // ไม่ให้ role ระบบเดิมได้สิทธิ์กลุ่มนี้เป็นค่าเริ่มต้นเช่นกัน — owner ได้ทุกตัวอัตโนมัติผ่าน '*' เท่านั้น
+    ROLES_VIEW: 'roles.view',               // ดู role catalogue ทั้งหมด (ระบบ+custom) พร้อมรายละเอียด/permission/จำนวนผู้ใช้ (GET /api/admin/roles, /api/admin/roles/:id, /api/admin/permissions)
+    ROLES_CREATE: 'roles.create',           // สร้าง custom role เปล่า (ยังไม่มี permission ก็ได้) (POST /api/admin/roles)
+    ROLES_EDIT: 'roles.edit',               // แก้ชื่อ/คำอธิบายของ custom role (PATCH /api/admin/roles/:id — เฉพาะฟิลด์ name/description)
+    ROLES_DELETE: 'roles.delete',           // ลบ custom role ที่ไม่มีใครใช้อยู่ (DELETE /api/admin/roles/:id)
+    ROLES_PERMISSIONS: 'roles.permissions', // กำหนด/แก้ไข permission ที่ผูกกับ custom role (POST /api/admin/roles และ PATCH /api/admin/roles/:id — เฉพาะฟิลด์ permission_keys)
 };
 
 const PERMISSION_CATALOGUE = [
@@ -243,6 +251,11 @@ const PERMISSION_CATALOGUE = [
     { key: PERMISSIONS.USERS_DISABLE, name: 'ปิด/เปิดใช้งานบัญชี', description: 'ปิดใช้งานหรือเปิดใช้งานบัญชีพนักงานคืน' },
     { key: PERMISSIONS.USERS_RESET_PASSWORD, name: 'รีเซ็ตรหัสผ่านพนักงาน', description: 'ตั้งรหัสผ่านใหม่ให้บัญชีพนักงานคนอื่น' },
     { key: PERMISSIONS.USERS_ROLES, name: 'จัดการ role ของบัญชี', description: 'ดูรายชื่อ role ที่มี และแก้ไข role ที่ผูกกับบัญชีพนักงาน' },
+    { key: PERMISSIONS.ROLES_VIEW, name: 'ดู role ทั้งหมด', description: 'ดูรายชื่อ role ระบบและ custom role ทั้งหมด พร้อมรายละเอียดและ permission' },
+    { key: PERMISSIONS.ROLES_CREATE, name: 'สร้าง custom role', description: 'สร้าง custom role ใหม่ (โครงเปล่า ไม่รวมการกำหนด permission)' },
+    { key: PERMISSIONS.ROLES_EDIT, name: 'แก้ไขข้อมูล custom role', description: 'แก้ชื่อหรือคำอธิบายของ custom role' },
+    { key: PERMISSIONS.ROLES_DELETE, name: 'ลบ custom role', description: 'ลบ custom role ที่ไม่มีบัญชีใดใช้งานอยู่' },
+    { key: PERMISSIONS.ROLES_PERMISSIONS, name: 'กำหนด permission ของ custom role', description: 'ตั้ง/แก้ไขชุด permission ที่ผูกกับ custom role' },
 ];
 
 // role ระบบชุดแรก — ข้อมูล ไม่ใช่เงื่อนไขในโค้ด (ห้าม hardcode if(role==='kitchen') ที่ไหนเลย)
@@ -253,6 +266,8 @@ const PERMISSION_CATALOGUE = [
 // queue และ kitchen ต้อง "ไม่" ได้ tables.qr โดยเด็ดขาด แม้จะมี queue.manage ซึ่งยังคุม /api/tables (แบบไม่มี session_token) อยู่ก็ตาม
 // (Phase 5A) users.* (จัดการบัญชีพนักงานที่ /admin/) "ไม่" ให้ role ระบบไหนนอกจาก owner เลยโดยเด็ดขาด (least privilege) —
 // ตั้งใจไม่เพิ่มลงใน kitchen/queue/tables/manager ด้านล่าง แม้แต่ตัวเดียว ต่อให้ในอนาคตมี custom role เพิ่มก็ต้องได้รับ users.* แบบเจาะจงเท่านั้น
+// (Phase 5B) roles.* (จัดการ custom role เอง) เช่นเดียวกัน — ไม่ให้ role ระบบไหนนอกจาก owner โดยเด็ดขาด
+// การมอบ permission ให้ role ใดๆ (รวมถึง role ระบบพวกนี้) ยังต้องผ่านเพดานสิทธิ์ (permission ceiling) เสมอ ดู permissionCeilingError/roleAssignmentCeilingError ด้านล่าง
 const ROLE_CATALOGUE = {
     owner: { name: 'เจ้าของร้าน', description: 'สิทธิ์เต็มทุกอย่างในระบบ', permissions: '*' },
     kitchen: { name: 'ครัว', description: 'ดูและจัดการออเดอร์ในครัว', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE] },
@@ -500,6 +515,12 @@ const ADMIN_PAGE_PERMISSIONS = [
     PERMISSIONS.USERS_DISABLE,
     PERMISSIONS.USERS_RESET_PASSWORD,
     PERMISSIONS.USERS_ROLES,
+    // (Phase 5B) a role-only delegated admin (e.g. only roles.view/roles.edit, no users.*) must still be able to enter /admin/
+    PERMISSIONS.ROLES_VIEW,
+    PERMISSIONS.ROLES_CREATE,
+    PERMISSIONS.ROLES_EDIT,
+    PERMISSIONS.ROLES_DELETE,
+    PERMISSIONS.ROLES_PERMISSIONS,
 ];
 
 async function hasAdminPageAccess(userId) {
@@ -1119,8 +1140,151 @@ async function ownerTargetProtectionError(req, targetId) {
 
 // role ที่แสดง/รับสมัครผ่าน /admin/ ทั้งหมด "ยกเว้น" owner เสมอ (ห้ามสร้าง/กำหนด owner คนที่สองผ่านหน้านี้เด็ดขาด)
 // กรองที่ต้นทาง (server) ไม่ใช่แค่ซ่อนที่ frontend — เพื่อไม่ให้ role นี้ถูกกำหนดได้เลยไม่ว่าทางไหน
+// ใช้เฉพาะเป็นฐานของ validateRoleIds (ตรวจว่า role_ids ที่ส่งมา "กำหนดได้จริง") — คนละหน้าที่กับ GET /api/admin/roles
+// ที่ตอนนี้ (Phase 5B) ต้องแสดง "ทุก" role รวม owner ด้วยเพื่อให้หน้า Role Management เห็น owner เป็น locked role ได้ (ดู summarizeRole/route ด้านล่าง)
 async function assignableRoles() {
     return dbAllAsync("SELECT id, key, name, description FROM roles WHERE key != 'owner' ORDER BY id");
+}
+
+// ---- (Phase 5B) เพดานสิทธิ์ (privilege ceiling): non-owner actor มอบ/แก้ไข permission ให้ role ได้แค่เท่าที่ตัวเองมีอยู่จริงเท่านั้น ----
+// invariant หลักของทั้งเฟส: "ผู้ใช้ที่ไม่ใช่ owner ต้องไม่สามารถมอบ permission ที่ตัวเองไม่มี" — resolve จาก DB สดทุกครั้ง ไม่เชื่อ client
+// owner ได้รับการยกเว้นเสมอ (root ของระบบ) — ในทางปฏิบัติ getUserPermissions(owner) ก็มีครบทุกตัวอยู่แล้วผ่าน '*' ของ initRbac
+// แต่เขียนเป็นเงื่อนไขชัดเจนแยกไว้ตามที่ข้อกำหนดต้องการ ไม่ใช่พึ่งพฤติกรรมโดยบังเอิญ
+async function permissionCeilingError(actorUserId, requestedPermissionKeys) {
+    if (!requestedPermissionKeys.length) return null;
+    const actorIsOwner = await userHasOwnerRole(actorUserId);
+    if (actorIsOwner) return null;
+    const actorPerms = await getUserPermissions(actorUserId);
+    const exceeded = requestedPermissionKeys.filter((k) => !actorPerms.has(k));
+    if (exceeded.length > 0) return `ไม่มีสิทธิ์มอบ permission ที่ตัวเองไม่มี: ${exceeded.join(', ')}`;
+    return null;
+}
+
+// permission ปัจจุบันที่ผูกกับ role หนึ่ง (ไม่ว่าระบบหรือ custom) — ใช้เทียบเพดานสิทธิ์ของ actor ก่อนอนุญาตให้ "แก้ไข/ลบ/มอบหมาย" role นั้น
+async function rolePermissionKeys(roleId) {
+    const rows = await dbAllAsync(
+        `SELECT permissions.key FROM role_permissions
+         JOIN permissions ON permissions.id = role_permissions.permission_id
+         WHERE role_permissions.role_id = ?`,
+        [roleId]
+    );
+    return rows.map((r) => r.key);
+}
+
+// (Phase 5B) เพดานการ "มอบหมาย role ให้บัญชี" — non-owner actor มอบ role ให้ใครไม่ได้เลยถ้า permission รวมของ role นั้นมีตัวที่ actor เองไม่มี
+// (แม้ actor จะมี users.roles ก็ตาม) — กันการยกระดับสิทธิ์ทางอ้อมผ่านการ "มอบ role ที่แรงกว่าตัวเอง" ให้ตัวเองหรือคนอื่น
+// ใช้ร่วมกันทั้งใน POST /api/admin/users และ PATCH /api/admin/users/:id (ดู section 19 ของข้อกำหนด — centralize ไม่ให้ logic ซ้ำ/เพี้ยน)
+async function roleAssignmentCeilingError(actorUserId, roleIds) {
+    if (!roleIds.length) return null;
+    const actorIsOwner = await userHasOwnerRole(actorUserId);
+    if (actorIsOwner) return null;
+    const actorPerms = await getUserPermissions(actorUserId);
+    for (const roleId of roleIds) {
+        const keys = await rolePermissionKeys(roleId);
+        const exceeded = keys.filter((k) => !actorPerms.has(k));
+        if (exceeded.length > 0) {
+            return `ไม่มีสิทธิ์มอบ role นี้ให้ผู้อื่น เพราะ role มี permission ที่ตัวเองไม่มี: ${exceeded.join(', ')}`;
+        }
+    }
+    return null;
+}
+
+// (Phase 5B) เพดานการ "จัดการ custom role ที่มีอยู่แล้ว" (แก้ชื่อ/คำอธิบาย/permission/ลบ) — non-owner actor แตะ custom role ได้
+// เฉพาะที่ permission ปัจจุบันของ role นั้น (ก่อนแก้ไข) อยู่ในขอบเขตที่ตัวเองมีอยู่แล้วทั้งหมดเท่านั้น
+// เหตุผล: ผู้จัดการ role ที่มีสิทธิ์จำกัด ไม่ควรไปยุ่ง/ทำลายนโยบายความปลอดภัยที่ตัวเองไม่มีอำนาจมอบ/ควบคุมอยู่แล้วตั้งแต่ต้น (ดูข้อกำหนด section 21)
+async function customRoleCeilingError(actorUserId, roleId) {
+    const actorIsOwner = await userHasOwnerRole(actorUserId);
+    if (actorIsOwner) return null;
+    const actorPerms = await getUserPermissions(actorUserId);
+    const currentKeys = await rolePermissionKeys(roleId);
+    const exceeded = currentKeys.filter((k) => !actorPerms.has(k));
+    if (exceeded.length > 0) return `ไม่มีสิทธิ์จัดการ role นี้ เพราะ role มี permission ที่ตัวเองไม่มีอยู่แล้วในปัจจุบัน: ${exceeded.join(', ')}`;
+    return null;
+}
+
+// ตรวจ permission_keys ที่ส่งมาจาก client สำหรับสร้าง/แก้ไข custom role: ต้องเป็น array ของ string ที่มีอยู่จริงในตาราง permissions เท่านั้น
+// ใช้ key (ไม่ใช่ id) เป็น field สาธารณะโดยตั้งใจ — ทั้งระบบอ้างอิง permission ด้วย key เป็นหลักอยู่แล้วทุกที่ (getUserPermissions, /api/verify, summarizeRole ฯลฯ)
+// ตาราง permissions ไม่เคยมีแถวที่ key เป็น '*' เลย ('*' เป็นแค่ shorthand ระดับ ROLE_CATALOGUE ตอน seed owner เท่านั้น) จึงไม่มีทางถูกเลือกผ่าน endpoint นี้ได้อยู่แล้วโดยโครงสร้าง
+async function validatePermissionKeys(rawKeys) {
+    if (!Array.isArray(rawKeys)) return { error: 'permission_keys ต้องเป็น array' };
+    if (rawKeys.some((k) => typeof k !== 'string')) return { error: 'permission_keys ต้องเป็น array ของ string ทั้งหมด' };
+    const unique = [...new Set(rawKeys)];
+    const rows = await dbAllAsync('SELECT id, key FROM permissions');
+    const idByKey = new Map(rows.map((r) => [r.key, r.id]));
+    const invalid = unique.filter((k) => !idByKey.has(k));
+    if (invalid.length > 0) return { error: `permission_keys มีค่าที่ไม่ถูกต้อง: ${invalid.join(', ')}` };
+    return { ids: unique.map((k) => idByKey.get(k)), keys: unique };
+}
+
+const ROLE_NAME_MAX_LENGTH = 60;
+const ROLE_DESCRIPTION_MAX_LENGTH = 300;
+function validateRoleName(raw) {
+    const value = String(raw ?? '').trim();
+    if (!value) return { error: 'ต้องระบุชื่อ role' };
+    if ([...value].length > ROLE_NAME_MAX_LENGTH) return { error: `ชื่อ role ยาวเกินไป (ไม่เกิน ${ROLE_NAME_MAX_LENGTH} ตัวอักษร)` };
+    return { value };
+}
+function validateRoleDescription(raw) {
+    if (raw === undefined || raw === null) return { value: '' };
+    const value = String(raw).trim();
+    if ([...value].length > ROLE_DESCRIPTION_MAX_LENGTH) return { error: `คำอธิบาย role ยาวเกินไป (ไม่เกิน ${ROLE_DESCRIPTION_MAX_LENGTH} ตัวอักษร)` };
+    return { value };
+}
+
+// ---- (Phase 5B) สร้าง key ของ custom role ฝั่งเซิร์ฟเวอร์ล้วนๆ — client ไม่มีทาง submit key เองได้เลย (ไม่มี field ให้ส่งด้วยซ้ำ) ----
+// namespace "custom." กันชนกับ key ของ role ระบบ (owner/kitchen/queue/tables/manager) โดยโครงสร้าง — ปลอมเป็น role ระบบไม่ได้เด็ดขาด
+// normalize ชื่อที่แสดง (อาจเป็นภาษาไทยล้วน) ให้เหลือแต่ [a-z0-9] คั่นด้วย _ — ถ้าไม่เหลืออักษรที่ใช้ได้เลย (เช่นชื่อเป็นภาษาไทยล้วน) fallback เป็น slug สุ่มสั้นๆ แทน
+// ชนกัน (base ซ้ำ) ต่อท้ายด้วย _2, _3, ... จนกว่าจะว่าง — กันด้วย loop เช็ค DB ตรงๆ (โอกาส race ต่ำมากในระบบขนาดนี้ และยังมี UNIQUE constraint ที่ DB คุมอีกชั้น)
+const CUSTOM_ROLE_KEY_PREFIX = 'custom.';
+const CUSTOM_ROLE_KEY_MAX_LENGTH = 60;
+function slugifyForRoleKey(name) {
+    return String(name || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+}
+async function generateCustomRoleKey(name) {
+    let base = slugifyForRoleKey(name);
+    if (!base) base = `role_${crypto.randomBytes(3).toString('hex')}`;
+    const maxBaseLen = CUSTOM_ROLE_KEY_MAX_LENGTH - CUSTOM_ROLE_KEY_PREFIX.length - 4; // เผื่อที่ต่อ suffix ตัวเลข เช่น "_23"
+    base = base.slice(0, Math.max(1, maxBaseLen));
+
+    let candidate = `${CUSTOM_ROLE_KEY_PREFIX}${base}`;
+    let n = 2;
+    while (await dbGetAsync('SELECT 1 AS x FROM roles WHERE key = ?', [candidate])) {
+        candidate = `${CUSTOM_ROLE_KEY_PREFIX}${base}_${n}`;
+        n += 1;
+    }
+    return candidate;
+}
+
+function permissionGroupLabel(key) {
+    const prefix = String(key).split('.')[0];
+    const labels = {
+        kitchen: 'ครัว', queue: 'คิว', tables: 'โต๊ะ', reports: 'รายงาน',
+        users: 'บัญชีพนักงาน', roles: 'จัดการ Role',
+    };
+    return labels[prefix] || prefix;
+}
+
+// สรุปข้อมูล role 1 ตัวสำหรับส่งกลับผ่าน API — ใช้ทั้งระบบและ custom role, ไม่มี metadata ภายในของ DB หลุดออกไปเกินจำเป็น
+async function summarizeRole(roleRow) {
+    const permRows = await dbAllAsync(
+        `SELECT permissions.key FROM role_permissions
+         JOIN permissions ON permissions.id = role_permissions.permission_id
+         WHERE role_permissions.role_id = ?`,
+        [roleRow.id]
+    );
+    const countRow = await dbGetAsync('SELECT COUNT(*) AS c FROM user_roles WHERE role_id = ?', [roleRow.id]);
+    return {
+        id: roleRow.id,
+        key: roleRow.key,
+        name: roleRow.name,
+        description: roleRow.description,
+        is_system: !!roleRow.is_system,
+        permissions: permRows.map((p) => p.key).sort(),
+        assigned_user_count: countRow ? countRow.c : 0,
+    };
 }
 
 // ตรวจ role_ids ที่ส่งมาจาก client: ต้องเป็น array ของ integer, มีอยู่จริงใน DB, และ "ห้าม" มี owner role ปนมาเด็ดขาด (กัน privilege escalation ผ่านการยิง id ตรงๆ)
@@ -1173,21 +1337,42 @@ app.get('/api/admin/users', requireAuth, requirePermission(PERMISSIONS.USERS_VIE
 });
 
 // GET /api/admin/roles — role ที่มีให้กำหนด (ไม่รวม owner) พร้อม permission ที่มีผลจริงของแต่ละ role
-app.get('/api/admin/roles', requireAuth, requirePermission(PERMISSIONS.USERS_ROLES), async (req, res) => {
+// (Phase 5B) ตอนนี้คืน "ทุก" role รวม owner ด้วย (มี is_system + assigned_user_count ให้หน้า Role Management ใช้แสดง owner เป็น locked role ได้)
+// permission gate เป็น OR ของ roles.view (ใหม่ สำหรับหน้า Role Management) กับ users.roles (เดิม สำหรับ role picker ตอนสร้าง/แก้ไขบัญชีพนักงาน) —
+// รักษาความเข้ากันได้กับ delegated admin เดิมที่มีแค่ users.roles โดยไม่ต้องมี roles.view เพิ่ม (ดู "existing compatibility rule" ในข้อกำหนด)
+// การที่ endpoint นี้คืน owner มาด้วยไม่ใช่ช่องโหว่ — ขอบเขต "กำหนด role ได้จริง" คุมที่ validateRoleIds/assignableRoles ต่างหาก (ยัง exclude owner เหมือนเดิมทุกจุด)
+app.get('/api/admin/roles', requireAuth, requirePermission(PERMISSIONS.ROLES_VIEW, PERMISSIONS.USERS_ROLES), async (req, res) => {
     try {
-        const roles = await assignableRoles();
-        const withPerms = await Promise.all(roles.map(async (r) => {
-            const permRows = await dbAllAsync(
-                `SELECT permissions.key FROM role_permissions
-                 JOIN permissions ON permissions.id = role_permissions.permission_id
-                 WHERE role_permissions.role_id = ?`,
-                [r.id]
-            );
-            return { id: r.id, key: r.key, name: r.name, description: r.description, permissions: permRows.map((p) => p.key).sort() };
-        }));
-        res.json(withPerms);
+        const rows = await dbAllAsync('SELECT id, key, name, description, is_system FROM roles ORDER BY is_system DESC, id');
+        const roles = await Promise.all(rows.map(summarizeRole));
+        res.json(roles);
     } catch (e) {
         console.error('[admin] ดึงรายชื่อ role ไม่สำเร็จ:', e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+app.get('/api/admin/roles/:id', requireAuth, requirePermission(PERMISSIONS.ROLES_VIEW, PERMISSIONS.USERS_ROLES), async (req, res) => {
+    const roleId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(roleId)) return res.status(400).json({ error: 'invalid_id' });
+    try {
+        const row = await dbGetAsync('SELECT id, key, name, description, is_system FROM roles WHERE id = ?', [roleId]);
+        if (!row) return res.status(404).json({ error: 'not_found' });
+        res.json(await summarizeRole(row));
+    } catch (e) {
+        console.error(`[admin] ดึงรายละเอียด role ไม่สำเร็จ (id=${roleId}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// GET /api/admin/permissions — permission catalogue ทั้งหมดสำหรับหน้า Role Management (จัดกลุ่มด้วย "group" ที่คำนวณจาก prefix ของ key เพื่อความสะดวกฝั่ง UI เท่านั้น)
+// ไม่มีทางคืน '*' ออกไปได้เลย เพราะตาราง permissions ไม่เคยมีแถวที่ key เป็น '*' อยู่แล้วโดยโครงสร้าง ('*' เป็นแค่ shorthand ตอน seed owner ใน initRbac)
+app.get('/api/admin/permissions', requireAuth, requirePermission(PERMISSIONS.ROLES_VIEW), async (req, res) => {
+    try {
+        const rows = await dbAllAsync('SELECT key, name, description FROM permissions ORDER BY key');
+        res.json(rows.map((p) => ({ key: p.key, name: p.name, description: p.description, group: permissionGroupLabel(p.key) })));
+    } catch (e) {
+        console.error('[admin] ดึง permission catalogue ไม่สำเร็จ:', e.message);
         res.status(500).json({ error: 'internal_error' });
     }
 });
@@ -1212,6 +1397,10 @@ app.post('/api/admin/users', requireAuth, requirePermission(PERMISSIONS.USERS_CR
         if (!perms.has(PERMISSIONS.USERS_ROLES)) {
             return res.status(403).json({ error: 'ต้องมีสิทธิ์ users.roles เพิ่มเติมถึงจะกำหนด role ตอนสร้างบัญชีได้ — สามารถสร้างบัญชีแบบไม่มี role ได้ด้วย users.create อย่างเดียว' });
         }
+        // (Phase 5B) เพดานการมอบหมาย role: non-owner มอบได้แค่ role ที่ permission รวมของ role นั้นอยู่ในขอบเขตที่ตัวเองมีอยู่แล้วเท่านั้น
+        // กันการสร้างบัญชี (รวมถึงบัญชีของตัวเองในทางทฤษฎีถ้า endpoint นี้ถูกเรียกซ้ำ) ที่มี role แรงกว่า actor เอง
+        const ceilingErr = await roleAssignmentCeilingError(req.authUser.id, roleIdsCheck.ids);
+        if (ceilingErr) return res.status(403).json({ error: ceilingErr });
     }
 
     try {
@@ -1281,6 +1470,9 @@ app.patch('/api/admin/users/:id', requireAuth, async (req, res) => {
             if (await userHasOwnerRole(targetId)) return res.status(400).json({ error: 'ไม่สามารถแก้ไข role ของบัญชีเจ้าของร้านผ่านหน้านี้ได้' });
             const roleIdsCheck = await validateRoleIds(body.role_ids);
             if (roleIdsCheck.error) return res.status(400).json({ error: roleIdsCheck.error });
+            // (Phase 5B) เพดานการมอบหมาย role เดียวกับตอนสร้างบัญชี — ครอบคลุมทั้งการมอบให้ตัวเอง (self-escalation) และมอบให้คนอื่น
+            const ceilingErr = await roleAssignmentCeilingError(req.authUser.id, roleIdsCheck.ids);
+            if (ceilingErr) return res.status(403).json({ error: ceilingErr });
             roleIds = roleIdsCheck.ids;
         }
 
@@ -1379,6 +1571,157 @@ app.post('/api/admin/users/:id/reset-password', requireAuth, requirePermission(P
         res.json({ success: true });
     } catch (e) {
         console.error(`[admin] รีเซ็ตรหัสผ่านไม่สำเร็จ (id=${targetId}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// ================== Admin: จัดการ custom role (Phase 5B) ==================
+// role ระบบ (is_system = 1) แก้ไม่ได้/ลบไม่ได้ผ่าน API กลุ่มนี้เลยไม่ว่า actor จะเป็นใคร (รวมถึง owner) — เปลี่ยนได้แค่ผ่านโค้ด ROLE_CATALOGUE เท่านั้น
+// custom role ทุกตัวถูกสร้างด้วย is_system = 0 เสมอ และ key มาจาก generateCustomRoleKey() ฝั่งเซิร์ฟเวอร์ล้วนๆ — client ไม่มี field ให้ submit key/is_system ได้เลย
+
+// POST /api/admin/roles — สร้าง custom role ใหม่ (โครงเปล่า หรือพร้อม permission เริ่มต้นก็ได้)
+app.post('/api/admin/roles', requireAuth, requirePermission(PERMISSIONS.ROLES_CREATE), async (req, res) => {
+    const body = req.body || {};
+    const nameCheck = validateRoleName(body.name);
+    if (nameCheck.error) return res.status(400).json({ error: nameCheck.error });
+    const descCheck = validateRoleDescription(body.description);
+    if (descCheck.error) return res.status(400).json({ error: descCheck.error });
+    const permIdsCheck = await validatePermissionKeys(body.permission_keys ?? []);
+    if (permIdsCheck.error) return res.status(400).json({ error: permIdsCheck.error });
+
+    if (permIdsCheck.ids.length > 0) {
+        // (Phase 5B) การ "สร้าง role เปล่า" (roles.create) กับ "กำหนด permission ให้ role" (roles.permissions) เป็นคนละสิทธิ์กัน — เหมือนที่ users.create/users.roles แยกไว้แล้วใน Phase 5A.1
+        const perms = await getUserPermissions(req.authUser.id);
+        if (!perms.has(PERMISSIONS.ROLES_PERMISSIONS)) {
+            return res.status(403).json({ error: 'ต้องมีสิทธิ์ roles.permissions เพิ่มเติมถึงจะกำหนด permission ตอนสร้าง role ได้ — สามารถสร้าง role เปล่าได้ด้วย roles.create อย่างเดียว' });
+        }
+        // (Phase 5B) เพดานสิทธิ์: non-owner มอบให้ role ใหม่ได้แค่ permission ที่ตัวเองมีอยู่แล้วเท่านั้น — ห้ามสร้าง role ที่แรงกว่าตัวเอง
+        const ceilingErr = await permissionCeilingError(req.authUser.id, permIdsCheck.keys);
+        if (ceilingErr) return res.status(403).json({ error: ceilingErr });
+    }
+
+    try {
+        const key = await generateCustomRoleKey(nameCheck.value);
+        const newRoleId = await withTransaction(async () => {
+            const result = await dbRunAsync(
+                "INSERT INTO roles (key, name, description, is_system) VALUES (?, ?, ?, 0)",
+                [key, nameCheck.value, descCheck.value]
+            );
+            for (const permId of permIdsCheck.ids) {
+                await dbRunAsync("INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)", [result.lastID, permId]);
+            }
+            return result.lastID;
+        });
+        const row = await dbGetAsync('SELECT id, key, name, description, is_system FROM roles WHERE id = ?', [newRoleId]);
+        res.status(201).json(await summarizeRole(row));
+    } catch (e) {
+        if (e && e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'role key ชนกัน กรุณาลองใหม่อีกครั้ง' });
+        console.error('[admin] สร้าง role ไม่สำเร็จ:', e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// PATCH /api/admin/roles/:id — แก้ข้อมูล custom role: metadata (name/description, ต้องมี roles.edit) และ/หรือ permission (permission_keys, ต้องมี roles.permissions)
+// สองสิทธิ์แยกกันโดยเจตนา เหมือน PATCH /api/admin/users/:id — key และ is_system ไม่มีทางถูกแก้ได้เพราะไม่เคยอ่านจาก body เลย
+app.patch('/api/admin/roles/:id', requireAuth, async (req, res) => {
+    const roleId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(roleId)) return res.status(400).json({ error: 'invalid_id' });
+    const body = req.body || {};
+    const wantsMetaChange = Object.prototype.hasOwnProperty.call(body, 'name') || Object.prototype.hasOwnProperty.call(body, 'description');
+    const wantsPermChange = Object.prototype.hasOwnProperty.call(body, 'permission_keys');
+    if (!wantsMetaChange && !wantsPermChange) return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' });
+
+    let perms;
+    try { perms = await getUserPermissions(req.authUser.id); }
+    catch (e) { return res.status(500).json({ error: 'internal_error' }); }
+    if (wantsMetaChange && !perms.has(PERMISSIONS.ROLES_EDIT)) return res.status(403).json({ error: 'forbidden' });
+    if (wantsPermChange && !perms.has(PERMISSIONS.ROLES_PERMISSIONS)) return res.status(403).json({ error: 'forbidden' });
+
+    try {
+        const target = await dbGetAsync('SELECT id, key, name, description, is_system FROM roles WHERE id = ?', [roleId]);
+        if (!target) return res.status(404).json({ error: 'not_found' });
+        // (Phase 5B) role ระบบแก้ไม่ได้ผ่าน API นี้เด็ดขาด ไม่ว่า actor จะเป็นใคร (รวม owner) — เปลี่ยนได้แค่ผ่าน ROLE_CATALOGUE ในโค้ดเท่านั้น
+        if (target.is_system) return res.status(400).json({ error: 'role นี้เป็น role ระบบ ไม่สามารถแก้ไขผ่าน API นี้ได้' });
+
+        // (Phase 5B) เพดานสิทธิ์: non-owner จะแตะ custom role นี้ได้ก็ต่อเมื่อ permission ปัจจุบันทั้งหมดของ role อยู่ในขอบเขตที่ตัวเองมีอยู่แล้ว
+        const ceilingErr = await customRoleCeilingError(req.authUser.id, roleId);
+        if (ceilingErr) return res.status(403).json({ error: ceilingErr });
+
+        let nameValue, descValue;
+        if (Object.prototype.hasOwnProperty.call(body, 'name')) {
+            const nameCheck = validateRoleName(body.name);
+            if (nameCheck.error) return res.status(400).json({ error: nameCheck.error });
+            nameValue = nameCheck.value;
+        }
+        if (Object.prototype.hasOwnProperty.call(body, 'description')) {
+            const descCheck = validateRoleDescription(body.description);
+            if (descCheck.error) return res.status(400).json({ error: descCheck.error });
+            descValue = descCheck.value;
+        }
+
+        let permIds;
+        if (wantsPermChange) {
+            const permIdsCheck = await validatePermissionKeys(body.permission_keys);
+            if (permIdsCheck.error) return res.status(400).json({ error: permIdsCheck.error });
+            // เพดานสิทธิ์อีกชั้น: permission "ใหม่" ที่จะตั้งก็ต้องอยู่ในขอบเขตของ actor ด้วยเช่นกัน (ไม่ใช่แค่ของเดิม)
+            const ceilingErr2 = await permissionCeilingError(req.authUser.id, permIdsCheck.keys);
+            if (ceilingErr2) return res.status(403).json({ error: ceilingErr2 });
+            permIds = permIdsCheck.ids;
+        }
+
+        await withTransaction(async () => {
+            if (wantsMetaChange) {
+                const sets = [];
+                const params = [];
+                if (nameValue !== undefined) { sets.push('name = ?'); params.push(nameValue); }
+                if (descValue !== undefined) { sets.push('description = ?'); params.push(descValue); }
+                sets.push('updated_at = CURRENT_TIMESTAMP');
+                params.push(roleId);
+                await dbRunAsync(`UPDATE roles SET ${sets.join(', ')} WHERE id = ?`, params);
+            }
+            if (wantsPermChange) {
+                await dbRunAsync('DELETE FROM role_permissions WHERE role_id = ?', [roleId]);
+                for (const permId of permIds) {
+                    await dbRunAsync('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [roleId, permId]);
+                }
+            }
+        });
+
+        const row = await dbGetAsync('SELECT id, key, name, description, is_system FROM roles WHERE id = ?', [roleId]);
+        res.json(await summarizeRole(row));
+    } catch (e) {
+        console.error(`[admin] แก้ไข role ไม่สำเร็จ (id=${roleId}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// DELETE /api/admin/roles/:id — ลบ custom role ที่ไม่มีบัญชีใดใช้งานอยู่เท่านั้น (ไม่ cascade ถอด role ออกจากบัญชีให้เองเงียบๆ เด็ดขาด)
+app.delete('/api/admin/roles/:id', requireAuth, requirePermission(PERMISSIONS.ROLES_DELETE), async (req, res) => {
+    const roleId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(roleId)) return res.status(400).json({ error: 'invalid_id' });
+    try {
+        const target = await dbGetAsync('SELECT id, is_system FROM roles WHERE id = ?', [roleId]);
+        if (!target) return res.status(404).json({ error: 'not_found' });
+        if (target.is_system) return res.status(400).json({ error: 'ไม่สามารถลบ role ระบบได้' });
+
+        const ceilingErr = await customRoleCeilingError(req.authUser.id, roleId);
+        if (ceilingErr) return res.status(403).json({ error: ceilingErr });
+
+        const countRow = await dbGetAsync('SELECT COUNT(*) AS c FROM user_roles WHERE role_id = ?', [roleId]);
+        if (countRow && countRow.c > 0) {
+            return res.status(409).json({
+                error: `role นี้ถูกใช้งานโดยพนักงาน ${countRow.c} คนอยู่ กรุณาถอด role ออกจากบัญชีเหล่านั้นก่อนถึงจะลบได้`,
+                assigned_user_count: countRow.c,
+            });
+        }
+
+        await withTransaction(async () => {
+            await dbRunAsync('DELETE FROM role_permissions WHERE role_id = ?', [roleId]);
+            await dbRunAsync('DELETE FROM roles WHERE id = ?', [roleId]);
+        });
+        res.json({ success: true });
+    } catch (e) {
+        console.error(`[admin] ลบ role ไม่สำเร็จ (id=${roleId}):`, e.message);
         res.status(500).json({ error: 'internal_error' });
     }
 });

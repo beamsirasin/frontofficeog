@@ -20,8 +20,31 @@ const AdminApp = (function () {
 
     let currentUser = null;
     let permissions = new Set();
+    let currentPanel = null;
 
     function hasPermission(key) { return permissions.has(key); }
+
+    // ===== แท็บ/panel (Phase 5B: เพิ่มแท็บ "Roles" ข้าง "บัญชีพนักงาน" เดิม) =====
+    // panel ไหนโชว์ได้ ขึ้นกับ permission ที่ "มองเห็น" panel นั้น — ไม่บังคับต้องมี users.* ถึงจะเข้า /admin/ ได้อีกต่อไป (ดู hasAdminPageAccess ฝั่งเซิร์ฟเวอร์)
+    const PANEL_DEFS = [
+        { key: 'users', requires: ['users.view'] },
+        { key: 'roles', requires: ['roles.view'] },
+    ];
+    function hasAny(keys) { return keys.some((k) => hasPermission(k)); }
+    function availablePanels() { return PANEL_DEFS.filter((p) => hasAny(p.requires)).map((p) => p.key); }
+
+    function switchPanel(key) {
+        if (!availablePanels().includes(key)) return;
+        currentPanel = key;
+        document.querySelectorAll('[data-panel]').forEach((el) => el.classList.toggle('hidden', el.dataset.panel !== key));
+        document.querySelectorAll('[data-panel-nav]').forEach((el) => {
+            const active = el.dataset.panelNav === key;
+            el.classList.toggle('bg-blue-600', active);
+            el.classList.toggle('bg-gray-700', !active);
+        });
+        if (key === 'users' && window.UsersModule) UsersModule.activate();
+        if (key === 'roles' && window.RolesModule) RolesModule.activate();
+    }
 
     // ===== confirm modal (ใช้ร่วมกันทุกจุด เช่น ปิดใช้งานบัญชี) =====
     let _confirmCb = null;
@@ -89,6 +112,13 @@ const AdminApp = (function () {
         permissions = new Set(data.permissions || []);
         applyPermissionGates();
         if (hasPermission('users.view') && window.UsersModule) UsersModule.reload();
+        if (hasPermission('roles.view') && window.RolesModule) RolesModule.reload();
+        // panel ที่กำลังดูอยู่อาจถูกถอดสิทธิ์ไประหว่างนี้ — สลับไป panel แรกที่ยังมองเห็นได้ ถ้าไม่เหลือเลยก็แสดงสถานะไม่มีสิทธิ์
+        if (!currentPanel || !availablePanels().includes(currentPanel)) {
+            const next = availablePanels()[0];
+            if (next) switchPanel(next);
+            else showNoAccessState('บัญชีนี้ไม่มีสิทธิ์เข้าถึงส่วนใดของแอดมินอีกต่อไป กรุณาติดต่อเจ้าของร้าน');
+        }
     }
 
     // ปุ่ม/องค์ประกอบที่ต้องมี permission เฉพาะถึงจะโชว์ — ระบุด้วย data-requires="perm.key" บน element
@@ -125,8 +155,9 @@ const AdminApp = (function () {
         document.getElementById('adminLoading').classList.add('hidden');
         document.getElementById('adminDisplayName').textContent = currentUser.display_name || currentUser.username;
 
-        if (!hasPermission('users.view')) {
-            showNoAccessState('บัญชีนี้ยังไม่ได้รับสิทธิ์ดูรายชื่อบัญชีพนักงาน (users.view) กรุณาติดต่อเจ้าของร้าน');
+        const panels = availablePanels();
+        if (!panels.length) {
+            showNoAccessState('บัญชีนี้ยังไม่ได้รับสิทธิ์ดูข้อมูลใดๆ ในส่วนแอดมิน (users.view หรือ roles.view) กรุณาติดต่อเจ้าของร้าน');
             return;
         }
 
@@ -134,7 +165,7 @@ const AdminApp = (function () {
         shell.classList.remove('hidden');
         shell.classList.add('flex');
         applyPermissionGates();
-        if (window.UsersModule) UsersModule.activate();
+        switchPanel(panels[0]);
     }
 
     function logout() {
@@ -148,6 +179,7 @@ const AdminApp = (function () {
         jsAttr,
         apiFetch,
         hasPermission,
+        switchPanel,
         showConfirm,
         confirmOk,
         confirmCancel,

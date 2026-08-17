@@ -46,25 +46,54 @@
 
         <div id="forbiddenBanner" class="hidden admin-banner-403 px-4 py-3 text-sm font-bold text-center"></div>
 
+        <nav class="bg-gray-700 text-white px-2 py-2 flex flex-wrap gap-2 shadow">
+            <button data-panel-nav="users" data-requires="users.view" onclick="AdminApp.switchPanel('users')" class="hidden admin-nav-btn px-4 py-2 rounded font-bold text-sm">บัญชีพนักงาน</button>
+            <button data-panel-nav="roles" data-requires="roles.view" onclick="AdminApp.switchPanel('roles')" class="hidden admin-nav-btn px-4 py-2 rounded font-bold text-sm">Roles</button>
+        </nav>
+
         <main class="flex-1 p-3 sm:p-6 max-w-6xl mx-auto w-full">
-            <div class="bg-white rounded-lg shadow-md overflow-hidden border-t-4 border-gray-700">
-                <div class="p-3 sm:p-4 bg-gray-100 flex flex-wrap justify-between items-center border-b gap-2">
-                    <h2 class="text-lg sm:text-2xl font-bold text-gray-800">บัญชีพนักงาน</h2>
-                    <button data-requires="users.create" onclick="UsersModule.openCreateModal()" class="hidden bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold px-4 py-2 rounded-lg text-sm shadow transition-transform whitespace-nowrap admin-nav-btn">+ เพิ่มพนักงาน</button>
+            <!-- ================= Panel: บัญชีพนักงาน ================= -->
+            <div data-panel="users" class="hidden">
+                <div class="bg-white rounded-lg shadow-md overflow-hidden border-t-4 border-gray-700">
+                    <div class="p-3 sm:p-4 bg-gray-100 flex flex-wrap justify-between items-center border-b gap-2">
+                        <h2 class="text-lg sm:text-2xl font-bold text-gray-800">บัญชีพนักงาน</h2>
+                        <button data-requires="users.create" onclick="UsersModule.openCreateModal()" class="hidden bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold px-4 py-2 rounded-lg text-sm shadow transition-transform whitespace-nowrap admin-nav-btn">+ เพิ่มพนักงาน</button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table id="usersTable" class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-gray-200 text-gray-700 text-sm">
+                                    <th class="px-4 py-3 border-b">ชื่อพนักงาน</th>
+                                    <th class="px-4 py-3 border-b">Username</th>
+                                    <th class="px-4 py-3 border-b">สถานะ</th>
+                                    <th class="px-4 py-3 border-b">Roles</th>
+                                    <th class="px-4 py-3 border-b">จัดการ</th>
+                                </tr>
+                            </thead>
+                            <tbody id="usersBody"><tr><td colspan="5" class="text-center p-6 text-gray-500">กำลังโหลดข้อมูล...</td></tr></tbody>
+                        </table>
+                    </div>
                 </div>
-                <div class="overflow-x-auto">
-                    <table id="usersTable" class="w-full text-left border-collapse">
-                        <thead>
-                            <tr class="bg-gray-200 text-gray-700 text-sm">
-                                <th class="px-4 py-3 border-b">ชื่อพนักงาน</th>
-                                <th class="px-4 py-3 border-b">Username</th>
-                                <th class="px-4 py-3 border-b">สถานะ</th>
-                                <th class="px-4 py-3 border-b">Roles</th>
-                                <th class="px-4 py-3 border-b">จัดการ</th>
-                            </tr>
-                        </thead>
-                        <tbody id="usersBody"><tr><td colspan="5" class="text-center p-6 text-gray-500">กำลังโหลดข้อมูล...</td></tr></tbody>
-                    </table>
+            </div>
+
+            <!-- ================= Panel: Roles (Phase 5B) ================= -->
+            <div data-panel="roles" class="hidden space-y-6">
+                <div class="bg-white rounded-lg shadow-md overflow-hidden border-t-4 border-gray-500">
+                    <div class="p-3 sm:p-4 bg-gray-100 border-b">
+                        <h2 class="text-lg sm:text-2xl font-bold text-gray-800">Role ระบบ</h2>
+                        <p class="text-xs text-gray-500 mt-0.5">แก้ไข/ลบไม่ได้ — เปลี่ยนแปลงได้แค่จากโค้ดเท่านั้น</p>
+                    </div>
+                    <div id="systemRolesList" class="p-4 space-y-3"></div>
+                </div>
+                <div class="bg-white rounded-lg shadow-md overflow-hidden border-t-4 border-indigo-500">
+                    <div class="p-3 sm:p-4 bg-gray-100 flex flex-wrap justify-between items-center border-b gap-2">
+                        <div>
+                            <h2 class="text-lg sm:text-2xl font-bold text-gray-800">Custom Role</h2>
+                            <p class="text-xs text-gray-500 mt-0.5">มอบ permission ให้ role ได้เฉพาะเท่าที่ตัวเองมีอยู่แล้วเท่านั้น</p>
+                        </div>
+                        <button data-requires="roles.create" onclick="RolesModule.openCreateModal()" class="hidden bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold px-4 py-2 rounded-lg text-sm shadow transition-transform whitespace-nowrap admin-nav-btn">+ เพิ่ม Role</button>
+                    </div>
+                    <div id="customRolesList" class="p-4 space-y-3"></div>
                 </div>
             </div>
         </main>
@@ -163,6 +192,68 @@
         </div>
     </div>
 
+    <!-- ================= Modal: สร้าง Role ใหม่ (Phase 5B) ================= -->
+    <div id="createRoleModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-4" onclick="if(event.target===this)RolesModule.closeCreateModal()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl relative flex flex-col max-h-[95vh]">
+            <div class="flex items-center justify-between px-5 py-4 border-b flex-shrink-0">
+                <h2 class="text-xl font-bold text-gray-800">เพิ่ม Role ใหม่</h2>
+                <button onclick="RolesModule.closeCreateModal()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+            </div>
+            <form id="createRoleForm" onsubmit="RolesModule.submitCreate(event)" class="flex-1 overflow-y-auto">
+                <div class="p-5 space-y-4">
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-1 text-sm">ชื่อ Role</label>
+                        <input type="text" id="createRoleName" required maxlength="60" placeholder="เช่น แคชเชียร์ + คิว" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-1 text-sm">คำอธิบาย (ไม่บังคับ)</label>
+                        <input type="text" id="createRoleDescription" maxlength="300" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-2 text-sm">Permission (เลือกได้แค่ที่ตัวเองมีอยู่แล้ว)</label>
+                        <div id="createRolePermChecklist"></div>
+                    </div>
+                    <p id="createRoleError" class="hidden text-red-600 font-bold text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2"></p>
+                </div>
+                <div class="px-5 py-4 border-t flex-shrink-0">
+                    <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg text-lg shadow-lg transition-transform active:scale-95">สร้าง Role</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= Modal: แก้ไข Role (Phase 5B) ================= -->
+    <div id="editRoleModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-4" onclick="if(event.target===this)RolesModule.closeEditModal()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl relative flex flex-col max-h-[95vh]">
+            <div class="flex items-center justify-between px-5 py-4 border-b flex-shrink-0">
+                <h2 class="text-xl font-bold text-gray-800">แก้ไข Role: <span id="editRoleModalName" class="text-indigo-600"></span></h2>
+                <button onclick="RolesModule.closeEditModal()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+            </div>
+            <div class="flex-1 overflow-y-auto divide-y">
+                <form id="editRoleMetaForm" data-requires="roles.edit" onsubmit="RolesModule.submitEditMeta(event)" class="p-5 space-y-4">
+                    <h3 class="font-bold text-gray-700 text-sm uppercase tracking-wide">ข้อมูล Role</h3>
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-1 text-sm">ชื่อ Role</label>
+                        <input type="text" id="editRoleName" required maxlength="60" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-1 text-sm">คำอธิบาย</label>
+                        <input type="text" id="editRoleDescription" maxlength="300" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <p id="editRoleMetaError" class="hidden text-red-600 font-bold text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2"></p>
+                    <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 rounded-lg shadow transition-transform active:scale-95">บันทึกข้อมูล Role</button>
+                </form>
+                <form id="editRolePermForm" data-requires="roles.permissions" onsubmit="RolesModule.submitEditPerms(event)" class="p-5 space-y-4">
+                    <h3 class="font-bold text-gray-700 text-sm uppercase tracking-wide">Permission ของ Role นี้</h3>
+                    <div id="editRolePermChecklist"></div>
+                    <p class="text-xs text-gray-400">พนักงานที่ถือ role นี้อยู่จะได้รับ/เสีย permission ทันทีตั้งแต่คำขอถัดไป ไม่ต้อง login ใหม่</p>
+                    <p id="editRolePermError" class="hidden text-red-600 font-bold text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2"></p>
+                    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-lg shadow transition-transform active:scale-95">บันทึก Permission</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- ================= Shared: confirm modal ================= -->
     <div id="confirmModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[200] px-4">
         <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
@@ -178,6 +269,7 @@
 
     <script src="/admin/app.js"></script>
     <script src="/admin/users.js"></script>
+    <script src="/admin/roles.js"></script>
     <script>AdminApp.boot();</script>
 </body>
 </html>
