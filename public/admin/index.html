@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <!-- บังคับให้อยู่บนโดเมน https เสมอ (เหมือน /staff/index.html) -->
+    <script>
+        (function () {
+            var HOST = 'lumhimkhue.com', h = location.hostname;
+            if (h === 'localhost' || h === '127.0.0.1') return;
+            if (location.protocol !== 'https:' || h !== HOST) {
+                location.replace('https://' + HOST + location.pathname + location.search);
+            }
+        })();
+    </script>
+    <title>แอดมิน - LUM HIM KHUE</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col">
+
+    <!-- แสดงระหว่างรอผล /api/verify ตอนโหลดหน้าครั้งแรก -->
+    <div id="adminLoading" class="fixed inset-0 bg-gray-900 z-[100] flex items-center justify-center text-white">
+        <p class="text-lg text-gray-300">กำลังโหลด...</p>
+    </div>
+
+    <!-- แสดงเมื่อ login อยู่แต่ไม่มีสิทธิ์ users.view (เข้าหน้า /admin/ ได้เพราะมีสิทธิ์ users.* อื่นบางตัว แต่ดูรายชื่อไม่ได้) -->
+    <div id="noAccessState" class="hidden fixed inset-0 bg-gray-50 z-[90] flex-col items-center justify-center text-center px-6">
+        <div class="text-5xl mb-4">🔒</div>
+        <h2 class="text-2xl font-bold text-gray-800 mb-2">ยังไม่ได้รับสิทธิ์เพียงพอ</h2>
+        <p class="text-gray-500 max-w-sm mb-6"></p>
+        <button onclick="AdminApp.logout()" class="bg-gray-800 hover:bg-gray-700 text-white font-bold px-6 py-3 rounded-lg">ออกจากระบบ</button>
+    </div>
+
+    <div id="adminShell" class="hidden flex-1 flex flex-col">
+        <header class="bg-gray-800 text-white px-3 sm:px-4 py-2 flex items-center justify-between gap-3 shadow-md">
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="font-bold text-sm sm:text-base whitespace-nowrap">ลำฮิมคือ · แอดมิน</span>
+                <span class="text-gray-400 text-xs sm:text-sm truncate" id="adminDisplayName"></span>
+            </div>
+            <div class="flex items-center gap-2">
+                <a href="/staff/" class="bg-gray-600 hover:bg-gray-500 border border-gray-400 text-white font-bold px-3 py-2 rounded text-xs sm:text-sm whitespace-nowrap admin-nav-btn">หน้าพนักงาน</a>
+                <button onclick="AdminApp.logout()" class="bg-red-700 hover:bg-red-600 border border-red-500 text-white font-bold px-3 py-2 rounded text-xs sm:text-sm whitespace-nowrap admin-nav-btn">ออกจากระบบ</button>
+            </div>
+        </header>
+
+        <div id="forbiddenBanner" class="hidden admin-banner-403 px-4 py-3 text-sm font-bold text-center"></div>
+
+        <main class="flex-1 p-3 sm:p-6 max-w-6xl mx-auto w-full">
+            <div class="bg-white rounded-lg shadow-md overflow-hidden border-t-4 border-gray-700">
+                <div class="p-3 sm:p-4 bg-gray-100 flex flex-wrap justify-between items-center border-b gap-2">
+                    <h2 class="text-lg sm:text-2xl font-bold text-gray-800">บัญชีพนักงาน</h2>
+                    <button data-requires="users.create" onclick="UsersModule.openCreateModal()" class="hidden bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold px-4 py-2 rounded-lg text-sm shadow transition-transform whitespace-nowrap admin-nav-btn">+ เพิ่มพนักงาน</button>
+                </div>
+                <div class="overflow-x-auto">
+                    <table id="usersTable" class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-gray-200 text-gray-700 text-sm">
+                                <th class="px-4 py-3 border-b">ชื่อพนักงาน</th>
+                                <th class="px-4 py-3 border-b">Username</th>
+                                <th class="px-4 py-3 border-b">สถานะ</th>
+                                <th class="px-4 py-3 border-b">Roles</th>
+                                <th class="px-4 py-3 border-b">จัดการ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="usersBody"><tr><td colspan="5" class="text-center p-6 text-gray-500">กำลังโหลดข้อมูล...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- ================= Modal: สร้างบัญชีใหม่ ================= -->
+    <div id="createUserModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-4" onclick="if(event.target===this)UsersModule.closeCreateModal()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg relative flex flex-col max-h-[95vh]">
+            <div class="flex items-center justify-between px-5 py-4 border-b flex-shrink-0">
+                <h2 class="text-xl font-bold text-gray-800">เพิ่มพนักงานใหม่</h2>
+                <button onclick="UsersModule.closeCreateModal()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+            </div>
+            <form id="createForm" onsubmit="UsersModule.submitCreate(event)" class="flex-1 overflow-y-auto">
+                <div class="p-5 space-y-4">
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-1 text-sm">ชื่อที่แสดง</label>
+                        <input type="text" id="createDisplayName" required maxlength="100" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-1 text-sm">Username</label>
+                        <input type="text" id="createUsername" required pattern="[a-zA-Z0-9_.\-]{3,32}" title="ตัวอักษร/ตัวเลข/underscore/จุด/ขีด ยาว 3-32 ตัวอักษร" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-1 text-sm">รหัสผ่าน</label>
+                        <input type="password" id="createPassword" required minlength="8" maxlength="200" autocomplete="new-password" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
+                        <p class="text-xs text-gray-400 mt-1">อย่างน้อย 8 ตัวอักษร</p>
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-2 text-sm">สิทธิ์การใช้งาน (เลือกได้หลาย role)</label>
+                        <div id="createRoleChecklist" class="space-y-2"></div>
+                    </div>
+                    <p id="createError" class="hidden text-red-600 font-bold text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2"></p>
+                </div>
+                <div class="px-5 py-4 border-t flex-shrink-0">
+                    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg text-lg shadow-lg transition-transform active:scale-95">สร้างบัญชี</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= Modal: แก้ไขบัญชี ================= -->
+    <div id="editUserModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-4" onclick="if(event.target===this)UsersModule.closeEditModal()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg relative flex flex-col max-h-[95vh]">
+            <div class="flex items-center justify-between px-5 py-4 border-b flex-shrink-0">
+                <h2 class="text-xl font-bold text-gray-800">แก้ไข: <span id="editModalName" class="text-blue-600"></span></h2>
+                <button onclick="UsersModule.closeEditModal()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+            </div>
+            <div class="flex-1 overflow-y-auto divide-y">
+                <!-- ข้อมูลบัญชี -->
+                <form id="editProfileForm" data-requires="users.edit" onsubmit="UsersModule.submitEditProfile(event)" class="p-5 space-y-4">
+                    <h3 class="font-bold text-gray-700 text-sm uppercase tracking-wide">ข้อมูลบัญชี</h3>
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-1 text-sm">ชื่อที่แสดง</label>
+                        <input type="text" id="editDisplayName" required maxlength="100" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-gray-700 font-bold mb-1 text-sm">Username</label>
+                        <input type="text" id="editUsername" required pattern="[a-zA-Z0-9_.\-]{3,32}" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
+                    </div>
+                    <p id="editProfileError" class="hidden text-red-600 font-bold text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2"></p>
+                    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-lg shadow transition-transform active:scale-95">บันทึกข้อมูลบัญชี</button>
+                </form>
+                <!-- สิทธิ์การใช้งาน (role) -->
+                <form id="editRolesForm" data-requires="users.roles" onsubmit="UsersModule.submitEditRoles(event)" class="p-5 space-y-4">
+                    <h3 class="font-bold text-gray-700 text-sm uppercase tracking-wide">สิทธิ์การใช้งาน (Role)</h3>
+                    <div id="editRoleChecklist" class="space-y-2"></div>
+                    <p class="text-xs text-gray-400">การเปลี่ยนแปลง role มีผลทันทีตั้งแต่คำขอถัดไป ไม่ต้องให้พนักงานล็อกอินใหม่</p>
+                    <p id="editRolesError" class="hidden text-red-600 font-bold text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2"></p>
+                    <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 rounded-lg shadow transition-transform active:scale-95">บันทึกสิทธิ์การใช้งาน</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= Modal: รีเซ็ตรหัสผ่าน ================= -->
+    <div id="resetPasswordModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)UsersModule.closeResetPasswordModal()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm relative flex flex-col">
+            <div class="flex items-center justify-between px-5 py-4 border-b">
+                <h2 class="text-xl font-bold text-gray-800">รีเซ็ตรหัสผ่าน: <span id="resetModalName" class="text-blue-600"></span></h2>
+                <button onclick="UsersModule.closeResetPasswordModal()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+            </div>
+            <form id="resetPasswordForm" onsubmit="UsersModule.submitResetPassword(event)" class="p-5 space-y-4">
+                <p class="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">ไม่สามารถดูรหัสผ่านปัจจุบันได้ — พิมพ์รหัสผ่านใหม่ให้พนักงานโดยตรง เมื่อบันทึกแล้ว session ที่ล็อกอินค้างอยู่ทั้งหมดของบัญชีนี้จะถูกเพิกถอน และต้องล็อกอินใหม่</p>
+                <div>
+                    <label class="block text-gray-700 font-bold mb-1 text-sm">รหัสผ่านใหม่</label>
+                    <input type="password" id="resetNewPassword" required minlength="8" maxlength="200" autocomplete="new-password" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
+                </div>
+                <div>
+                    <label class="block text-gray-700 font-bold mb-1 text-sm">ยืนยันรหัสผ่านใหม่</label>
+                    <input type="password" id="resetConfirmPassword" required minlength="8" maxlength="200" autocomplete="new-password" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
+                </div>
+                <p id="resetError" class="hidden text-red-600 font-bold text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2"></p>
+                <p id="resetSuccess" class="hidden text-green-700 font-bold text-sm bg-green-50 border border-green-200 rounded-lg px-3 py-2">ตั้งรหัสผ่านใหม่สำเร็จ — เพิกถอน session เดิมทั้งหมดแล้ว</p>
+                <button type="submit" class="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3 rounded-lg shadow transition-transform active:scale-95">บันทึกรหัสผ่านใหม่</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= Shared: confirm modal ================= -->
+    <div id="confirmModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[200] px-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+            <div class="px-6 py-6 text-center">
+                <p id="confirmMessage" class="text-gray-800 font-semibold text-lg leading-snug"></p>
+            </div>
+            <div class="flex border-t border-gray-100">
+                <button onclick="AdminApp.confirmCancel()" class="flex-1 py-3.5 text-gray-500 font-bold hover:bg-gray-50 transition border-r border-gray-100">ยกเลิก</button>
+                <button onclick="AdminApp.confirmOk()" class="flex-1 py-3.5 text-red-600 font-bold hover:bg-red-50 transition">ยืนยัน</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/admin/app.js"></script>
+    <script src="/admin/users.js"></script>
+    <script>AdminApp.boot();</script>
+</body>
+</html>

@@ -88,6 +88,29 @@ app.get(STAFF_MODULE_PATHS, async (req, res) => {
     res.sendFile(__dirname + '/public/staff/index.html');
 });
 
+// ================== หน้า /admin/ (Phase 5A) ==================
+// ต้องลงทะเบียนก่อน express.static('public') เหมือน /staff/ ด้านบนทุกประการ (เหตุผลเดียวกัน)
+// ต่างจาก /staff/ ตรงที่ /admin/ ต้องมี "สิทธิ์แอดมิน" จริงๆ ไม่ใช่แค่ login อยู่ — login อยู่แต่ไม่มีสิทธิ์ = 403 (หน้า denied)
+// ไม่ redirect ไปหน้า login ซ้ำ เพราะ user คนนั้น "รู้จัก" อยู่แล้ว (authenticated) เพียงแค่ทำสิ่งนี้ไม่ได้ (unauthorized ≠ forbidden)
+// hasAdminPageAccess ถูกอ้างถึงก่อนถูกประกาศในไฟล์นี้โดยตั้งใจ (function declaration, hoisted) เหมือน getAuthUser ด้านบน
+const ADMIN_MODULE_PATHS = ['/admin', '/admin/'];
+
+app.get('/admin/login', async (req, res) => {
+    const user = await getAuthUser(req);
+    if (!user) return res.sendFile(__dirname + '/public/admin/login.html'); // ไม่ได้ login เลย -> โชว์ฟอร์ม login ตามปกติ
+    const canAdmin = await hasAdminPageAccess(user.id);
+    if (canAdmin) return res.redirect('/admin/'); // login + มีสิทธิ์แอดมินอยู่แล้ว ไม่ต้อง login ซ้ำ
+    res.status(403).sendFile(__dirname + '/public/admin/denied.html'); // login อยู่แต่ไม่มีสิทธิ์แอดมิน -> denied ไม่ใช่ฟอร์ม login
+});
+
+app.get(ADMIN_MODULE_PATHS, async (req, res) => {
+    const user = await getAuthUser(req);
+    if (!user) return res.redirect('/admin/login'); // ไม่มี session เลย -> ไปหน้า login (401 เทียบเท่า)
+    const canAdmin = await hasAdminPageAccess(user.id);
+    if (!canAdmin) return res.status(403).sendFile(__dirname + '/public/admin/denied.html'); // มี session แต่ไม่มีสิทธิ์ -> denied (403 เทียบเท่า) ไม่ใช่ redirect ไป login
+    res.sendFile(__dirname + '/public/admin/index.html');
+});
+
 app.use(express.static('public'));
 app.use(express.json());
 
@@ -194,6 +217,15 @@ const PERMISSIONS = {
     TABLES_MANAGE: 'tables.manage',     // เปิด/ปิดโต๊ะ, แก้จำนวนลูกค้า (POST /api/open-table, /api/close-table, /api/update-table-pax)
     TABLES_QR: 'tables.qr',             // ดึง QR/session secret ของโต๊ะที่เปิดอยู่ทีละโต๊ะ (GET /api/table-qr/:table) — แยกจาก tables.view/manage โดยตั้งใจ (Phase 3.1)
     REPORTS_VIEW: 'reports.view',       // ดูสถิติยอดเสิร์ฟ/คิว (GET /api/stats)
+
+    // (Phase 5A) จัดการบัญชีพนักงานที่ /admin/ — แยกย่อยเป็นสิทธิ์เล็กๆ ตาม resource.action ไม่มี permission "admin" ก้อนใหญ่ก้อนเดียว
+    // ไม่ให้ role ระบบเดิม (kitchen/queue/tables/manager) ได้สิทธิ์กลุ่มนี้เป็นค่าเริ่มต้นเด็ดขาด — owner ได้ทุกตัวอัตโนมัติผ่าน '*' เท่านั้น
+    USERS_VIEW: 'users.view',                     // ดูรายชื่อบัญชีพนักงาน + role/permission ที่มีผลจริง (GET /api/admin/users, /api/admin/roles)
+    USERS_CREATE: 'users.create',                 // สร้างบัญชีพนักงานใหม่ (POST /api/admin/users)
+    USERS_EDIT: 'users.edit',                     // แก้ชื่อที่แสดง/username (PATCH /api/admin/users/:id — เฉพาะฟิลด์โปรไฟล์)
+    USERS_DISABLE: 'users.disable',               // ปิด/เปิดใช้งานบัญชี (POST /api/admin/users/:id/disable, /enable)
+    USERS_RESET_PASSWORD: 'users.reset_password', // รีเซ็ตรหัสผ่านบัญชีพนักงานคนอื่น (POST /api/admin/users/:id/reset-password)
+    USERS_ROLES: 'users.roles',                   // แก้ไข role ที่ผูกกับบัญชี (PATCH /api/admin/users/:id — เฉพาะฟิลด์ role_ids) + ดูรายชื่อ role ที่มี
 };
 
 const PERMISSION_CATALOGUE = [
@@ -205,6 +237,12 @@ const PERMISSION_CATALOGUE = [
     { key: PERMISSIONS.TABLES_MANAGE, name: 'จัดการโต๊ะ', description: 'เปิด/ปิดโต๊ะ และแก้ไขจำนวนลูกค้า' },
     { key: PERMISSIONS.TABLES_QR, name: 'ดู QR/รหัสลับของโต๊ะ', description: 'ดึงลิงก์/QR สั่งอาหารของโต๊ะที่เปิดอยู่ทีละโต๊ะ (สำหรับปริ้นซ้ำ)' },
     { key: PERMISSIONS.REPORTS_VIEW, name: 'ดูรายงาน/สถิติ', description: 'ดูสถิติยอดเสิร์ฟและคิว' },
+    { key: PERMISSIONS.USERS_VIEW, name: 'ดูบัญชีพนักงาน', description: 'ดูรายชื่อบัญชีพนักงาน สถานะ และ role ที่ผูกอยู่' },
+    { key: PERMISSIONS.USERS_CREATE, name: 'สร้างบัญชีพนักงาน', description: 'สร้างบัญชีพนักงานใหม่พร้อมกำหนด role' },
+    { key: PERMISSIONS.USERS_EDIT, name: 'แก้ไขข้อมูลบัญชี', description: 'แก้ชื่อที่แสดงหรือ username ของบัญชีพนักงาน' },
+    { key: PERMISSIONS.USERS_DISABLE, name: 'ปิด/เปิดใช้งานบัญชี', description: 'ปิดใช้งานหรือเปิดใช้งานบัญชีพนักงานคืน' },
+    { key: PERMISSIONS.USERS_RESET_PASSWORD, name: 'รีเซ็ตรหัสผ่านพนักงาน', description: 'ตั้งรหัสผ่านใหม่ให้บัญชีพนักงานคนอื่น' },
+    { key: PERMISSIONS.USERS_ROLES, name: 'จัดการ role ของบัญชี', description: 'ดูรายชื่อ role ที่มี และแก้ไข role ที่ผูกกับบัญชีพนักงาน' },
 ];
 
 // role ระบบชุดแรก — ข้อมูล ไม่ใช่เงื่อนไขในโค้ด (ห้าม hardcode if(role==='kitchen') ที่ไหนเลย)
@@ -213,6 +251,8 @@ const PERMISSION_CATALOGUE = [
 // "manager" ให้สิทธิ์ดูภาพรวมทุกโมดูล (อ่านอย่างเดียว) เป็นค่าเริ่มต้นที่ปลอดภัยไว้ก่อน เพราะยังไม่มีข้อกำหนดชัดเจนว่าผู้จัดการควรสั่งการอะไรได้บ้าง
 // tables.qr ให้เฉพาะ owner (ผ่าน '*') และ tables role เท่านั้น — เป็น role ที่รับผิดชอบเปิด/ปิดโต๊ะและจัดการ QR อยู่แล้วจริงๆ ตาม tables.manage
 // queue และ kitchen ต้อง "ไม่" ได้ tables.qr โดยเด็ดขาด แม้จะมี queue.manage ซึ่งยังคุม /api/tables (แบบไม่มี session_token) อยู่ก็ตาม
+// (Phase 5A) users.* (จัดการบัญชีพนักงานที่ /admin/) "ไม่" ให้ role ระบบไหนนอกจาก owner เลยโดยเด็ดขาด (least privilege) —
+// ตั้งใจไม่เพิ่มลงใน kitchen/queue/tables/manager ด้านล่าง แม้แต่ตัวเดียว ต่อให้ในอนาคตมี custom role เพิ่มก็ต้องได้รับ users.* แบบเจาะจงเท่านั้น
 const ROLE_CATALOGUE = {
     owner: { name: 'เจ้าของร้าน', description: 'สิทธิ์เต็มทุกอย่างในระบบ', permissions: '*' },
     kitchen: { name: 'ครัว', description: 'ดูและจัดการออเดอร์ในครัว', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE] },
@@ -449,6 +489,22 @@ function requirePermission(...requiredKeys) {
             res.status(500).json({ error: 'internal_error' });
         }
     };
+}
+
+// (Phase 5A) permission กลุ่ม "จัดการบัญชีพนักงาน" ทั้งหมด — มีสิทธิ์อย่างน้อยหนึ่งตัวถึงจะเข้าเชลล์ /admin/ ได้
+// (แต่ละ endpoint ภายในหน้ายังบังคับ requirePermission ของตัวเองแยกอีกชั้นอยู่ดี ดูกลุ่ม /api/admin/* ด้านล่าง)
+const ADMIN_PAGE_PERMISSIONS = [
+    PERMISSIONS.USERS_VIEW,
+    PERMISSIONS.USERS_CREATE,
+    PERMISSIONS.USERS_EDIT,
+    PERMISSIONS.USERS_DISABLE,
+    PERMISSIONS.USERS_RESET_PASSWORD,
+    PERMISSIONS.USERS_ROLES,
+];
+
+async function hasAdminPageAccess(userId) {
+    const perms = await getUserPermissions(userId);
+    return ADMIN_PAGE_PERMISSIONS.some((k) => perms.has(k));
 }
 
 function setSessionCookie(res, rawToken) {
@@ -982,6 +1038,309 @@ app.get('/q/:token', (req, res) => {
             });
         });
     });
+});
+
+// ================== Admin: จัดการบัญชีพนักงาน (Phase 5A) ==================
+// ทุก endpoint ในกลุ่มนี้ต้องผ่าน requireAuth + requirePermission เจาะจงเสมอ ไม่มี endpoint ไหน "authenticated อย่างเดียว" พอ
+// ไม่มี DELETE จริงในระบบ — "ลบ" บัญชีพนักงาน = ปิดใช้งาน (is_active = 0) เท่านั้น เพื่อรักษา id ไว้สำหรับอนาคต (audit/history)
+
+// ---- นโยบายรหัสผ่าน: อย่างน้อย 8 ตัวอักษร (นับตาม Unicode code point ไม่ใช่ UTF-16 code unit กันปัญหาอักษรไทย/อิโมจิ), ไม่เกิน 200 ตัวอักษร (กัน DoS จาก input ยาวเกินจำเป็นเข้า scrypt) ----
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 200;
+function passwordPolicyError(password) {
+    if (typeof password !== 'string' || password.length === 0) return 'ต้องระบุรหัสผ่าน';
+    const len = [...password].length;
+    if (len < PASSWORD_MIN_LENGTH) return `รหัสผ่านต้องมีอย่างน้อย ${PASSWORD_MIN_LENGTH} ตัวอักษร`;
+    if (len > PASSWORD_MAX_LENGTH) return `รหัสผ่านยาวเกินไป (ไม่เกิน ${PASSWORD_MAX_LENGTH} ตัวอักษร)`;
+    return null;
+}
+
+// ---- username: normalize แบบเดียวกับที่ /api/login เปรียบเทียบจริง (ตัด whitespace หัวท้าย, ไม่ lowercase — login เดิมก็ไม่ lowercase) ----
+// จำกัดรูปแบบไว้พอประมาณกันของแปลกเข้า DB — บัญชีที่สร้างผ่าน /admin/ ควรมีรูปแบบสม่ำเสมอ (ไม่กระทบ username เดิมที่ตั้งผ่าน .env ตอน bootstrap)
+const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,32}$/;
+function validateUsername(raw) {
+    const value = String(raw ?? '').trim();
+    if (!USERNAME_PATTERN.test(value)) return { error: 'username ต้องเป็นตัวอักษร/ตัวเลข/underscore/จุด/ขีด ยาว 3-32 ตัวอักษร' };
+    return { value };
+}
+
+const DISPLAY_NAME_MAX_LENGTH = 100;
+function validateDisplayName(raw) {
+    const value = String(raw ?? '').trim();
+    if (!value) return { error: 'ต้องระบุชื่อที่แสดง' };
+    if ([...value].length > DISPLAY_NAME_MAX_LENGTH) return { error: `ชื่อที่แสดงยาวเกินไป (ไม่เกิน ${DISPLAY_NAME_MAX_LENGTH} ตัวอักษร)` };
+    return { value };
+}
+
+// ---- transaction เล็กๆ ไว้ครอบ mutation ที่แตะหลายตารางพร้อมกัน กัน state ค้างครึ่งๆ กลางถ้าขั้นใดขั้นหนึ่งพัง ----
+async function withTransaction(fn) {
+    await dbRunAsync('BEGIN IMMEDIATE TRANSACTION');
+    try {
+        const result = await fn();
+        await dbRunAsync('COMMIT');
+        return result;
+    } catch (e) {
+        try { await dbRunAsync('ROLLBACK'); } catch { /* ไม่ให้ error ตอน rollback บดบัง error ต้นเหตุ */ }
+        throw e;
+    }
+}
+
+// จำนวนบัญชี "active" ที่ยังถือ role owner อยู่ (ไม่นับ excludeUserId ถ้าระบุ) — ใช้พิทักษ์ invariant "ห้ามระบบเหลือ owner ที่ active 0 คนเด็ดขาด"
+async function countActiveOwners(excludeUserId) {
+    const params = [];
+    let sql = `SELECT COUNT(DISTINCT users.id) AS c
+               FROM users JOIN user_roles ON user_roles.user_id = users.id
+               JOIN roles ON roles.id = user_roles.role_id
+               WHERE roles.key = 'owner' AND users.is_active = 1`;
+    if (excludeUserId) { sql += ' AND users.id != ?'; params.push(excludeUserId); }
+    const row = await dbGetAsync(sql, params);
+    return row ? row.c : 0;
+}
+
+async function userHasOwnerRole(userId) {
+    const row = await dbGetAsync(
+        `SELECT 1 AS x FROM user_roles JOIN roles ON roles.id = user_roles.role_id WHERE user_roles.user_id = ? AND roles.key = 'owner'`,
+        [userId]
+    );
+    return !!row;
+}
+
+// role ที่แสดง/รับสมัครผ่าน /admin/ ทั้งหมด "ยกเว้น" owner เสมอ (ห้ามสร้าง/กำหนด owner คนที่สองผ่านหน้านี้เด็ดขาด)
+// กรองที่ต้นทาง (server) ไม่ใช่แค่ซ่อนที่ frontend — เพื่อไม่ให้ role นี้ถูกกำหนดได้เลยไม่ว่าทางไหน
+async function assignableRoles() {
+    return dbAllAsync("SELECT id, key, name, description FROM roles WHERE key != 'owner' ORDER BY id");
+}
+
+// ตรวจ role_ids ที่ส่งมาจาก client: ต้องเป็น array ของ integer, มีอยู่จริงใน DB, และ "ห้าม" มี owner role ปนมาเด็ดขาด (กัน privilege escalation ผ่านการยิง id ตรงๆ)
+async function validateRoleIds(rawIds) {
+    if (!Array.isArray(rawIds)) return { error: 'role_ids ต้องเป็น array' };
+    const ids = rawIds.map((v) => Number(v));
+    if (ids.some((n) => !Number.isInteger(n))) return { error: 'role_ids ต้องเป็นตัวเลขจำนวนเต็มทั้งหมด' };
+    const unique = [...new Set(ids)];
+    const rows = await assignableRoles();
+    const allowedIds = new Set(rows.map((r) => r.id));
+    const invalid = unique.filter((id) => !allowedIds.has(id));
+    if (invalid.length > 0) return { error: `role_ids มีค่าที่ไม่ถูกต้องหรือเป็น role ที่ไม่อนุญาตให้กำหนด: ${invalid.join(', ')}` };
+    return { ids: unique };
+}
+
+// สรุปข้อมูลบัญชีพนักงาน 1 คนสำหรับส่งกลับผ่าน API — ไม่มี password_hash/token/secret ใดๆ หลุดออกไปเด็ดขาด
+async function summarizeUser(userRow) {
+    const roles = await dbAllAsync(
+        `SELECT roles.id, roles.key, roles.name FROM user_roles
+         JOIN roles ON roles.id = user_roles.role_id
+         WHERE user_roles.user_id = ? ORDER BY roles.id`,
+        [userRow.id]
+    );
+    const perms = await getUserPermissions(userRow.id);
+    return {
+        id: userRow.id,
+        username: userRow.username,
+        display_name: userRow.display_name,
+        is_active: !!userRow.is_active,
+        roles,
+        permissions: [...perms].sort(),
+    };
+}
+
+// เพิกถอน session ที่ยัง active ทั้งหมดของ user คนหนึ่ง (ใช้ทั้งตอน disable และ reset password) — ลอจิกเดียวกับ /api/logout แค่ทำแทนทุก session ไม่ใช่แค่ของตัวเอง
+async function revokeAllSessionsForUser(userId) {
+    await dbRunAsync("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", [Date.now(), userId]);
+}
+
+// GET /api/admin/users — รายชื่อบัญชีพนักงานทั้งหมด (รวมที่ปิดใช้งานแล้ว ให้เห็นสถานะชัดเจน ไม่ใช่หายไปเฉยๆ)
+app.get('/api/admin/users', requireAuth, requirePermission(PERMISSIONS.USERS_VIEW), async (req, res) => {
+    try {
+        const rows = await dbAllAsync("SELECT id, username, display_name, is_active FROM users ORDER BY id");
+        const users = await Promise.all(rows.map(summarizeUser));
+        res.json(users);
+    } catch (e) {
+        console.error('[admin] ดึงรายชื่อบัญชีพนักงานไม่สำเร็จ:', e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// GET /api/admin/roles — role ที่มีให้กำหนด (ไม่รวม owner) พร้อม permission ที่มีผลจริงของแต่ละ role
+app.get('/api/admin/roles', requireAuth, requirePermission(PERMISSIONS.USERS_ROLES), async (req, res) => {
+    try {
+        const roles = await assignableRoles();
+        const withPerms = await Promise.all(roles.map(async (r) => {
+            const permRows = await dbAllAsync(
+                `SELECT permissions.key FROM role_permissions
+                 JOIN permissions ON permissions.id = role_permissions.permission_id
+                 WHERE role_permissions.role_id = ?`,
+                [r.id]
+            );
+            return { id: r.id, key: r.key, name: r.name, description: r.description, permissions: permRows.map((p) => p.key).sort() };
+        }));
+        res.json(withPerms);
+    } catch (e) {
+        console.error('[admin] ดึงรายชื่อ role ไม่สำเร็จ:', e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// POST /api/admin/users — สร้างบัญชีพนักงานใหม่ + กำหนด role เริ่มต้น (สร้าง user + ผูก role ในธุรกรรมเดียว ไม่มี state ค้างครึ่งๆ กลาง)
+app.post('/api/admin/users', requireAuth, requirePermission(PERMISSIONS.USERS_CREATE), async (req, res) => {
+    const body = req.body || {};
+    const usernameCheck = validateUsername(body.username);
+    if (usernameCheck.error) return res.status(400).json({ error: usernameCheck.error });
+    const displayNameCheck = validateDisplayName(body.display_name);
+    if (displayNameCheck.error) return res.status(400).json({ error: displayNameCheck.error });
+    const passwordError = passwordPolicyError(body.password);
+    if (passwordError) return res.status(400).json({ error: passwordError });
+    const roleIdsCheck = await validateRoleIds(body.role_ids ?? []);
+    if (roleIdsCheck.error) return res.status(400).json({ error: roleIdsCheck.error });
+
+    try {
+        const passwordHash = hashPassword(body.password); // ไม่ log รหัสผ่านดิบเด็ดขาด ไม่ว่ากรณีไหน
+        const newUserId = await withTransaction(async () => {
+            const result = await dbRunAsync(
+                "INSERT INTO users (username, password_hash, display_name, is_active) VALUES (?, ?, ?, 1)",
+                [usernameCheck.value, passwordHash, displayNameCheck.value]
+            );
+            for (const roleId of roleIdsCheck.ids) {
+                await dbRunAsync("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)", [result.lastID, roleId]);
+            }
+            return result.lastID;
+        });
+        const row = await dbGetAsync("SELECT id, username, display_name, is_active FROM users WHERE id = ?", [newUserId]);
+        res.status(201).json(await summarizeUser(row));
+    } catch (e) {
+        if (e && e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'username นี้ถูกใช้แล้ว' });
+        console.error(`[admin] สร้างบัญชีพนักงานไม่สำเร็จ (username=${usernameCheck.value}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// PATCH /api/admin/users/:id — แก้โปรไฟล์ (display_name/username, ต้องมี users.edit) และ/หรือ role (role_ids, ต้องมี users.roles)
+// สองสิทธิ์แยกกันโดยเจตนา: ส่ง field ไหนมาต้องมีสิทธิ์ของ field นั้นจริง — users.edit "ไม่" ครอบคลุม role โดยปริยาย
+app.patch('/api/admin/users/:id', requireAuth, async (req, res) => {
+    const targetId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(targetId)) return res.status(400).json({ error: 'invalid_id' });
+    const body = req.body || {};
+    const wantsProfileChange = Object.prototype.hasOwnProperty.call(body, 'display_name') || Object.prototype.hasOwnProperty.call(body, 'username');
+    const wantsRoleChange = Object.prototype.hasOwnProperty.call(body, 'role_ids');
+    if (!wantsProfileChange && !wantsRoleChange) return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' });
+
+    let perms;
+    try { perms = await getUserPermissions(req.authUser.id); }
+    catch (e) { return res.status(500).json({ error: 'internal_error' }); }
+    if (wantsProfileChange && !perms.has(PERMISSIONS.USERS_EDIT)) return res.status(403).json({ error: 'forbidden' });
+    if (wantsRoleChange && !perms.has(PERMISSIONS.USERS_ROLES)) return res.status(403).json({ error: 'forbidden' });
+
+    try {
+        const target = await dbGetAsync("SELECT id, username, display_name, is_active FROM users WHERE id = ?", [targetId]);
+        if (!target) return res.status(404).json({ error: 'not_found' });
+
+        let usernameValue, displayNameValue;
+        if (Object.prototype.hasOwnProperty.call(body, 'username')) {
+            const usernameCheck = validateUsername(body.username);
+            if (usernameCheck.error) return res.status(400).json({ error: usernameCheck.error });
+            usernameValue = usernameCheck.value;
+        }
+        if (Object.prototype.hasOwnProperty.call(body, 'display_name')) {
+            const displayNameCheck = validateDisplayName(body.display_name);
+            if (displayNameCheck.error) return res.status(400).json({ error: displayNameCheck.error });
+            displayNameValue = displayNameCheck.value;
+        }
+
+        let roleIds;
+        if (wantsRoleChange) {
+            // เจ้าของร้าน (owner) ที่มีอยู่แล้วต้อง "คง role ไว้เสมอ" ผ่านหน้านี้ — ห้ามแก้ role ของบัญชีที่ถือ owner อยู่โดยเด็ดขาด
+            // ครอบคลุมทั้งกรณีถอด owner role ของตัวเอง และของบัญชี owner อื่น (ไม่ใช่แค่กัน self) — เข้มกว่าที่ข้อกำหนดขอไว้แต่ปลอดภัยกว่า
+            if (await userHasOwnerRole(targetId)) return res.status(400).json({ error: 'ไม่สามารถแก้ไข role ของบัญชีเจ้าของร้านผ่านหน้านี้ได้' });
+            const roleIdsCheck = await validateRoleIds(body.role_ids);
+            if (roleIdsCheck.error) return res.status(400).json({ error: roleIdsCheck.error });
+            roleIds = roleIdsCheck.ids;
+        }
+
+        await withTransaction(async () => {
+            if (wantsProfileChange) {
+                const sets = [];
+                const params = [];
+                if (usernameValue !== undefined) { sets.push('username = ?'); params.push(usernameValue); }
+                if (displayNameValue !== undefined) { sets.push('display_name = ?'); params.push(displayNameValue); }
+                sets.push('updated_at = CURRENT_TIMESTAMP');
+                params.push(targetId);
+                await dbRunAsync(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
+            }
+            if (wantsRoleChange) {
+                await dbRunAsync("DELETE FROM user_roles WHERE user_id = ?", [targetId]);
+                for (const roleId of roleIds) {
+                    await dbRunAsync("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)", [targetId, roleId]);
+                }
+            }
+        });
+
+        const row = await dbGetAsync("SELECT id, username, display_name, is_active FROM users WHERE id = ?", [targetId]);
+        res.json(await summarizeUser(row));
+    } catch (e) {
+        if (e && e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'username นี้ถูกใช้แล้ว' });
+        console.error(`[admin] แก้ไขบัญชีพนักงานไม่สำเร็จ (id=${targetId}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// POST /api/admin/users/:id/disable — ปิดใช้งานบัญชี + เพิกถอน session ทั้งหมดทันที (defense-in-depth คู่กับ is_active ที่ getAuthUser เช็คอยู่แล้ว)
+app.post('/api/admin/users/:id/disable', requireAuth, requirePermission(PERMISSIONS.USERS_DISABLE), async (req, res) => {
+    const targetId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(targetId)) return res.status(400).json({ error: 'invalid_id' });
+    if (targetId === req.authUser.id) return res.status(400).json({ error: 'ไม่สามารถปิดใช้งานบัญชีของตัวเองได้' });
+    try {
+        const target = await dbGetAsync("SELECT id FROM users WHERE id = ?", [targetId]);
+        if (!target) return res.status(404).json({ error: 'not_found' });
+        if (await userHasOwnerRole(targetId)) {
+            const remaining = await countActiveOwners(targetId);
+            if (remaining === 0) return res.status(400).json({ error: 'ไม่สามารถปิดใช้งานบัญชีเจ้าของร้านคนสุดท้ายที่เหลืออยู่ได้' });
+        }
+        await withTransaction(async () => {
+            await dbRunAsync("UPDATE users SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetId]);
+            await revokeAllSessionsForUser(targetId);
+        });
+        const row = await dbGetAsync("SELECT id, username, display_name, is_active FROM users WHERE id = ?", [targetId]);
+        res.json(await summarizeUser(row));
+    } catch (e) {
+        console.error(`[admin] ปิดใช้งานบัญชีไม่สำเร็จ (id=${targetId}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// POST /api/admin/users/:id/enable — เปิดใช้งานบัญชีคืน — "ไม่" กู้ session เก่าที่ถูกเพิกถอนกลับมา ต้อง login ใหม่เสมอ
+app.post('/api/admin/users/:id/enable', requireAuth, requirePermission(PERMISSIONS.USERS_DISABLE), async (req, res) => {
+    const targetId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(targetId)) return res.status(400).json({ error: 'invalid_id' });
+    try {
+        const target = await dbGetAsync("SELECT id FROM users WHERE id = ?", [targetId]);
+        if (!target) return res.status(404).json({ error: 'not_found' });
+        await dbRunAsync("UPDATE users SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetId]);
+        const row = await dbGetAsync("SELECT id, username, display_name, is_active FROM users WHERE id = ?", [targetId]);
+        res.json(await summarizeUser(row));
+    } catch (e) {
+        console.error(`[admin] เปิดใช้งานบัญชีไม่สำเร็จ (id=${targetId}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// POST /api/admin/users/:id/reset-password — admin ตั้งรหัสผ่านใหม่ให้เอง (ไม่มี flow ผ่าน email/token ใดๆ) + เพิกถอน session เดิมทั้งหมด
+app.post('/api/admin/users/:id/reset-password', requireAuth, requirePermission(PERMISSIONS.USERS_RESET_PASSWORD), async (req, res) => {
+    const targetId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(targetId)) return res.status(400).json({ error: 'invalid_id' });
+    const passwordError = passwordPolicyError((req.body || {}).new_password);
+    if (passwordError) return res.status(400).json({ error: passwordError });
+    try {
+        const target = await dbGetAsync("SELECT id FROM users WHERE id = ?", [targetId]);
+        if (!target) return res.status(404).json({ error: 'not_found' });
+        const passwordHash = hashPassword(req.body.new_password); // ไม่ log/ไม่ตอบรหัสผ่านหรือ hash กลับเด็ดขาด
+        await withTransaction(async () => {
+            await dbRunAsync("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [passwordHash, targetId]);
+            await revokeAllSessionsForUser(targetId);
+        });
+        res.json({ success: true });
+    } catch (e) {
+        console.error(`[admin] รีเซ็ตรหัสผ่านไม่สำเร็จ (id=${targetId}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
 });
 
 io.on('connection', (socket) => {

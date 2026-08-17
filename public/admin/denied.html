@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>ไม่มีสิทธิ์เข้าถึง - LUM HIM KHUE</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen flex flex-col items-center justify-center text-center px-6">
+    <div class="text-5xl mb-4">🔒</div>
+    <h1 class="text-2xl font-bold text-gray-800 mb-2">ไม่มีสิทธิ์เข้าถึงส่วนแอดมิน</h1>
+    <p class="text-gray-500 max-w-sm mb-6">บัญชีของคุณล็อกอินอยู่ แต่ยังไม่ได้รับสิทธิ์จัดการบัญชีพนักงาน กรุณาติดต่อเจ้าของร้านหากคิดว่านี่คือความผิดพลาด</p>
+    <div class="flex gap-3">
+        <a href="/staff/" class="bg-gray-800 hover:bg-gray-700 text-white font-bold px-6 py-3 rounded-lg">ไปหน้าพนักงาน</a>
+        <button onclick="logout()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold px-6 py-3 rounded-lg">ออกจากระบบ</button>
+    </div>
+    <script>
+        function logout() {
+            fetch('/api/logout', { method: 'POST' }).catch(() => {}).finally(() => {
+                window.location.href = '/admin/login';
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,72 @@
+/* สไตล์ร่วมของ /admin/ (Phase 5A) — เดินตามแนวเดียวกับ staff.css: tailwind ผ่าน CDN + ส่วนเสริมเล็กๆ ที่นี่ */
+
+.admin-nav-btn {
+    min-height: 44px; /* เป้าหมายแตะขั้นต่ำสำหรับแท็บเล็ต/มือถือ เหมือนฝั่ง /staff/ */
+    touch-action: manipulation;
+}
+.admin-banner-403 {
+    background: #fef3c7;
+    border: 1px solid #fbbf24;
+    color: #92400e;
+}
+.role-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    color: #3730a3;
+    font-weight: 700;
+    font-size: 12px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+}
+.status-pill-active {
+    background: #dcfce7;
+    border: 1px solid #86efac;
+    color: #166534;
+}
+.status-pill-disabled {
+    background: #fee2e2;
+    border: 1px solid #fca5a5;
+    color: #991b1b;
+}
+.perm-chip {
+    display: inline-block;
+    background: #f3f4f6;
+    border: 1px solid #e5e7eb;
+    color: #4b5563;
+    font-size: 11px;
+    font-family: ui-monospace, monospace;
+    padding: 1px 8px;
+    border-radius: 6px;
+}
+.role-checkbox-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    border: 2px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 12px;
+    cursor: pointer;
+    transition: border-color .1s, background-color .1s;
+}
+.role-checkbox-card:hover { border-color: #93c5fd; }
+.role-checkbox-card.checked { border-color: #2563eb; background: #eff6ff; }
+
+@media (max-width: 767px) {
+    #usersTable, #usersTable tbody, #usersTable tr, #usersTable td { display: block; width: 100%; }
+    #usersTable thead { display: none; }
+    #usersTable td { padding: 0 !important; }
+    #usersTable tr.u-row {
+        margin: 10px;
+        padding: 12px;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, .07);
+    }
+    #usersTable .u-cell { display: flex; justify-content: space-between; align-items: center; padding: 4px 0 !important; gap: 8px; }
+    #usersTable .u-cell::before { content: attr(data-label); color: #9ca3af; font-size: 11px; font-weight: 700; flex-shrink: 0; }
+    #usersTable .u-actions { justify-content: flex-start; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+}

@@ -155,7 +155,10 @@ test('7. /api/verify response contains no password hash, session token, token ha
     const cookie = await loginAs(process.env.ADMIN_USER, process.env.ADMIN_PASS);
     const res = await fetch(`${baseURL}/api/verify`, { headers: { Cookie: cookie } });
     const text = await res.text();
-    assert.equal(/password/i.test(text), false, 'ไม่ควรมี field เกี่ยวกับรหัสผ่านเลย');
+    // regex เจาะจง "password_hash"/field "password" แทน /password/i แบบเดิม — owner (Phase 5A) มี permission key
+    // "users.reset_password" ที่มีคำว่า "password" อยู่จริงๆ โดยตั้งใจ (แค่ชื่อ permission ไม่ใช่ค่ารหัสผ่านที่หลุดออกมา)
+    assert.equal(/password_hash/i.test(text), false, 'ไม่ควรมี field password_hash หลุดมา');
+    assert.equal(/"password"\s*:/i.test(text), false, 'ไม่ควรมี field password หลุดมา');
     assert.equal(/scrypt:/i.test(text), false, 'ไม่ควรมี hash รหัสผ่านหลุดมา');
     assert.equal(/lhk_session|token_hash/i.test(text), false, 'ไม่ควรมี session token หรือ token hash หลุดมา');
     assert.equal(/"owner"|"kitchen"|"queue"|"tables"|"manager"/i.test(text), false, 'ไม่ควรมีชื่อ role หลุดออกมาเลย มีแค่ permission key');

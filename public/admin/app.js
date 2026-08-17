@@ -1,0 +1,158 @@
+// public/admin/app.js — เชลล์กลางของ /admin/ (Phase 5A)
+// รับผิดชอบ: auth bootstrap, permission-aware UI, ตัวช่วย XSS-safe, confirm modal, fetch กลางที่จัดการ 401/403
+//
+// สำคัญ: การซ่อน/แสดงปุ่มที่นี่คือ UX เท่านั้น ไม่ใช่การป้องกันความปลอดภัย
+// ทุก endpoint ใน /api/admin/* ยังถูกบังคับด้วย requireAuth + requirePermission เจาะจงฝั่งเซิร์ฟเวอร์เหมือนกับ /staff/ (Phase 3)
+const AdminApp = (function () {
+    'use strict';
+
+    // ===== กัน XSS: escape ก่อนเอาข้อมูลจาก DB ไปต่อเป็น HTML (เหมือนกับ /staff/app.js) =====
+    const _escMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    function esc(v) { return String(v ?? '').replace(/[&<>"']/g, (c) => _escMap[c]); }
+    function jsAttr(v) {
+        return String(v ?? '')
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/</g, '\\x3C')
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;');
+    }
+
+    let currentUser = null;
+    let permissions = new Set();
+
+    function hasPermission(key) { return permissions.has(key); }
+
+    // ===== confirm modal (ใช้ร่วมกันทุกจุด เช่น ปิดใช้งานบัญชี) =====
+    let _confirmCb = null;
+    function showConfirm(message, onConfirm) {
+        document.getElementById('confirmMessage').innerText = message;
+        _confirmCb = onConfirm;
+        document.getElementById('confirmModal').classList.remove('hidden');
+    }
+    function confirmOk() {
+        document.getElementById('confirmModal').classList.add('hidden');
+        if (_confirmCb) _confirmCb();
+        _confirmCb = null;
+    }
+    function confirmCancel() {
+        document.getElementById('confirmModal').classList.add('hidden');
+        _confirmCb = null;
+    }
+
+    // ===== fetch กลาง: จัดการ 401/403 เหมือนกันทุกจุด =====
+    // 401 (ไม่มี session ที่ใช้ได้) -> กลับไปหน้า login
+    // 403 (login อยู่แต่ไม่มีสิทธิ์ทำ action นี้) -> "ไม่" พาไป login, โชว์แบนเนอร์ + รีเฟรชสิทธิ์ล่าสุดแทน
+    async function apiFetch(url, opts) {
+        let res;
+        try {
+            res = await fetch(url, opts);
+        } catch (e) {
+            return null;
+        }
+        if (res.status === 401) {
+            redirectToLogin();
+            return null;
+        }
+        if (res.status === 403) {
+            showForbiddenBanner();
+            return null;
+        }
+        return res;
+    }
+
+    function redirectToLogin() {
+        window.location.href = '/admin/login';
+    }
+
+    let forbiddenBannerTimer = null;
+    function showForbiddenBanner() {
+        const el = document.getElementById('forbiddenBanner');
+        if (!el) return;
+        el.textContent = 'สิทธิ์การใช้งานของคุณอาจถูกเปลี่ยนแปลง — กำลังตรวจสอบสิทธิ์ล่าสุด...';
+        el.classList.remove('hidden');
+        clearTimeout(forbiddenBannerTimer);
+        forbiddenBannerTimer = setTimeout(() => el.classList.add('hidden'), 6000);
+        refreshPermissionsAndReconcile();
+    }
+
+    // permission เปลี่ยนระหว่าง session ยังไม่หมดอายุ (ถูกถอด role/permission ระหว่างเปิดหน้านี้ค้างไว้) -> โหลดสิทธิ์ล่าสุดแล้วปรับ UI ให้ตรง
+    async function refreshPermissionsAndReconcile() {
+        let res;
+        try {
+            res = await fetch('/api/verify');
+        } catch (e) {
+            return;
+        }
+        if (!res.ok) return redirectToLogin();
+        const data = await res.json();
+        permissions = new Set(data.permissions || []);
+        applyPermissionGates();
+        if (hasPermission('users.view') && window.UsersModule) UsersModule.reload();
+    }
+
+    // ปุ่ม/องค์ประกอบที่ต้องมี permission เฉพาะถึงจะโชว์ — ระบุด้วย data-requires="perm.key" บน element
+    function applyPermissionGates() {
+        document.querySelectorAll('[data-requires]').forEach((el) => {
+            const required = el.dataset.requires.split(',').map((s) => s.trim());
+            const ok = required.some((k) => hasPermission(k));
+            el.classList.toggle('hidden', !ok);
+        });
+    }
+
+    function showNoAccessState(message) {
+        document.getElementById('adminShell').classList.add('hidden');
+        document.getElementById('adminShell').classList.remove('flex');
+        const el = document.getElementById('noAccessState');
+        el.querySelector('p').textContent = message;
+        el.classList.remove('hidden');
+        el.classList.add('flex');
+    }
+
+    // ===== boot =====
+    async function boot() {
+        let res;
+        try {
+            res = await fetch('/api/verify');
+        } catch (e) {
+            return redirectToLogin();
+        }
+        if (!res.ok) return redirectToLogin();
+        const data = await res.json();
+        currentUser = data.user;
+        permissions = new Set(data.permissions || []);
+
+        document.getElementById('adminLoading').classList.add('hidden');
+        document.getElementById('adminDisplayName').textContent = currentUser.display_name || currentUser.username;
+
+        if (!hasPermission('users.view')) {
+            showNoAccessState('บัญชีนี้ยังไม่ได้รับสิทธิ์ดูรายชื่อบัญชีพนักงาน (users.view) กรุณาติดต่อเจ้าของร้าน');
+            return;
+        }
+
+        const shell = document.getElementById('adminShell');
+        shell.classList.remove('hidden');
+        shell.classList.add('flex');
+        applyPermissionGates();
+        if (window.UsersModule) UsersModule.activate();
+    }
+
+    function logout() {
+        fetch('/api/logout', { method: 'POST' }).catch(() => {}).finally(() => {
+            window.location.href = '/admin/login';
+        });
+    }
+
+    return {
+        esc,
+        jsAttr,
+        apiFetch,
+        hasPermission,
+        showConfirm,
+        confirmOk,
+        confirmCancel,
+        boot,
+        logout,
+        get currentUser() { return currentUser; },
+    };
+})();
