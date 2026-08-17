@@ -3,7 +3,8 @@
 // queue.manage : สร้าง/เรียกเข้าโต๊ะ/แก้ไข/ลบ/ข้ามคิว
 // ตัวเลือกโต๊ะใช้ GET /api/tables (ไม่มี session_token ตั้งแต่ Phase 3.1) — ห้ามเรียก /api/table-qr/:table
 // จากโมดูลนี้เด็ดขาด (นั่นเป็นสิทธิ์ tables.qr ของโมดูล Tables เท่านั้น)
-const QueueModule = (function () {
+// window.QueueModule (ไม่ใช่ const เฉยๆ) — app.js's moduleImpl() อ้างถึง window.QueueModule ตรงๆ เพื่อเรียก .activate() ตอนสลับแท็บ
+window.QueueModule = (function () {
     'use strict';
 
     const socket = StaffApp.socket;

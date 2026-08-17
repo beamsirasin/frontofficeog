@@ -1,7 +1,8 @@
 // public/admin/users.js — โมดูลจัดการบัญชีพนักงาน (Phase 5A ขอบเขตเดียวของ /admin/)
 // role ที่ปรากฏในหน้านี้มาจาก GET /api/admin/roles เสมอ (server กรอง owner ออกไปแล้วตั้งแต่ต้นทาง — ดู server.js assignableRoles())
 // ไม่มีการแก้ไข role_permissions ในเฟสนี้ (read-only role list) — การสร้าง/แก้ไข role เป็นของ Phase 5B
-const UsersModule = (function () {
+// window.UsersModule (ไม่ใช่ const เฉยๆ) — app.js's switchPanel()/refreshPermissionsAndReconcile() อ้างถึง window.UsersModule ตรงๆ
+window.UsersModule = (function () {
     'use strict';
 
     const esc = AdminApp.esc;

@@ -1,6 +1,7 @@
 // public/staff/reports.js — โมดูลสถิติ
 // reports.view: ต้องมีถึงจะเห็นเมนูนี้เลย (คุมที่ StaffApp) — ไม่มี sub-permission ย่อยอีกใน endpoint เดียวนี้
-const ReportsModule = (function () {
+// window.ReportsModule (ไม่ใช่ const เฉยๆ) — app.js's moduleImpl() อ้างถึง window.ReportsModule ตรงๆ เพื่อเรียก .activate() ตอนสลับแท็บ
+window.ReportsModule = (function () {
     'use strict';
 
     const socket = StaffApp.socket;

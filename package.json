@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "test": "node --test",
+    "test:browser": "node --test test-browser/*.check.js",
     "start": "node server.js"
   },
   "keywords": [],
@@ -18,6 +19,7 @@
     "sqlite3": "^6.0.1"
   },
   "devDependencies": {
+    "playwright": "^1.62.1",
     "socket.io-client": "^4.8.3"
   }
 }

@@ -3,7 +3,8 @@
 // tables.manage  : เปิด/ปิดโต๊ะ, แก้จำนวนลูกค้า
 // tables.qr      : ดึงลิงก์/QR สั่งอาหารของโต๊ะที่เปิดอยู่ (คนละสิทธิ์กับ manage โดยตั้งใจ — ดู Phase 3.1)
 // สามสิทธิ์นี้เป็นอิสระต่อกัน ห้ามสมมติว่ามี manage แล้วจะมี qr ด้วย
-const TablesModule = (function () {
+// window.TablesModule (ไม่ใช่ const เฉยๆ) — app.js's moduleImpl() อ้างถึง window.TablesModule ตรงๆ เพื่อเรียก .activate() ตอนสลับแท็บ
+window.TablesModule = (function () {
     'use strict';
 
     const socket = StaffApp.socket;

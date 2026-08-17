@@ -1,7 +1,8 @@
 // public/staff/kitchen.js — โมดูลครัว
 // kitchen.view: ดูออเดอร์รอเสิร์ฟ + ประวัติการเสิร์ฟ (จำเป็นแค่จะเห็นเมนูนี้เลย — คุมที่ StaffApp)
 // kitchen.manage: ปุ่ม "เสิร์ฟแล้ว"/ยกเลิก — เซิร์ฟเวอร์บังคับอยู่แล้ว ที่นี่แค่ซ่อนปุ่มไว้เป็น UX
-const KitchenModule = (function () {
+// window.KitchenModule (ไม่ใช่ const เฉยๆ) — app.js's moduleImpl() อ้างถึง window.KitchenModule ตรงๆ เพื่อเรียก .activate() ตอนสลับแท็บ
+window.KitchenModule = (function () {
     'use strict';
 
     const socket = StaffApp.socket;

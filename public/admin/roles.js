@@ -1,7 +1,8 @@
 // public/admin/roles.js — โมดูลจัดการ custom role (Phase 5B)
 // role ระบบ (is_system) แสดงได้อย่างเดียว ห้ามแก้ไข/ลบผ่านหน้านี้เด็ดขาด (server บังคับซ้ำอีกชั้นอยู่แล้ว — ที่นี่แค่ไม่โชว์ปุ่ม)
 // การซ่อน/ปิดใช้งานปุ่มตามเพดานสิทธิ์ (ceiling) ในไฟล์นี้เป็น UX เท่านั้น — server เป็นผู้ตัดสินใจจริงเสมอ (ดู server.js permissionCeilingError/customRoleCeilingError)
-const RolesModule = (function () {
+// window.RolesModule (ไม่ใช่ const เฉยๆ) — app.js's switchPanel()/refreshPermissionsAndReconcile() อ้างถึง window.RolesModule ตรงๆ
+window.RolesModule = (function () {
     'use strict';
 
     const esc = AdminApp.esc;

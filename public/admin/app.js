@@ -3,7 +3,9 @@
 //
 // สำคัญ: การซ่อน/แสดงปุ่มที่นี่คือ UX เท่านั้น ไม่ใช่การป้องกันความปลอดภัย
 // ทุก endpoint ใน /api/admin/* ยังถูกบังคับด้วย requireAuth + requirePermission เจาะจงฝั่งเซิร์ฟเวอร์เหมือนกับ /staff/ (Phase 3)
-const AdminApp = (function () {
+// window.AdminApp (ไม่ใช่ const เฉยๆ) เพราะ switchPanel()/refreshPermissionsAndReconcile() ในไฟล์นี้เองอ้างถึง window.UsersModule/window.RolesModule ตรงๆ —
+// top-level const ใน classic <script> ไม่ผูกเป็น property ของ window ให้อัตโนมัติ ต้อง assign เข้า window เองชัดๆ (เช่นเดียวกับ /staff/app.js)
+window.AdminApp = (function () {
     'use strict';
 
     // ===== กัน XSS: escape ก่อนเอาข้อมูลจาก DB ไปต่อเป็น HTML (เหมือนกับ /staff/app.js) =====

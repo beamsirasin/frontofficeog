@@ -4,7 +4,9 @@
 //
 // สำคัญ: การซ่อน/แสดงเมนูที่นี่คือ UX เท่านั้น ไม่ใช่การป้องกันความปลอดภัย
 // ทุก endpoint ยังถูกบังคับด้วย requireAuth + requirePermission ฝั่งเซิร์ฟเวอร์เหมือนเดิมทุกจุด (Phase 3)
-const StaffApp = (function () {
+// window.StaffApp (ไม่ใช่ const เฉยๆ) เพราะ moduleImpl()/switchPanel() ในไฟล์นี้เองอ้างถึง window.StaffApp/window.KitchenModule ฯลฯ ตรงๆ —
+// top-level const ใน classic <script> (ไม่ใช่ type="module") ไม่ผูกเป็น property ของ window ให้อัตโนมัติ ต้อง assign เข้า window เองชัดๆ
+window.StaffApp = (function () {
     'use strict';
 
     const socket = io();
