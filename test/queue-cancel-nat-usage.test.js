@@ -70,14 +70,15 @@ test('19. a legitimate queue cancellation succeeds', async () => {
     assert.equal(body.success, true);
 });
 
-// ==================== item 26: queue token entropy/format finding, documented via test ====================
+// ==================== item 26 (Phase 6C.1): queue token entropy hardening — new tokens are now 128-bit ====================
 
-test('26. the current queue token format (12 hex chars = 48-bit entropy) continues to be accepted — documents the Phase 6C entropy finding, no format change made this phase', async () => {
+test('26. newly-created queue tokens are now 32 hex characters (128-bit entropy, crypto.randomBytes(16)) — hardened in Phase 6C.1', async () => {
     const cookie = await login();
     const q = await createQueue(cookie);
-    assert.match(q.token, /^[0-9a-f]{12}$/, 'queue token ปัจจุบันคือ crypto.randomBytes(6).toString(\'hex\') = 12 hex char / 48 บิต — ยังไม่เปลี่ยนรูปแบบในเฟสนี้');
+    assert.equal(q.token.length, 32, `token ใหม่ควรยาว 32 ตัวอักษร hex (128 บิต) แต่ได้ ${q.token.length}`);
+    assert.match(q.token, /^[0-9a-f]{32}$/, 'token ควรเป็น hex ล้วนจาก crypto.randomBytes(16)');
     const res = await cancelByToken(q.token);
-    assert.equal(res.status, 200, 'token รูปแบบปัจจุบันต้องยังใช้งานได้ตามปกติ (ไม่มี migration ใดๆ เกิดขึ้น)');
+    assert.equal(res.status, 200, 'token รูปแบบใหม่ต้องใช้งานได้ตามปกติ');
 });
 
 // ==================== item 25: cancellation does not mutate an unrelated queue ====================
@@ -100,12 +101,14 @@ test('25. cancelling one queue token does not affect a different, unrelated wait
     assert.equal(row2.status, 'waiting', 'คิวอื่นที่ไม่เกี่ยวข้องต้องไม่ถูกแตะต้องเลย');
 });
 
-// ==================== item 23-24: NAT / shared-WiFi — multiple legitimate queue customers from one source ====================
+// ==================== item 23-24 (+ Phase 6C.1 item 12): NAT / shared-WiFi — multiple legitimate queue customers from one source ====================
 
-test('23-24. multiple legitimate queue customers behind the same shared IP can each cancel their own token normally', async () => {
+test('23-24 & 12. multiple legitimate NEW-FORMAT (32-char, 128-bit) queue tokens behind the same shared IP can each cancel their own token normally', async () => {
     const cookie = await login();
     const queues = [];
     for (let i = 0; i < 5; i++) queues.push(await createQueue(cookie));
+
+    for (const q of queues) assert.match(q.token, /^[0-9a-f]{32}$/, 'ทุก token ที่สร้างใหม่ตอนนี้ควรเป็นรูปแบบ 128-bit แล้ว');
 
     for (const q of queues) {
         const res = await cancelByToken(q.token);

@@ -872,7 +872,9 @@ app.get('/api/served-recent', requireAuth, requirePermission(PERMISSIONS.KITCHEN
 // ================== API ระบบคิว ==================
 app.post('/api/queue', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), (req, res) => {
     const { pax, pots, adults = 0, children = 0, is_foreign = 0, is_separate_table = 0 } = req.body;
-    const token = crypto.randomBytes(6).toString('hex');
+    // (Phase 6C.1) 16 ไบต์ (128 บิต) กันเดา token — ของเก่าที่เคยออกไว้ก่อนหน้านี้ (6 ไบต์/48 บิต) ยังใช้ได้ตามปกติ
+    // เพราะการตรวจสอบเป็นการเทียบสตริงตรงๆ ไม่สนใจความยาว ไม่ต้อง migrate ข้อมูลเดิม (เหมือนแนวทางเดียวกับ table session token ใน Phase 1.1)
+    const token = crypto.randomBytes(16).toString('hex');
     db.serialize(() => {
         // ใช้ MAX ของเลขคิวเดิม ไม่ใช่ COUNT — ถ้าใช้ COUNT แล้วมีการลบคิวทิ้ง เลขจะวนกลับมาซ้ำของเดิม
         db.get(`SELECT COALESCE(MAX(CAST(SUBSTR(q_number, 2) AS INTEGER)), 0) AS maxNum
