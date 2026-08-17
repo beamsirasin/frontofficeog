@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>เข้าสู่ระบบพนักงาน - LUM HIM KHUE</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 min-h-screen flex flex-col items-center justify-center text-white p-4">
+    <div class="w-full max-w-sm">
+        <h1 class="text-2xl font-bold text-center mb-1">ลำฮิมคือ SHABU BUFFET</h1>
+        <h2 class="text-lg text-gray-400 text-center mb-8">เข้าสู่ระบบพนักงาน</h2>
+
+        <form id="loginForm" class="space-y-4">
+            <input type="text" id="staffUser" placeholder="Username" autocomplete="username"
+                class="w-full text-black text-center text-xl p-4 rounded-lg focus:outline-none focus:ring-4 focus:ring-blue-500" required>
+            <input type="password" id="staffPin" placeholder="Password" autocomplete="current-password"
+                class="w-full text-black text-center text-xl p-4 rounded-lg focus:outline-none focus:ring-4 focus:ring-blue-500" required>
+            <button type="submit" id="loginBtn"
+                class="w-full bg-blue-600 hover:bg-blue-500 active:scale-95 transition-transform px-8 py-4 rounded-lg font-bold text-xl shadow-lg">
+                เข้าสู่ระบบ
+            </button>
+        </form>
+        <p id="loginError" class="text-red-400 mt-4 text-center font-bold hidden"></p>
+    </div>
+
+    <script>
+        const form = document.getElementById('loginForm');
+        const errorEl = document.getElementById('loginError');
+        const btn = document.getElementById('loginBtn');
+
+        function showError(msg) {
+            errorEl.textContent = msg;
+            errorEl.classList.remove('hidden');
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            errorEl.classList.add('hidden');
+            btn.disabled = true;
+            btn.textContent = 'กำลังเข้าสู่ระบบ...';
+
+            const user = document.getElementById('staffUser').value;
+            const pin = document.getElementById('staffPin').value;
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user, pin }),
+                });
+                if (res.status === 429) {
+                    const data = await res.json().catch(() => ({}));
+                    showError(data.error || 'พยายามเข้าสู่ระบบผิดหลายครั้งเกินไป กรุณารอสักครู่');
+                } else if (!res.ok) {
+                    showError('Username หรือ Password ไม่ถูกต้อง');
+                } else {
+                    window.location.href = '/staff/';
+                    return;
+                }
+            } catch (err) {
+                showError('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองใหม่');
+            }
+            btn.disabled = false;
+            btn.textContent = 'เข้าสู่ระบบ';
+            document.getElementById('staffPin').value = '';
+        });
+    </script>
+</body>
+</html>

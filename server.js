@@ -67,6 +67,27 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+// ================== หน้า /staff/ (Phase 4) ==================
+// ต้องลงทะเบียนก่อน express.static('public') เสมอ — ไม่งั้น express.static จะเสิร์ฟ
+// public/staff/index.html ให้ตรงๆ ตอนขอ /staff/ (พฤติกรรม auto-serve index.html ของ static) ข้ามการเช็ค login ไปเลย
+// ไฟล์ static อื่นในโฟลเดอร์เดียวกัน (staff.css, app.js, kitchen.js, ...) ยังถูกเสิร์ฟผ่าน express.static
+// ตามปกติเพราะ path ไม่ตรงกับ route ที่ประกาศไว้ตรงนี้เป๊ะๆ — ไฟล์พวกนั้นไม่มีความลับ ไม่ต้องเช็ค login ก่อนโหลด
+// getAuthUser ถูกอ้างถึงก่อนถูกประกาศในไฟล์นี้โดยตั้งใจ — เป็น function declaration (hoisted) และถูกเรียกจริง
+// ตอนมี request เข้ามาเท่านั้น (หลังโหลดทั้งไฟล์เสร็จแล้วเสมอ) จึงปลอดภัย
+const STAFF_MODULE_PATHS = ['/staff', '/staff/', '/staff/kitchen', '/staff/queue', '/staff/tables', '/staff/reports'];
+
+app.get('/staff/login', async (req, res) => {
+    const user = await getAuthUser(req);
+    if (user) return res.redirect('/staff/'); // login อยู่แล้ว ไม่ต้องให้ login ซ้ำ
+    res.sendFile(__dirname + '/public/staff/login.html');
+});
+
+app.get(STAFF_MODULE_PATHS, async (req, res) => {
+    const user = await getAuthUser(req);
+    if (!user) return res.redirect('/staff/login');
+    res.sendFile(__dirname + '/public/staff/index.html');
+});
+
 app.use(express.static('public'));
 app.use(express.json());
 
@@ -484,8 +505,15 @@ app.post('/api/logout', (req, res) => {
     res.json({ success: true });
 });
 
-app.get('/api/verify', requireAuth, (req, res) => {
-    res.json({ ok: true, user: { id: req.authUser.id, username: req.authUser.username, display_name: req.authUser.display_name } });
+// (Phase 4) ส่ง permissions ที่มีผลจริง ณ ขณะนี้กลับไปด้วย ให้ /staff/ ใช้ตัดสินใจแสดงเมนู
+// แก้ไขจาก DB สดทุกครั้ง ไม่แคช ไม่มี role name หลุดออกไป (เผื่อ frontend ไม่ต้องรู้จัก role เลย) และไม่มี field ที่อ่อนไหวใดๆ
+app.get('/api/verify', requireAuth, async (req, res) => {
+    const perms = await getUserPermissions(req.authUser.id);
+    res.json({
+        ok: true,
+        user: { id: req.authUser.id, username: req.authUser.username, display_name: req.authUser.display_name },
+        permissions: [...perms].sort()
+    });
 });
 
 app.post('/api/open-table', requireAuth, requirePermission(PERMISSIONS.TABLES_MANAGE), async (req, res) => {
