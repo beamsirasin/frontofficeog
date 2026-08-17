@@ -128,10 +128,15 @@ app.post('/api/logout', (req, res) => {
     res.json({ success: true });
 });
 
+// ตรวจว่า request แนบ token แอดมินที่ login อยู่จริงหรือไม่ (ใช้ทั้งเป็น middleware บังคับ และเช็คแบบ conditional)
+function isAdminToken(req) {
+    const token = req.headers['x-admin-token'];
+    return !!(token && validAdminTokens.has(token));
+}
+
 // middleware: อนุญาตเฉพาะคำขอที่แนบ token ที่ login แล้ว
 function requireAuth(req, res, next) {
-    const token = req.headers['x-admin-token'];
-    if (token && validAdminTokens.has(token)) return next();
+    if (isAdminToken(req)) return next();
     res.status(401).json({ error: 'unauthorized' });
 }
 
@@ -139,7 +144,8 @@ app.get('/api/verify', requireAuth, (req, res) => res.json({ ok: true }));
 
 app.get('/dashboard', (req, res) => res.sendFile(__dirname + '/public/dashboard.html'));
 
-const db = new sqlite3.Database('./restaurant.db');
+// path ของ DB แยกได้ผ่าน env (ใช้เทสต์ชี้ไปไฟล์ชั่วคราวแทน DB จริง) — ไม่ตั้ง = พฤติกรรมเดิมทุกประการ
+const db = new sqlite3.Database(process.env.DB_PATH || './restaurant.db');
 db.serialize(() => {
     // WAL: อ่าน/เขียนพร้อมกันได้ดีขึ้น + ทนต่อไฟดับกลางคันกว่า, busy_timeout: รอแทนที่จะ error เมื่อ DB ถูกล็อกชั่วคราว
     db.run("PRAGMA journal_mode = WAL");
@@ -215,7 +221,23 @@ app.post('/api/close-table', requireAuth, (req, res) => {
     });
 });
 
-app.get('/api/tables', (req, res) => { db.all("SELECT * FROM tables", [], (err, rows) => res.json(rows)); });
+// รายการโต๊ะ — แอดมิน (มี x-admin-token ถูกต้อง) เห็นข้อมูลเต็มรวม session_token
+// ผู้ใช้ทั่วไป/ลูกค้า ไม่ได้ session_token กลับไปเด็ดขาด (มันคือรหัสลับใน QR สั่งอาหาร)
+// แทนที่ด้วย token_match: server เทียบ table+token ที่ลูกค้าส่งมาเองกับของจริงใน DB ให้แทน
+// ลูกค้าจึงยังเช็คได้ว่า QR ตัวเองยังใช้ได้ไหม โดยไม่ต้องรู้ค่า session_token ของโต๊ะไหนเลย
+app.get('/api/tables', (req, res) => {
+    db.all("SELECT * FROM tables", [], (err, rows) => {
+        if (err || !rows) return res.json([]);
+        if (isAdminToken(req)) return res.json(rows);
+
+        const { table, token } = req.query;
+        const safeRows = rows.map(({ session_token, ...rest }) => ({
+            ...rest,
+            token_match: !!(token && rest.table_no === table && session_token === token)
+        }));
+        res.json(safeRows);
+    });
+});
 
 app.post('/api/update-table-pax', requireAuth, (req, res) => {
     const { table, adults = 0, children = 0, toddlers = 0 } = req.body;
@@ -647,4 +669,9 @@ io.on('connection', (socket) => {
 });
 
 const PORT = parseInt(process.env.PORT, 10) || 3000;
-server.listen(PORT, () => console.log(`✅ เซิร์ฟเวอร์ทำงานแล้วที่ http://localhost:${PORT}`));
+// เฉพาะตอนรันตรงๆ (node server.js / npm start) ถึงจะ listen เอง — ตอนถูก require() จากเทสต์จะไม่เปิดพอร์ตอัตโนมัติ
+if (require.main === module) {
+    server.listen(PORT, () => console.log(`✅ เซิร์ฟเวอร์ทำงานแล้วที่ http://localhost:${PORT}`));
+}
+
+module.exports = { app, server, db };
