@@ -160,6 +160,42 @@ function recordLoginFail(ip) {
 const BOOTSTRAP_ADMIN_USER = process.env.ADMIN_USER;
 const BOOTSTRAP_ADMIN_PASS = process.env.ADMIN_PASS;
 
+// ================== RBAC: role/permission (Phase 3) ==================
+// Phase 2 ตอบว่า "นี่คือใคร" — เฟสนี้ตอบว่า "คนนี้ทำอะไรได้บ้าง"
+// permission มาจากการตรวจสอบ endpoint/socket event จริงในระบบ (server.js + dashboard.html) ไม่ใช่เดาจากซอฟต์แวร์ร้านอาหารทั่วไป
+// key ใช้รูปแบบ resource.action — โค้ดห้าม if (role === '...') เด็ดขาด ต้องเช็คผ่าน permission key เท่านั้น
+const PERMISSIONS = {
+    KITCHEN_VIEW: 'kitchen.view',       // ดูออเดอร์รอเสิร์ฟ + ประวัติการเสิร์ฟ (GET /api/orders, /api/served-recent)
+    KITCHEN_MANAGE: 'kitchen.manage',   // กดเสิร์ฟแล้ว/ยกเลิกออเดอร์ (socket update_order)
+    QUEUE_VIEW: 'queue.view',           // ดูรายการคิวประจำวัน (GET /api/queue-history)
+    QUEUE_MANAGE: 'queue.manage',       // สร้าง/เรียกเข้าโต๊ะ/แก้ไข/ลบคิว (POST /api/queue, /api/queue/update, /api/queue/edit, DELETE /api/queue/:id)
+    TABLES_VIEW: 'tables.view',         // ดูสถานะโต๊ะ + ประวัติการสั่ง/เปิดปิด (GET /api/tables, /api/table-history/:table, /api/daily-history)
+    TABLES_MANAGE: 'tables.manage',     // เปิด/ปิดโต๊ะ, แก้จำนวนลูกค้า (POST /api/open-table, /api/close-table, /api/update-table-pax)
+    REPORTS_VIEW: 'reports.view',       // ดูสถิติยอดเสิร์ฟ/คิว (GET /api/stats)
+};
+
+const PERMISSION_CATALOGUE = [
+    { key: PERMISSIONS.KITCHEN_VIEW, name: 'ดูออเดอร์ในครัว', description: 'ดูรายการรอเสิร์ฟและประวัติการเสิร์ฟล่าสุด' },
+    { key: PERMISSIONS.KITCHEN_MANAGE, name: 'จัดการออเดอร์ในครัว', description: 'กดเสิร์ฟแล้ว หรือยกเลิกออเดอร์' },
+    { key: PERMISSIONS.QUEUE_VIEW, name: 'ดูคิว', description: 'ดูรายการคิวประจำวัน' },
+    { key: PERMISSIONS.QUEUE_MANAGE, name: 'จัดการคิว', description: 'สร้างคิวใหม่ เรียกเข้าโต๊ะ แก้ไข หรือลบคิว' },
+    { key: PERMISSIONS.TABLES_VIEW, name: 'ดูสถานะโต๊ะ', description: 'ดูสถานะเปิด/ปิดโต๊ะและประวัติการสั่ง' },
+    { key: PERMISSIONS.TABLES_MANAGE, name: 'จัดการโต๊ะ', description: 'เปิด/ปิดโต๊ะ และแก้ไขจำนวนลูกค้า' },
+    { key: PERMISSIONS.REPORTS_VIEW, name: 'ดูรายงาน/สถิติ', description: 'ดูสถิติยอดเสิร์ฟและคิว' },
+];
+
+// role ระบบชุดแรก — ข้อมูล ไม่ใช่เงื่อนไขในโค้ด (ห้าม hardcode if(role==='kitchen') ที่ไหนเลย)
+// owner ได้ทุก permission เสมอ (รวมของใหม่ที่เพิ่มในอนาคต — ดู initRbac); role อื่นให้แบบระมัดระวัง/น้อยที่สุดเท่าที่จำเป็นจริงตามโค้ดที่มีอยู่
+// ไม่สร้าง role "cashier" ในเฟสนี้ — ระบบยังไม่มีความสามารถเรื่อง POS/บิล/เงินให้ผูก permission ด้วยเลย (ดูรายงานตรวจสอบเดิม)
+// "manager" ให้สิทธิ์ดูภาพรวมทุกโมดูล (อ่านอย่างเดียว) เป็นค่าเริ่มต้นที่ปลอดภัยไว้ก่อน เพราะยังไม่มีข้อกำหนดชัดเจนว่าผู้จัดการควรสั่งการอะไรได้บ้าง
+const ROLE_CATALOGUE = {
+    owner: { name: 'เจ้าของร้าน', description: 'สิทธิ์เต็มทุกอย่างในระบบ', permissions: '*' },
+    kitchen: { name: 'ครัว', description: 'ดูและจัดการออเดอร์ในครัว', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE] },
+    queue: { name: 'คิว', description: 'ดูและจัดการคิวลูกค้า รวมถึงเรียกเข้าโต๊ะ', permissions: [PERMISSIONS.QUEUE_VIEW, PERMISSIONS.QUEUE_MANAGE] },
+    tables: { name: 'โต๊ะ', description: 'ดูและจัดการสถานะโต๊ะ', permissions: [PERMISSIONS.TABLES_VIEW, PERMISSIONS.TABLES_MANAGE] },
+    manager: { name: 'ผู้จัดการ', description: 'ดูภาพรวมทุกส่วนแบบอ่านอย่างเดียว (ยังไม่ให้สิทธิ์สั่งการ)', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.QUEUE_VIEW, PERMISSIONS.TABLES_VIEW, PERMISSIONS.REPORTS_VIEW] },
+};
+
 app.get('/dashboard', (req, res) => res.sendFile(__dirname + '/public/dashboard.html'));
 
 // path ของ DB แยกได้ผ่าน env (ใช้เทสต์ชี้ไปไฟล์ชั่วคราวแทน DB จริง) — ไม่ตั้ง = พฤติกรรมเดิมทุกประการ
@@ -186,6 +222,24 @@ db.serialize(() => {
         last_seen_at INTEGER,
         revoked_at INTEGER,
         FOREIGN KEY (user_id) REFERENCES users(id)
+    )`);
+
+    // (Phase 3) RBAC: role หลายอันต่อ user ได้ (many-to-many) — permission ที่มีผลจริงคือ union ของทุก role ที่ user ถืออยู่
+    db.run("CREATE TABLE IF NOT EXISTS roles (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, is_system BOOLEAN NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+    db.run("CREATE TABLE IF NOT EXISTS permissions (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+    db.run(`CREATE TABLE IF NOT EXISTS role_permissions (
+        role_id INTEGER NOT NULL,
+        permission_id INTEGER NOT NULL,
+        PRIMARY KEY (role_id, permission_id),
+        FOREIGN KEY (role_id) REFERENCES roles(id),
+        FOREIGN KEY (permission_id) REFERENCES permissions(id)
+    )`);
+    db.run(`CREATE TABLE IF NOT EXISTS user_roles (
+        user_id INTEGER NOT NULL,
+        role_id INTEGER NOT NULL,
+        PRIMARY KEY (user_id, role_id),
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (role_id) REFERENCES roles(id)
     )`);
 
     db.run("ALTER TABLE queues ADD COLUMN adults INTEGER DEFAULT 0", () => {});
@@ -220,9 +274,10 @@ db.serialize(() => {
     // ต่อให้ ADMIN_PASS ใน .env จะเปลี่ยนไปยังไงหลังจากนี้ก็ตาม (idempotent)
     db.get("SELECT COUNT(*) AS c FROM users", [], (err, row) => {
         if (err) { console.error('[bootstrap] ตรวจสอบตาราง users ไม่สำเร็จ:', err.message); return; }
-        if (row && row.c > 0) return; // มี user แล้ว ไม่ต้องทำอะไร
+        if (row && row.c > 0) { initRbac(); return; } // มี user แล้ว ไม่ต้อง bootstrap user เพิ่ม แต่ยัง sync RBAC catalogue/owner ทุกครั้งที่บูต
         if (!BOOTSTRAP_ADMIN_USER || !BOOTSTRAP_ADMIN_PASS) {
             console.error('[bootstrap] ยังไม่มีบัญชีผู้ใช้ในระบบ และไม่ได้ตั้ง ADMIN_USER/ADMIN_PASS ใน .env — จะยัง login ไม่ได้จนกว่าจะตั้งค่าแล้วรีสตาร์ท (จะไม่สร้างบัญชีเริ่มต้นที่ไม่ปลอดภัยให้)');
+            initRbac(); // sync catalogue ไว้ก่อนได้ แม้ยังไม่มี user ให้ assign owner
             return;
         }
         db.run(
@@ -231,6 +286,7 @@ db.serialize(() => {
             (err) => {
                 if (err) console.error('[bootstrap] สร้างบัญชีเจ้าของร้านเริ่มต้นไม่สำเร็จ:', err.message);
                 else console.log(`[bootstrap] สร้างบัญชีเจ้าของร้านเริ่มต้นแล้ว: ${BOOTSTRAP_ADMIN_USER}`);
+                initRbac(); // ต้องรอ user ถูกสร้างก่อน ถึงจะรู้ว่ามี user เดียวพอมอบ role เจ้าของร้านให้อัตโนมัติได้ไหม
             }
         );
     });
@@ -262,12 +318,112 @@ function getAuthUser(req) {
 }
 
 // middleware: อนุญาตเฉพาะคำขอที่มี session cookie ที่ยัง valid จริงใน DB (แทน x-admin-token + memory Set เดิม)
-// Phase 2 ยังไม่มี role/permission — ผ่านตรงนี้ได้ถือว่ามีสิทธิ์แอดมินเท่ากันหมดเหมือนระบบเดิม (RBAC จริงจะมาใน Phase 3)
+// requireAuth รับผิดชอบแค่ "นี่คือใคร" (authentication) เท่านั้น — เรื่อง "ทำอะไรได้บ้าง" เป็นหน้าที่ของ requirePermission ด้านล่าง
 async function requireAuth(req, res, next) {
     const user = await getAuthUser(req);
     if (!user) return res.status(401).json({ error: 'unauthorized' });
     req.authUser = user;
     next();
+}
+
+// ---- ตัวช่วย promisify db.run/get/all แบบสั้นๆ ใช้เฉพาะใน RBAC init ที่ต้อง await เป็นลำดับขั้น (โค้ดเดิมส่วนอื่นยังใช้ callback ตามเดิม) ----
+function dbRunAsync(sql, params = []) {
+    return new Promise((resolve, reject) => {
+        db.run(sql, params, function (err) { err ? reject(err) : resolve(this); });
+    });
+}
+function dbGetAsync(sql, params = []) {
+    return new Promise((resolve, reject) => {
+        db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
+    });
+}
+function dbAllAsync(sql, params = []) {
+    return new Promise((resolve, reject) => {
+        db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows || [])));
+    });
+}
+
+// ---- RBAC init: seed permissions/roles/role_permissions แบบ idempotent ทุกครั้งที่บูต + มอบ role เจ้าของร้านให้บัญชีแรกอย่างปลอดภัย ----
+// ต้องถูกเรียกหลังจากขั้นตอน bootstrap user (ใน db.serialize ด้านบน) ตัดสินใจเสร็จแล้วเท่านั้น (ดูจุดเรียกที่ db.get COUNT users)
+// function declaration (hoisted) ตั้งใจ — ตัว bootstrap callback เรียกใช้ก่อนโค้ดนี้จะถูกประมวลผลตามลำดับที่เขียนในไฟล์ แต่ hoisting ทำให้เรียกได้เพราะ callback จะทำงานทีหลังแบบ async เสมอ
+async function initRbac() {
+    try {
+        // 1) permissions — เติมเฉพาะที่ยังไม่มี ไม่ลบของเดิม
+        for (const p of PERMISSION_CATALOGUE) {
+            await dbRunAsync("INSERT OR IGNORE INTO permissions (key, name, description) VALUES (?, ?, ?)", [p.key, p.name, p.description]);
+        }
+        const permRows = await dbAllAsync("SELECT id, key FROM permissions");
+        const permIdByKey = new Map(permRows.map((r) => [r.key, r.id]));
+
+        // 2) roles ระบบ
+        for (const [roleKey, def] of Object.entries(ROLE_CATALOGUE)) {
+            await dbRunAsync("INSERT OR IGNORE INTO roles (key, name, description, is_system) VALUES (?, ?, ?, 1)", [roleKey, def.name, def.description]);
+        }
+        const roleRows = await dbAllAsync("SELECT id, key FROM roles WHERE is_system = 1");
+        const roleIdByKey = new Map(roleRows.map((r) => [r.key, r.id]));
+
+        // 3) role_permissions — owner ได้ทุก permission เสมอ แม้จะมีการเพิ่ม permissionใหม่ในโค้ดภายหลัง (self-healing ทุกบูต)
+        // role อื่นได้ตามชุดที่กำหนดไว้ในโค้ด (ROLE_CATALOGUE) — ไม่มีการลบ mapping เดิมออก (ไม่ destructive)
+        for (const [roleKey, def] of Object.entries(ROLE_CATALOGUE)) {
+            const roleId = roleIdByKey.get(roleKey);
+            if (!roleId) continue;
+            const keys = def.permissions === '*' ? [...permIdByKey.keys()] : def.permissions;
+            for (const permKey of keys) {
+                const permId = permIdByKey.get(permKey);
+                if (!permId) continue;
+                await dbRunAsync("INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)", [roleId, permId]);
+            }
+        }
+
+        // 4) มอบ role เจ้าของร้านให้บัญชีแรกอย่างปลอดภัย — ทำเท่าที่จำเป็นครั้งเดียว ไม่แตะ mapping ที่มีอยู่แล้วอีกเลย
+        const existingAssignments = await dbGetAsync("SELECT COUNT(*) AS c FROM user_roles");
+        if (existingAssignments && existingAssignments.c > 0) return; // เคย assign role ให้ใครแล้วไม่ว่าจะเป็นใคร ไม่แตะอีก
+
+        const users = await dbAllAsync("SELECT id FROM users");
+        const ownerRoleId = roleIdByKey.get('owner');
+        if (users.length === 1 && ownerRoleId) {
+            await dbRunAsync("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)", [users[0].id, ownerRoleId]);
+            console.log(`[rbac] มอบ role เจ้าของร้าน (owner) ให้บัญชี user_id=${users[0].id} โดยอัตโนมัติ (มีบัญชีเดียวในระบบตอนนี้)`);
+        } else if (users.length > 1) {
+            console.error(`[rbac] พบผู้ใช้ ${users.length} คนแต่ยังไม่มีใครถูก assign role เลย — ไม่สามารถเดาได้ว่าใครคือเจ้าของร้าน จะไม่ assign ให้ใครโดยอัตโนมัติ กรุณา assign role ผ่าน DB โดยตรงก่อนใช้งาน`);
+        }
+        // users.length === 0: ยังไม่มี user เลย ไม่มีอะไรให้ assign ตอนนี้ (bootstrap ยังไม่ตั้งค่า ADMIN_USER/ADMIN_PASS)
+    } catch (e) {
+        console.error('[rbac] เริ่มต้นระบบ RBAC ไม่สำเร็จ:', e.message);
+    }
+}
+
+// permission ที่มีผลจริงของ user = union ของ permission จากทุก role ที่ user ถืออยู่ (join ตรงๆ ไม่ต้อง union มือ)
+// query DB สดทุกครั้ง ไม่มี cache — เพื่อให้การถอด role/permission มีผลตั้งแต่ request ถัดไปโดยไม่ต้อง login ใหม่ (ดูข้อกำหนด Phase 3)
+function getUserPermissions(userId) {
+    return new Promise((resolve, reject) => {
+        db.all(
+            `SELECT DISTINCT permissions.key
+             FROM user_roles
+             JOIN role_permissions ON role_permissions.role_id = user_roles.role_id
+             JOIN permissions ON permissions.id = role_permissions.permission_id
+             WHERE user_roles.user_id = ?`,
+            [userId],
+            (err, rows) => (err ? reject(err) : resolve(new Set((rows || []).map((r) => r.key))))
+        );
+    });
+}
+
+// middleware factory: ต้องมี "อย่างน้อยหนึ่ง" permission ที่ระบุ (OR) — ใช้ตอนความสามารถหนึ่งใช้ร่วมกันได้จากหลาย role จริงๆ (เช่น /api/tables)
+// ต้องต่อจาก requireAuth เสมอ (ใช้ req.authUser ที่ requireAuth ตั้งไว้) — ไม่มี session เลย = 401 (ตรวจไปแล้วที่ requireAuth)
+// มี session แต่ไม่มี permission ที่ต้องการ = 403 ไม่ใช่ 401 (แยกความหมาย "ไม่รู้จัก" กับ "รู้จักแต่ทำไม่ได้" ให้ชัดเจน)
+function requirePermission(...requiredKeys) {
+    return async (req, res, next) => {
+        if (!req.authUser) return res.status(401).json({ error: 'unauthorized' });
+        try {
+            const perms = await getUserPermissions(req.authUser.id);
+            if (requiredKeys.some((k) => perms.has(k))) return next();
+            res.status(403).json({ error: 'forbidden' });
+        } catch (e) {
+            console.error('[rbac] ตรวจสอบสิทธิ์ไม่สำเร็จ:', e.message);
+            res.status(500).json({ error: 'internal_error' });
+        }
+    };
 }
 
 function setSessionCookie(res, rawToken) {
@@ -328,7 +484,7 @@ app.get('/api/verify', requireAuth, (req, res) => {
     res.json({ ok: true, user: { id: req.authUser.id, username: req.authUser.username, display_name: req.authUser.display_name } });
 });
 
-app.post('/api/open-table', requireAuth, async (req, res) => {
+app.post('/api/open-table', requireAuth, requirePermission(PERMISSIONS.TABLES_MANAGE), async (req, res) => {
     const { table, adults = 0, children = 0, toddlers = 0 } = req.body;
     // 16 ไบต์ (128 บิต) กันเดา token — ของเก่าที่เปิดโต๊ะไว้ก่อนหน้านี้ (4 ไบต์) ยังใช้ได้ตามปกติ
     // เพราะการตรวจสอบเป็นการเทียบสตริงตรงๆ ไม่สนใจความยาว ไม่ต้อง migrate ข้อมูลเดิม
@@ -345,7 +501,7 @@ app.post('/api/open-table', requireAuth, async (req, res) => {
     } catch (err) { res.status(500).json({ error: 'Failed' }); }
 });
 
-app.post('/api/close-table', requireAuth, (req, res) => {
+app.post('/api/close-table', requireAuth, requirePermission(PERMISSIONS.TABLES_MANAGE), (req, res) => {
     const { table } = req.body;
     db.get("SELECT session_token FROM tables WHERE table_no = ?", [table], (err, row) => {
         if (row && row.session_token) {
@@ -371,7 +527,8 @@ app.post('/api/close-table', requireAuth, (req, res) => {
 // รายการโต๊ะทั้งหมด (รวม session_token) — สำหรับแอดมิน/แดชบอร์ดเท่านั้น
 // ลูกค้า/ผู้ใช้ทั่วไปไม่ควรเห็นรายชื่อโต๊ะทั้งร้านหรือ session_token ของโต๊ะไหนเลย
 // ให้ใช้ GET /api/table-session (ด้านล่าง) ซึ่งจำกัดขอบเขตแค่โต๊ะเดียวที่ตัวเองมี token แทน
-app.get('/api/tables', requireAuth, (req, res) => {
+// สิทธิ์: tables.view (แท็บโต๊ะ) หรือ queue.manage (ตัวเลือกโต๊ะตอนเรียกคิวเข้าโต๊ะ ในแท็บคิว) — ใช้ endpoint นี้ร่วมกันจริงในโค้ดปัจจุบัน
+app.get('/api/tables', requireAuth, requirePermission(PERMISSIONS.TABLES_VIEW, PERMISSIONS.QUEUE_MANAGE), (req, res) => {
     db.all("SELECT * FROM tables", [], (err, rows) => res.json(rows || []));
 });
 
@@ -407,13 +564,13 @@ app.get('/api/table-session', (req, res) => {
     });
 });
 
-app.post('/api/update-table-pax', requireAuth, (req, res) => {
+app.post('/api/update-table-pax', requireAuth, requirePermission(PERMISSIONS.TABLES_MANAGE), (req, res) => {
     const { table, adults = 0, children = 0, toddlers = 0 } = req.body;
     db.run("UPDATE tables SET adults = ?, children = ?, toddlers = ? WHERE table_no = ?",
         [adults, children, toddlers, table], () => res.json({ success: true }));
 });
 
-app.get('/api/table-history/:table', requireAuth, (req, res) => {
+app.get('/api/table-history/:table', requireAuth, requirePermission(PERMISSIONS.TABLES_VIEW), (req, res) => {
     db.get("SELECT session_token FROM tables WHERE table_no = ?", [req.params.table], (err, table) => {
         if(!table || !table.session_token) return res.json([]);
         db.all("SELECT items, status FROM orders WHERE table_no = ? AND session_token = ?", [req.params.table, table.session_token], (err, orders) => {
@@ -423,7 +580,7 @@ app.get('/api/table-history/:table', requireAuth, (req, res) => {
     });
 });
 
-app.get('/api/daily-history', requireAuth, (req, res) => {
+app.get('/api/daily-history', requireAuth, requirePermission(PERMISSIONS.TABLES_VIEW), (req, res) => {
     const date = req.query.date;
     db.all("SELECT * FROM session_history WHERE closed_at IS NOT NULL AND date(opened_at) = ?", [date], (err, sessions) => {
         if (err || !sessions || sessions.length === 0) return res.json([]);
@@ -448,7 +605,7 @@ app.get('/api/daily-history', requireAuth, (req, res) => {
 
 // สถิติรวม: ยอดเสิร์ฟ + เวลาเสิร์ฟ + สถิติคิว ในช่วงวันที่ที่เลือก
 // รับได้ทั้ง ?from=&to= (ช่วงวัน) และ ?date= แบบเดิม (วันเดียว) เพื่อไม่ให้ของเก่าพัง
-app.get('/api/stats', requireAuth, (req, res) => {
+app.get('/api/stats', requireAuth, requirePermission(PERMISSIONS.REPORTS_VIEW), (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
 
     const from = req.query.from || req.query.date;
@@ -552,14 +709,14 @@ app.get('/api/stats', requireAuth, (req, res) => {
     });
 });
 
-app.get('/api/orders', requireAuth, (req, res) => {
+app.get('/api/orders', requireAuth, requirePermission(PERMISSIONS.KITCHEN_VIEW), (req, res) => {
     db.all("SELECT * FROM orders WHERE status = 'pending' ORDER BY id ASC", [], (err, rows) => {
         if (err || !rows) return res.json([]);
         res.json(rows.map(r => ({...r, items: safeParse(r.items, {}), created_at: r.created_at ? r.created_at.replace(' ', 'T') + 'Z' : r.created_at})));
     });
 });
 
-app.get('/api/served-recent', requireAuth, (req, res) => {
+app.get('/api/served-recent', requireAuth, requirePermission(PERMISSIONS.KITCHEN_VIEW), (req, res) => {
     db.all("SELECT * FROM orders WHERE status = 'served' AND served_at IS NOT NULL AND date(served_at, 'localtime') = date('now', 'localtime') ORDER BY served_at DESC, id DESC LIMIT 20", [], (err, rows) => {
         if (err || !rows) return res.json([]);
         res.json(rows.map(r => ({...r, items: safeParse(r.items, {}), served_at: r.served_at ? r.served_at.replace(' ', 'T') + 'Z' : r.served_at})));
@@ -567,7 +724,7 @@ app.get('/api/served-recent', requireAuth, (req, res) => {
 });
 
 // ================== API ระบบคิว ==================
-app.post('/api/queue', requireAuth, (req, res) => {
+app.post('/api/queue', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), (req, res) => {
     const { pax, pots, adults = 0, children = 0, is_foreign = 0, is_separate_table = 0 } = req.body;
     const token = crypto.randomBytes(6).toString('hex');
     db.serialize(() => {
@@ -585,7 +742,7 @@ app.post('/api/queue', requireAuth, (req, res) => {
     });
 });
 
-app.get('/api/queue-history', requireAuth, (req, res) => {
+app.get('/api/queue-history', requireAuth, requirePermission(PERMISSIONS.QUEUE_VIEW), (req, res) => {
     const date = req.query.date;
     db.all("SELECT * FROM queues WHERE date(created_at, 'localtime') = ? ORDER BY id ASC", [date], (err, rows) => {
         if(err || !rows) return res.json([]);
@@ -594,7 +751,7 @@ app.get('/api/queue-history', requireAuth, (req, res) => {
 });
 
 // เฉพาะแอดมินเท่านั้น — ลูกค้าที่จะยกเลิกคิวตัวเองให้ใช้ /api/queue/cancel-by-token ด้านล่าง
-app.post('/api/queue/update', requireAuth, (req, res) => {
+app.post('/api/queue/update', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), (req, res) => {
     const { id, status, table_assigned, is_billed } = req.body || {};
     if (!QUEUE_STATUSES.includes(status)) return res.status(400).json({ error: 'สถานะไม่ถูกต้อง' });
 
@@ -623,14 +780,14 @@ app.post('/api/queue/cancel-by-token', (req, res) => {
 });
 
 // API สำหรับแก้ไขข้อมูลคิว
-app.delete('/api/queue/:id', requireAuth, (req, res) => {
+app.delete('/api/queue/:id', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), (req, res) => {
     db.run("DELETE FROM queues WHERE id = ?", [req.params.id], () => {
         res.json({ success: true });
         io.emit('queue_updated');
     });
 });
 
-app.post('/api/queue/edit', requireAuth, (req, res) => {
+app.post('/api/queue/edit', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), (req, res) => {
     const { id, pax, adults, children, pots, is_foreign, is_separate_table } = req.body;
     db.run("UPDATE queues SET pax = ?, adults = ?, children = ?, pots = ?, is_foreign = ?, is_separate_table = ? WHERE id = ?",
         [pax, adults || 0, children || 0, JSON.stringify(pots), is_foreign ? 1 : 0, is_separate_table ? 1 : 0, id], () => {
@@ -818,10 +975,12 @@ io.on('connection', (socket) => {
 
     socket.on('update_order', async (data) => {
         const { id, table, status } = data || {};
-        // เฉพาะแอดมิน/ครัวที่ login แล้วเท่านั้น (กันคนนอกยิง socket มาสั่งเสิร์ฟ/ยกเลิก)
+        // เฉพาะผู้ที่ login แล้วและมีสิทธิ์ kitchen.manage เท่านั้น (กันคนนอก/staff ที่ไม่มีสิทธิ์ยิง socket มาสั่งเสิร์ฟ/ยกเลิก)
         // ตรวจจาก cookie session เดียวกับฝั่ง HTTP — socket.request คือ handshake request ตัวเดิมตอนต่อ WebSocket
         const authUser = await getAuthUser(socket.request);
-        if (!authUser) return socket.emit('auth_error');
+        if (!authUser) return socket.emit('auth_error'); // ไม่มี session เลย — เทียบเท่า 401
+        const perms = await getUserPermissions(authUser.id);
+        if (!perms.has(PERMISSIONS.KITCHEN_MANAGE)) return socket.emit('forbidden_error'); // login แล้วแต่ไม่มีสิทธิ์ — เทียบเท่า 403 แยกจาก auth_error
         const sql = status === 'served'
             ? "UPDATE orders SET status = ?, served_at = CURRENT_TIMESTAMP WHERE id = ?"
             : "UPDATE orders SET status = ? WHERE id = ?";
