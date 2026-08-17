@@ -537,13 +537,8 @@
     <script>
         const socket = io();
 
-        // ===== Auth: แนบ token ไปกับทุก fetch ของหน้าแอดมินอัตโนมัติ =====
-        const _origFetch = window.fetch.bind(window);
-        window.fetch = (url, opts = {}) => {
-            opts.headers = { ...(opts.headers || {}), 'x-admin-token': sessionStorage.getItem('adminToken') || '' };
-            return _origFetch(url, opts);
-        };
-        function getAdminToken() { return sessionStorage.getItem('adminToken') || ''; }
+        // ===== Auth: session อยู่ใน HttpOnly cookie (Phase 2) — browser แนบให้เองอัตโนมัติทุก fetch/socket =====
+        // ไม่มี token ที่ฝั่ง JS อ่านได้อีกต่อไป ไม่ต้องแนบ header เองเหมือนระบบเดิม
 
         // ===== กัน XSS: escape ก่อนเอาข้อมูลจาก DB ไปต่อเป็น HTML =====
         // esc()   สำหรับข้อความปกติใน HTML
@@ -813,35 +808,37 @@
                 onChange: (sel) => { if (sel.length === 2) loadStats(); }
             });
 
-            // ตรวจ token ที่เคย login ไว้ (sessionStorage จะหายเมื่อปิดแท็บ) ว่ายังใช้ได้ไหม
-            if (getAdminToken()) {
-                fetch('/api/verify')
-                    .then(r => { if (r.ok) { hideLoginScreen(); initAdminData(); } else { sessionStorage.removeItem('adminToken'); showLoginScreen(); } })
-                    .catch(() => showLoginScreen());
-            }
+            // เช็คว่ามี session cookie ที่ยังใช้ได้อยู่ไหม (browser แนบ cookie ให้เองถ้ามี ไม่ต้องเช็คฝั่ง JS ก่อน)
+            fetch('/api/verify')
+                .then(r => { if (r.ok) { hideLoginScreen(); initAdminData(); } else { showLoginScreen(); } })
+                .catch(() => showLoginScreen());
         });
 
         function checkLogin() {
             const user = document.getElementById('adminUser').value, pin = document.getElementById('adminPin').value;
             fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user, pin }) })
                 .then(r => r.ok ? r.json() : Promise.reject())
-                .then(data => {
-                    sessionStorage.setItem('adminToken', data.token);
+                .then(() => {
                     hideLoginScreen();
                     document.getElementById('loginError').classList.add('hidden');
                     document.getElementById('adminPin').value = '';
+                    // ต่อ socket ใหม่ ให้ handshake รอบใหม่พก cookie ที่เพิ่ง login ไปด้วย (handshake เดิมต่อไว้ตั้งแต่ก่อน login จะไม่มี cookie นี้)
+                    socket.disconnect();
+                    socket.connect();
                     initAdminData();
                 })
                 .catch(() => { document.getElementById('loginError').classList.remove('hidden'); document.getElementById('adminPin').value = ''; });
         }
 
         function logout() {
-            fetch('/api/logout', { method: 'POST' }).catch(() => {});
-            sessionStorage.removeItem('adminToken');
-            showLoginScreen();
-            document.getElementById('adminUser').value = '';
-            document.getElementById('adminPin').value = '';
-            document.getElementById('loginError').classList.add('hidden');
+            fetch('/api/logout', { method: 'POST' }).catch(() => {}).finally(() => {
+                showLoginScreen();
+                document.getElementById('adminUser').value = '';
+                document.getElementById('adminPin').value = '';
+                document.getElementById('loginError').classList.add('hidden');
+                socket.disconnect();
+                socket.connect();
+            });
         }
 
         function switchTab(tabId) {
@@ -906,9 +903,9 @@
             } catch(e) {} finally { isFetchingServedHistory = false; }
         }
 
-        function updateOrder(id, tableNo, status) { socket.emit('update_order', { id: id, table: tableNo, status: status, token: getAdminToken() }); }
-        // เซิร์ฟเวอร์ปฏิเสธ (เช่น token หมดอายุหลัง restart) → บังคับ login ใหม่
-        socket.on('auth_error', () => { sessionStorage.removeItem('adminToken'); showLoginScreen(); });
+        function updateOrder(id, tableNo, status) { socket.emit('update_order', { id: id, table: tableNo, status: status }); }
+        // เซิร์ฟเวอร์ปฏิเสธ (เช่น session หมดอายุ/ถูกล็อกเอาท์จากที่อื่น) → บังคับ login ใหม่
+        socket.on('auth_error', () => { showLoginScreen(); });
 
         // โหลด/รีโหลดรายการรอเสิร์ฟทั้งหมดใหม่ (ล้างการ์ด+timer เดิมก่อน กันซ้ำ)
         function loadOrders() {

@@ -1,7 +1,8 @@
-// เทสต์ Phase 1 + 1.1: ป้องกันการรั่ว/เดา session_token ของโต๊ะ
+// เทสต์ Phase 1 + 1.1 + 1.2 (auth cookie): ป้องกันการรั่ว/เดา session_token ของโต๊ะ
 // - GET /api/tables ต้องเป็นของแอดมินเท่านั้น (Phase 1.1: ปิดการเข้าถึงแบบไม่ login ไปเลย)
 // - GET /api/table-session คือช่องทางเดียวที่ลูกค้าใช้เช็คโต๊ะตัวเอง จำกัดแค่โต๊ะเดียว ไม่มี session_token หลุด
 // - token ใหม่ต้องมีความสุ่มอย่างน้อย 128 บิต แต่ token รูปแบบเก่ายังต้องใช้ได้ (backward compatible)
+// - แอดมิน login ผ่าน HttpOnly cookie แล้ว (Phase 2) ไม่ใช่ x-admin-token header อีกต่อไป
 // รันด้วย: npm test  (ใช้ node:test ในตัว Node.js ไม่ต้องลงแพ็กเกจเพิ่ม)
 'use strict';
 
@@ -16,12 +17,25 @@ const crypto = require('crypto');
 const DB_PATH = path.join(os.tmpdir(), `frontofficeog-test-${Date.now()}-${process.pid}.db`);
 process.env.DB_PATH = DB_PATH;
 // ตั้งรหัสแอดมินของเทสต์เองแบบชัดเจน กันไม่ให้พึ่งค่าใน .env จริงของเครื่อง (ถ้ามี)
+// ค่านี้ใช้สร้างบัญชีเจ้าของร้าน "ครั้งแรกเท่านั้น" ตอน bootstrap (ดู server.js)
 process.env.ADMIN_USER = 'test_admin';
 process.env.ADMIN_PASS = `test_pass_${Date.now()}`;
 
 const { server, db } = require('../server.js');
 
 let baseURL;
+
+// ดึง "name=value" ของ session cookie จาก Set-Cookie ของ response login แล้วเอาไปแนบเป็น Cookie header เอง
+// (Node fetch ไม่มี cookie jar อัตโนมัติเหมือน browser ต้องทำเองในเทสต์)
+function extractSessionCookie(res) {
+    const raw = typeof res.headers.getSetCookie === 'function'
+        ? res.headers.getSetCookie()
+        : [res.headers.get('set-cookie')].filter(Boolean);
+    for (const c of raw) {
+        if (c && c.startsWith('lhk_session=')) return c.split(';')[0];
+    }
+    return null;
+}
 
 async function login() {
     const res = await fetch(`${baseURL}/api/login`, {
@@ -30,9 +44,9 @@ async function login() {
         body: JSON.stringify({ user: process.env.ADMIN_USER, pin: process.env.ADMIN_PASS }),
     });
     assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.ok(data.token, 'login ควรได้ token กลับมา');
-    return data.token;
+    const cookie = extractSessionCookie(res);
+    assert.ok(cookie, 'login ควรได้ Set-Cookie session (lhk_session) กลับมา');
+    return cookie;
 }
 
 before(async () => {
@@ -42,16 +56,23 @@ before(async () => {
     const { port } = server.address();
     baseURL = `http://127.0.0.1:${port}`;
 
-    // db.serialize() คิวคำสั่งสร้างตาราง/seed โต๊ะ 27 โต๊ะแบบ async — รอจนกว่าจะพร้อมจริง
-    // /api/tables ตอนนี้ต้อง login ก่อนถึงจะเรียกได้ (Phase 1.1) เลย login ในลูปรอด้วย
-    const adminToken = await login();
+    // db.serialize() คิวคำสั่งสร้างตาราง/seed โต๊ะ 27 โต๊ะ + bootstrap บัญชีแรกแบบ async — รอจนกว่าจะพร้อมจริง
+    // /api/tables ตอนนี้ต้อง login ก่อนถึงจะเรียกได้ (Phase 1.1) เลย login ในลูปรอด้วย (ต้องรอ bootstrap เสร็จก่อนถึง login ได้)
     for (let i = 0; i < 50; i++) {
-        const res = await fetch(`${baseURL}/api/tables`, { headers: { 'x-admin-token': adminToken } });
-        const rows = await res.json();
-        if (Array.isArray(rows) && rows.length >= 27) return;
+        const loginRes = await fetch(`${baseURL}/api/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user: process.env.ADMIN_USER, pin: process.env.ADMIN_PASS }),
+        });
+        if (loginRes.status === 200) {
+            const cookie = extractSessionCookie(loginRes);
+            const res = await fetch(`${baseURL}/api/tables`, { headers: { Cookie: cookie } });
+            const rows = await res.json();
+            if (Array.isArray(rows) && rows.length >= 27) return;
+        }
         await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error('seed โต๊ะไม่เสร็จภายในเวลาที่กำหนด');
+    throw new Error('seed โต๊ะ/bootstrap บัญชีแรกไม่เสร็จภายในเวลาที่กำหนด');
 });
 
 after(async () => {
@@ -62,10 +83,10 @@ after(async () => {
     }
 });
 
-async function openTable(adminToken, tableNo) {
+async function openTable(adminCookie, tableNo) {
     const res = await fetch(`${baseURL}/api/open-table`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-token': adminToken },
+        headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
         body: JSON.stringify({ table: tableNo, adults: 2, children: 0, toddlers: 0 }),
     });
     const data = await res.json();
@@ -74,10 +95,10 @@ async function openTable(adminToken, tableNo) {
     return data.token;
 }
 
-async function closeTable(adminToken, tableNo) {
+async function closeTable(adminCookie, tableNo) {
     await fetch(`${baseURL}/api/close-table`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-token': adminToken },
+        headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
         body: JSON.stringify({ table: tableNo }),
     });
 }
@@ -91,9 +112,9 @@ test('unauthenticated GET /api/tables is rejected outright (no full-list enumera
 });
 
 // ---- Authenticated internal access still works (dashboard) ----
-test('authenticated GET /api/tables still returns full internal data (incl. session_token)', async () => {
-    const adminToken = await login();
-    const res = await fetch(`${baseURL}/api/tables`, { headers: { 'x-admin-token': adminToken } });
+test('authenticated (cookie) GET /api/tables still returns full internal data (incl. session_token)', async () => {
+    const adminCookie = await login();
+    const res = await fetch(`${baseURL}/api/tables`, { headers: { Cookie: adminCookie } });
     assert.equal(res.status, 200);
     const rows = await res.json();
     assert.ok(rows.length >= 27);
@@ -105,8 +126,8 @@ test('authenticated GET /api/tables still returns full internal data (incl. sess
 
 // ---- Valid table + valid token succeeds, scoped to one table only ----
 test('GET /api/table-session: legitimate table+token is confirmed via token_match, scoped to one table, no secret in the response', async () => {
-    const adminToken = await login();
-    const realToken = await openTable(adminToken, '1');
+    const adminCookie = await login();
+    const realToken = await openTable(adminCookie, '1');
 
     const res = await fetch(`${baseURL}/api/table-session?table=1&token=${realToken}`);
     assert.equal(res.status, 200);
@@ -126,13 +147,13 @@ test('GET /api/table-session: legitimate table+token is confirmed via token_matc
         'ไม่ควรมีข้อมูลโต๊ะอื่นหรือรายละเอียดเกินจำเป็นปนมาด้วย'
     );
 
-    await closeTable(adminToken, '1');
+    await closeTable(adminCookie, '1');
 });
 
 // ---- Valid table + invalid token fails ----
 test('GET /api/table-session: an invalid/guessed token does not become a valid ordering session', async () => {
-    const adminToken = await login();
-    const realToken = await openTable(adminToken, '2');
+    const adminCookie = await login();
+    const realToken = await openTable(adminCookie, '2');
     const guessedToken = 'deadbeef';
     assert.notEqual(guessedToken, realToken);
 
@@ -142,31 +163,31 @@ test('GET /api/table-session: an invalid/guessed token does not become a valid o
     assert.equal(data.token_match, false, 'token ผิดต้องได้ token_match: false');
     assert.equal(data.is_open, false, 'ไม่ควรบอกสถานะจริงของโต๊ะถ้า token ไม่ตรง');
 
-    await closeTable(adminToken, '2');
+    await closeTable(adminCookie, '2');
 });
 
 // ---- No leakage anywhere in the public payload ----
 test('unauthorized /api/table-session response contains no session_token / sessionToken anywhere in the raw payload', async () => {
-    const adminToken = await login();
-    await openTable(adminToken, '3');
+    const adminCookie = await login();
+    await openTable(adminCookie, '3');
 
     const res = await fetch(`${baseURL}/api/table-session?table=3&token=whatever-a-random-guess-looks-like`);
     const text = await res.text();
     assert.equal(/session_token|sessionToken/i.test(text), false);
 
-    await closeTable(adminToken, '3');
+    await closeTable(adminCookie, '3');
 });
 
 // ---- New tokens carry >=128 bits of entropy ----
 test('newly opened table sessions generate tokens with at least 128 bits of entropy', async () => {
-    const adminToken = await login();
-    const realToken = await openTable(adminToken, '4');
+    const adminCookie = await login();
+    const realToken = await openTable(adminCookie, '4');
 
     // 16 ไบต์ = 32 ตัวอักษร hex
     assert.equal(realToken.length, 32, `token ใหม่ควรยาว 32 ตัวอักษร hex (128 บิต) แต่ได้ ${realToken.length}`);
     assert.match(realToken, /^[0-9a-f]{32}$/, 'token ควรเป็น hex ล้วนจาก crypto.randomBytes');
 
-    await closeTable(adminToken, '4');
+    await closeTable(adminCookie, '4');
 });
 
 // ---- Backward compatibility: a pre-existing legacy-format (short) token still validates ----
@@ -190,10 +211,10 @@ test('a pre-existing legacy-format (4-byte) token continues to validate — no f
     });
 });
 
-// ---- Regression: dashboard-style calls (no query params, just the admin header) are unaffected ----
-test('dashboard-style GET /api/tables (no table/token query params, admin header only) is unaffected', async () => {
-    const adminToken = await login();
-    const res = await fetch(`${baseURL}/api/tables`, { headers: { 'x-admin-token': adminToken } });
+// ---- Regression: dashboard-style calls (cookie only, no query params) are unaffected ----
+test('dashboard-style GET /api/tables (no table/token query params, cookie only) is unaffected', async () => {
+    const adminCookie = await login();
+    const res = await fetch(`${baseURL}/api/tables`, { headers: { Cookie: adminCookie } });
     const rows = await res.json();
     assert.ok(rows.length >= 27);
     assert.ok('is_open' in rows[0] && 'can_order' in rows[0] && 'table_no' in rows[0]);

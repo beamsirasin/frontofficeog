@@ -73,17 +73,69 @@ app.use(express.json());
 // URL หลักของระบบ (โดเมน https) — ใช้สร้างลิงก์/QR ถ้าเปลี่ยนโดเมนแก้ที่นี่ที่เดียว
 const PUBLIC_BASE_URL = 'https://lumhimkhue.com';
 
-// ================== Auth แอดมิน (ตรวจที่ฝั่งเซิร์ฟเวอร์) ==================
-// ตั้งรหัสผ่านจริงผ่าน environment variable (ดู .env.example) ห้ามฝังรหัสจริงไว้ในโค้ด
-const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASS = process.env.ADMIN_PASS || 'admin';
-if (ADMIN_USER === 'admin' && ADMIN_PASS === 'admin') {
-    console.warn('⚠️  ยังใช้ user/pass เริ่มต้น (admin/admin) — ตั้ง ADMIN_USER / ADMIN_PASS ก่อนใช้งานจริง');
+// ================== Auth: ผู้ใช้ + session ถาวรใน DB (Phase 2) ==================
+// แทนที่ระบบเดิมที่เทียบรหัสกับ ADMIN_USER/ADMIN_PASS ตรงๆ แล้วเก็บ token ไว้ใน memory (หายเมื่อ restart)
+// ตอนนี้ผู้ใช้อยู่ในตาราง users, session อยู่ในตาราง sessions — ฝั่ง browser ถือแค่ cookie เท่านั้น
+// ยังไม่มี role/permission ในเฟสนี้ — ใครล็อกอินได้ถือว่ามีสิทธิ์แอดมินเท่ากันหมดเหมือนเดิม (RBAC จริงจะมาใน Phase 3)
+
+// ---- แฮชรหัสผ่านด้วย scrypt (อยู่ใน Node core อยู่แล้ว ไม่ต้องลง dependency เพิ่ม) ----
+// เก็บ algorithm + พารามิเตอร์ + salt ไว้ในสตริงเดียวกับ hash เอง เผื่ออนาคตอยากปรับพารามิเตอร์
+// โดยที่ hash เก่าที่เคยสร้างไว้ (พารามิเตอร์เดิม) ยังตรวจสอบได้ตามปกติ
+const SCRYPT_KEYLEN = 64;
+const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1 };
+
+function hashPassword(password) {
+    const salt = crypto.randomBytes(16);
+    const { N, r, p } = SCRYPT_PARAMS;
+    const hash = crypto.scryptSync(String(password), salt, SCRYPT_KEYLEN, { N, r, p });
+    return `scrypt:${N}:${r}:${p}:${salt.toString('hex')}:${hash.toString('hex')}`;
 }
 
-const validAdminTokens = new Set(); // token ที่ยัง login อยู่ (ล้างเมื่อ restart server)
+function verifyPassword(password, stored) {
+    if (!stored) return false;
+    const parts = String(stored).split(':');
+    if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
+    const [, nStr, rStr, pStr, saltHex, hashHex] = parts;
+    const N = parseInt(nStr, 10), r = parseInt(rStr, 10), p = parseInt(pStr, 10);
+    let salt, expected;
+    try { salt = Buffer.from(saltHex, 'hex'); expected = Buffer.from(hashHex, 'hex'); } catch { return false; }
+    if (!salt.length || !expected.length) return false;
+    const actual = crypto.scryptSync(String(password), salt, expected.length, { N, r, p });
+    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
 
-// กันเดารหัสผ่านแบบยิงรัวๆ: นับครั้งที่ผิดต่อ IP ผิดเกิน 8 ครั้งให้พักไป 15 นาที
+// hash หลอกไว้เทียบเวลาตอน username ไม่มีอยู่จริง กัน timing side-channel ที่จะบอกได้ว่า username ไหนมีอยู่ในระบบ
+const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomBytes(24).toString('hex'));
+
+// ---- Cookie session: HttpOnly, SameSite=Strict, host-only (ไม่ใส่ Domain — แผนคือ path /staff /admin ไม่ใช่ subdomain) ----
+const SESSION_COOKIE_NAME = 'lhk_session';
+const SESSION_TTL_HOURS = parseFloat(process.env.SESSION_TTL_HOURS) || 12;
+const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
+// production ต้องเป็น HTTPS เสมอ (ดู MIGRATION.md) — ตั้ง COOKIE_SECURE=true ใน .env ตอน deploy จริง
+// ปล่อยว่าง/false ตอน dev บน http://localhost เพื่อให้ login ได้โดยไม่ต้องมี HTTPS ในเครื่อง
+const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
+
+// อ่าน cookie เอง (ไม่ลง cookie-parser เพิ่ม — แนวทางเดียวกับที่โปรเจกต์นี้อ่าน .env เอง ดูฟังก์ชัน loadEnv ด้านบน)
+function parseCookies(req) {
+    const header = req.headers && req.headers.cookie;
+    const out = {};
+    if (!header) return out;
+    for (const part of header.split(';')) {
+        const idx = part.indexOf('=');
+        if (idx === -1) continue;
+        const k = part.slice(0, idx).trim();
+        if (!k) continue;
+        try { out[k] = decodeURIComponent(part.slice(idx + 1).trim()); } catch { out[k] = part.slice(idx + 1).trim(); }
+    }
+    return out;
+}
+
+// hash token ของ session ก่อนเก็บ DB — ต่างจาก hash รหัสผ่าน: ตัว token สุ่ม 256 บิตแรงพออยู่แล้ว SHA-256 ทางเดียวก็พอ ไม่ต้อง salt/scrypt
+function hashSessionToken(rawToken) {
+    return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+// กันเดารหัสผ่านแบบยิงรัวๆ: นับครั้งที่ผิดต่อ IP ผิดเกิน 8 ครั้งให้พักไป 15 นาที (ลอจิกเดิม ไม่เปลี่ยน)
 const LOGIN_MAX_FAILS = 8;
 const LOGIN_LOCK_MS = 15 * 60 * 1000;
 const loginFails = new Map(); // ip -> { count, until }
@@ -96,51 +148,17 @@ function loginBlocked(ip) {
     return false;
 }
 
-// เทียบรหัสแบบเวลาคงที่ กันการเดาจากเวลาที่ใช้ตอบ
-function safeEqual(a, b) {
-    const ba = Buffer.from(String(a)), bb = Buffer.from(String(b));
-    if (ba.length !== bb.length) return false;
-    return crypto.timingSafeEqual(ba, bb);
-}
-
-app.post('/api/login', (req, res) => {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    if (loginBlocked(ip)) return res.status(429).json({ success: false, error: 'พยายามเข้าสู่ระบบผิดหลายครั้งเกินไป กรุณารอสักครู่' });
-
-    const { user, pin } = req.body || {};
-    if (safeEqual(user || '', ADMIN_USER) && safeEqual(pin || '', ADMIN_PASS)) {
-        loginFails.delete(ip);
-        const token = crypto.randomBytes(24).toString('hex');
-        validAdminTokens.add(token);
-        return res.json({ success: true, token });
-    }
-
+function recordLoginFail(ip) {
     const rec = loginFails.get(ip) || { count: 0, until: 0 };
     rec.count += 1;
     if (rec.count >= LOGIN_MAX_FAILS) { rec.until = Date.now() + LOGIN_LOCK_MS; rec.count = 0; }
     loginFails.set(ip, rec);
-    res.status(401).json({ success: false });
-});
-
-app.post('/api/logout', (req, res) => {
-    const token = req.headers['x-admin-token'];
-    if (token) validAdminTokens.delete(token);
-    res.json({ success: true });
-});
-
-// ตรวจว่า request แนบ token แอดมินที่ login อยู่จริงหรือไม่ (ใช้ทั้งเป็น middleware บังคับ และเช็คแบบ conditional)
-function isAdminToken(req) {
-    const token = req.headers['x-admin-token'];
-    return !!(token && validAdminTokens.has(token));
 }
 
-// middleware: อนุญาตเฉพาะคำขอที่แนบ token ที่ login แล้ว
-function requireAuth(req, res, next) {
-    if (isAdminToken(req)) return next();
-    res.status(401).json({ error: 'unauthorized' });
-}
-
-app.get('/api/verify', requireAuth, (req, res) => res.json({ ok: true }));
+// ใช้สร้างบัญชีเจ้าของร้าน "ครั้งแรกเท่านั้น" ตอนยังไม่มี user ในระบบเลย (ดู bootstrap ใน db.serialize ด้านล่าง)
+// ไม่มี default เป็น admin/admin อีกต่อไป — ถ้าไม่ตั้งค่าและ DB ยังว่าง ระบบจะไม่สร้างบัญชีที่ไม่ปลอดภัยให้
+const BOOTSTRAP_ADMIN_USER = process.env.ADMIN_USER;
+const BOOTSTRAP_ADMIN_PASS = process.env.ADMIN_PASS;
 
 app.get('/dashboard', (req, res) => res.sendFile(__dirname + '/public/dashboard.html'));
 
@@ -153,9 +171,22 @@ db.serialize(() => {
     db.run("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, table_no TEXT, session_token TEXT, category TEXT, items TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
     db.run("CREATE TABLE IF NOT EXISTS tables (table_no TEXT PRIMARY KEY, is_open BOOLEAN, can_order BOOLEAN, session_token TEXT)");
     db.run("CREATE TABLE IF NOT EXISTS session_history (id INTEGER PRIMARY KEY AUTOINCREMENT, table_no TEXT, session_token TEXT, opened_at DATETIME, closed_at DATETIME)");
-    
+
     // [อัปเดต] ลบโค้ด wait_status ที่สั่งออกทั้งหมด
     db.run("CREATE TABLE IF NOT EXISTS queues (id INTEGER PRIMARY KEY AUTOINCREMENT, q_number TEXT, pax INTEGER, pots TEXT, status TEXT, table_assigned TEXT, is_billed BOOLEAN, token TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+
+    // (Phase 2) บัญชีผู้ใช้ + session ถาวร — ยังไม่มี role/permission ในตารางนี้ (รอ Phase 3 ต่อยอด)
+    db.run("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, display_name TEXT, is_active BOOLEAN NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+    db.run(`CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        last_seen_at INTEGER,
+        revoked_at INTEGER,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )`);
 
     db.run("ALTER TABLE queues ADD COLUMN adults INTEGER DEFAULT 0", () => {});
     db.run("ALTER TABLE queues ADD COLUMN children INTEGER DEFAULT 0", () => {});
@@ -177,10 +208,124 @@ db.serialize(() => {
     db.run("CREATE INDEX IF NOT EXISTS idx_orders_served_at ON orders(served_at)", () => {});
     db.run("CREATE INDEX IF NOT EXISTS idx_queues_created_at ON queues(created_at)", () => {});
     db.run("CREATE INDEX IF NOT EXISTS idx_session_history_opened_at ON session_history(opened_at)", () => {});
+    db.run("CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash)", () => {});
+    db.run("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)", () => {});
 
     for(let i=1; i<=27; i++) {
         db.run("INSERT OR IGNORE INTO tables (table_no, is_open, can_order) VALUES (?, false, true)", [i.toString()]);
     }
+
+    // ---- Bootstrap บัญชีเจ้าของร้านเริ่มต้น: ทำเฉพาะตอนที่ยังไม่มี user ในระบบเลยเท่านั้น ----
+    // มี user อยู่แล้ว = DB คือความจริงหนึ่งเดียวตั้งแต่นั้นไป ห้ามแตะ/ทับรหัสผ่านอัตโนมัติอีก
+    // ต่อให้ ADMIN_PASS ใน .env จะเปลี่ยนไปยังไงหลังจากนี้ก็ตาม (idempotent)
+    db.get("SELECT COUNT(*) AS c FROM users", [], (err, row) => {
+        if (err) { console.error('[bootstrap] ตรวจสอบตาราง users ไม่สำเร็จ:', err.message); return; }
+        if (row && row.c > 0) return; // มี user แล้ว ไม่ต้องทำอะไร
+        if (!BOOTSTRAP_ADMIN_USER || !BOOTSTRAP_ADMIN_PASS) {
+            console.error('[bootstrap] ยังไม่มีบัญชีผู้ใช้ในระบบ และไม่ได้ตั้ง ADMIN_USER/ADMIN_PASS ใน .env — จะยัง login ไม่ได้จนกว่าจะตั้งค่าแล้วรีสตาร์ท (จะไม่สร้างบัญชีเริ่มต้นที่ไม่ปลอดภัยให้)');
+            return;
+        }
+        db.run(
+            "INSERT INTO users (username, password_hash, display_name, is_active) VALUES (?, ?, ?, 1)",
+            [BOOTSTRAP_ADMIN_USER, hashPassword(BOOTSTRAP_ADMIN_PASS), BOOTSTRAP_ADMIN_USER],
+            (err) => {
+                if (err) console.error('[bootstrap] สร้างบัญชีเจ้าของร้านเริ่มต้นไม่สำเร็จ:', err.message);
+                else console.log(`[bootstrap] สร้างบัญชีเจ้าของร้านเริ่มต้นแล้ว: ${BOOTSTRAP_ADMIN_USER}`);
+            }
+        );
+    });
+
+    // ล้าง session ที่หมดอายุ/ถูกเพิกถอนทิ้งตอนสตาร์ท กันตาราง sessions โตไม่มีที่สิ้นสุด
+    db.run("DELETE FROM sessions WHERE expires_at < ? OR revoked_at IS NOT NULL", [Date.now()]);
+});
+
+// ---- ตรวจ session จาก cookie: อ่าน -> hash -> หาใน DB ที่ยังไม่หมดอายุ/ไม่ถูกเพิกถอน -> join user ที่ยัง active อยู่ ----
+function getAuthUser(req) {
+    const raw = parseCookies(req)[SESSION_COOKIE_NAME];
+    if (!raw) return Promise.resolve(null);
+    const tokenHash = hashSessionToken(raw);
+    return new Promise((resolve) => {
+        db.get(
+            `SELECT sessions.id AS session_id, sessions.expires_at,
+                    users.id AS id, users.username, users.display_name, users.is_active
+             FROM sessions JOIN users ON users.id = sessions.user_id
+             WHERE sessions.token_hash = ? AND sessions.revoked_at IS NULL`,
+            [tokenHash],
+            (err, row) => {
+                if (err || !row || !row.is_active) return resolve(null);
+                if (!row.expires_at || row.expires_at < Date.now()) return resolve(null);
+                db.run("UPDATE sessions SET last_seen_at = ? WHERE id = ?", [Date.now(), row.session_id]); // best-effort ไม่ต้องรอผลลัพธ์
+                resolve({ id: row.id, username: row.username, display_name: row.display_name, sessionId: row.session_id });
+            }
+        );
+    });
+}
+
+// middleware: อนุญาตเฉพาะคำขอที่มี session cookie ที่ยัง valid จริงใน DB (แทน x-admin-token + memory Set เดิม)
+// Phase 2 ยังไม่มี role/permission — ผ่านตรงนี้ได้ถือว่ามีสิทธิ์แอดมินเท่ากันหมดเหมือนระบบเดิม (RBAC จริงจะมาใน Phase 3)
+async function requireAuth(req, res, next) {
+    const user = await getAuthUser(req);
+    if (!user) return res.status(401).json({ error: 'unauthorized' });
+    req.authUser = user;
+    next();
+}
+
+function setSessionCookie(res, rawToken) {
+    res.cookie(SESSION_COOKIE_NAME, rawToken, {
+        httpOnly: true,
+        sameSite: 'strict',
+        secure: COOKIE_SECURE,
+        path: '/',
+        maxAge: SESSION_TTL_MS
+    });
+}
+
+function clearSessionCookie(res) {
+    res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, sameSite: 'strict', secure: COOKIE_SECURE, path: '/' });
+}
+
+app.post('/api/login', (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (loginBlocked(ip)) return res.status(429).json({ success: false, error: 'พยายามเข้าสู่ระบบผิดหลายครั้งเกินไป กรุณารอสักครู่' });
+
+    const { user, pin } = req.body || {};
+    const username = String(user || '');
+
+    db.get("SELECT * FROM users WHERE username = ?", [username], (err, row) => {
+        // เทียบกับ hash จริงถ้ามี user หรือ hash หลอกถ้าไม่มี — เวลาที่ใช้ตอบจะใกล้เคียงกัน ไม่บอกใบ้ว่า username นี้มีอยู่จริงไหม
+        const targetHash = (row && row.password_hash) || DUMMY_PASSWORD_HASH;
+        const passOk = verifyPassword(pin || '', targetHash);
+        const ok = !!(row && row.is_active && passOk);
+
+        if (!ok) {
+            recordLoginFail(ip);
+            return res.status(401).json({ success: false });
+        }
+
+        loginFails.delete(ip);
+        const rawToken = crypto.randomBytes(32).toString('hex'); // 256 บิต — ตัวจริงอยู่ที่ browser (cookie) เท่านั้น DB เก็บแค่ hash
+        const now = Date.now();
+        db.run(
+            "INSERT INTO sessions (user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?)",
+            [row.id, hashSessionToken(rawToken), now, now + SESSION_TTL_MS],
+            (err) => {
+                if (err) { console.error('[login] สร้าง session ไม่สำเร็จ:', err.message); return res.status(500).json({ success: false }); }
+                setSessionCookie(res, rawToken);
+                res.json({ success: true, user: { id: row.id, username: row.username, display_name: row.display_name } });
+            }
+        );
+    });
+});
+
+app.post('/api/logout', (req, res) => {
+    const raw = parseCookies(req)[SESSION_COOKIE_NAME];
+    if (raw) db.run("UPDATE sessions SET revoked_at = ? WHERE token_hash = ?", [Date.now(), hashSessionToken(raw)]);
+    clearSessionCookie(res);
+    res.json({ success: true });
+});
+
+app.get('/api/verify', requireAuth, (req, res) => {
+    res.json({ ok: true, user: { id: req.authUser.id, username: req.authUser.username, display_name: req.authUser.display_name } });
 });
 
 app.post('/api/open-table', requireAuth, async (req, res) => {
@@ -671,10 +816,12 @@ io.on('connection', (socket) => {
         });
     });
 
-    socket.on('update_order', (data) => {
-        const { id, table, status, token } = data || {};
+    socket.on('update_order', async (data) => {
+        const { id, table, status } = data || {};
         // เฉพาะแอดมิน/ครัวที่ login แล้วเท่านั้น (กันคนนอกยิง socket มาสั่งเสิร์ฟ/ยกเลิก)
-        if (!token || !validAdminTokens.has(token)) return socket.emit('auth_error');
+        // ตรวจจาก cookie session เดียวกับฝั่ง HTTP — socket.request คือ handshake request ตัวเดิมตอนต่อ WebSocket
+        const authUser = await getAuthUser(socket.request);
+        if (!authUser) return socket.emit('auth_error');
         const sql = status === 'served'
             ? "UPDATE orders SET status = ?, served_at = CURRENT_TIMESTAMP WHERE id = ?"
             : "UPDATE orders SET status = ? WHERE id = ?";
