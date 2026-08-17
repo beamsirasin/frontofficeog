@@ -942,9 +942,17 @@
                 document.getElementById('modalQrPanel').classList.add('hidden');
                 document.getElementById('qrToggleArrow').style.transform = '';
 
-                const orderUrl = `${window.location.origin}/?table=${table.table_no}&token=${table.session_token}`;
-                document.getElementById('modalLinkBox').innerHTML = `<a href="${orderUrl}" target="_blank" class="text-blue-600 underline font-semibold text-lg hover:text-blue-800">กดเพื่อเปิดหน้าสั่งอาหารโต๊ะ ${table.table_no}</a>`;
-                document.getElementById('modalQrDisplay').src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(orderUrl)}`;
+                // (Phase 3.1) session_token ไม่ได้มากับ /api/tables อีกแล้ว — ต้องขอทีละโต๊ะจาก /api/table-qr/:table (ต้องมีสิทธิ์ tables.qr)
+                document.getElementById('modalLinkBox').innerHTML = '<span class="text-gray-400 text-sm">กำลังโหลดลิงก์...</span>';
+                document.getElementById('modalQrDisplay').src = '';
+                fetch(`/api/table-qr/${table.table_no}`).then(res => res.ok ? res.json() : Promise.reject(res.status)).then(qr => {
+                    currentTableSelection = { ...currentTableSelection, session_token: qr.token };
+                    const orderUrl = `${window.location.origin}/?table=${table.table_no}&token=${qr.token}`;
+                    document.getElementById('modalLinkBox').innerHTML = `<a href="${orderUrl}" target="_blank" class="text-blue-600 underline font-semibold text-lg hover:text-blue-800">กดเพื่อเปิดหน้าสั่งอาหารโต๊ะ ${table.table_no}</a>`;
+                    document.getElementById('modalQrDisplay').src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(orderUrl)}`;
+                }).catch(() => {
+                    document.getElementById('modalLinkBox').innerHTML = '<span class="text-red-500 text-sm">ไม่มีสิทธิ์ดูลิงก์/QR ของโต๊ะนี้</span>';
+                });
                 fetch(`/api/table-history/${table.table_no}`).then(res => res.json()).then(orders => {
                     const historyUl = document.getElementById('modalHistory'); historyUl.innerHTML = ''; let totals = {};
                     orders.forEach(o => { if(o.status === 'cancelled') return; for(const [k, v] of Object.entries(o.items)) { totals[k] = (totals[k]||0) + v; } });

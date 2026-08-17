@@ -112,16 +112,22 @@ test('unauthenticated GET /api/tables is rejected outright (no full-list enumera
 });
 
 // ---- Authenticated internal access still works (dashboard) ----
-test('authenticated (cookie) GET /api/tables still returns full internal data (incl. session_token)', async () => {
+// (Phase 3.1) session_token ถูกถอดออกจาก /api/tables แล้ว แม้แอดมินที่ login อยู่ก็ไม่เห็น —
+// dashboard พิมพ์ QR ซ้ำผ่าน GET /api/table-qr/:table แทน (ดู test/table-qr-permission.test.js)
+test('authenticated (cookie) GET /api/tables returns internal data but never session_token (Phase 3.1 least-privilege)', async () => {
     const adminCookie = await login();
     const res = await fetch(`${baseURL}/api/tables`, { headers: { Cookie: adminCookie } });
     assert.equal(res.status, 200);
     const rows = await res.json();
     assert.ok(rows.length >= 27);
-    assert.ok(
-        Object.prototype.hasOwnProperty.call(rows[0], 'session_token'),
-        'แอดมินที่ login แล้วต้องยังเห็น session_token เหมือนเดิม (dashboard ใช้พิมพ์ QR ซ้ำ)'
-    );
+    assert.ok('table_no' in rows[0] && 'is_open' in rows[0] && 'can_order' in rows[0]);
+    for (const row of rows) {
+        assert.equal(
+            Object.prototype.hasOwnProperty.call(row, 'session_token'),
+            false,
+            `แถวของโต๊ะ ${row.table_no} ต้องไม่มี session_token แม้แอดมินที่ login แล้วก็ตาม`
+        );
+    }
 });
 
 // ---- Valid table + valid token succeeds, scoped to one table only ----

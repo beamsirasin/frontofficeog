@@ -169,8 +169,9 @@ const PERMISSIONS = {
     KITCHEN_MANAGE: 'kitchen.manage',   // กดเสิร์ฟแล้ว/ยกเลิกออเดอร์ (socket update_order)
     QUEUE_VIEW: 'queue.view',           // ดูรายการคิวประจำวัน (GET /api/queue-history)
     QUEUE_MANAGE: 'queue.manage',       // สร้าง/เรียกเข้าโต๊ะ/แก้ไข/ลบคิว (POST /api/queue, /api/queue/update, /api/queue/edit, DELETE /api/queue/:id)
-    TABLES_VIEW: 'tables.view',         // ดูสถานะโต๊ะ + ประวัติการสั่ง/เปิดปิด (GET /api/tables, /api/table-history/:table, /api/daily-history)
+    TABLES_VIEW: 'tables.view',         // ดูสถานะโต๊ะ + ประวัติการสั่ง/เปิดปิด (GET /api/tables [ไม่มี session_token], /api/table-history/:table, /api/daily-history)
     TABLES_MANAGE: 'tables.manage',     // เปิด/ปิดโต๊ะ, แก้จำนวนลูกค้า (POST /api/open-table, /api/close-table, /api/update-table-pax)
+    TABLES_QR: 'tables.qr',             // ดึง QR/session secret ของโต๊ะที่เปิดอยู่ทีละโต๊ะ (GET /api/table-qr/:table) — แยกจาก tables.view/manage โดยตั้งใจ (Phase 3.1)
     REPORTS_VIEW: 'reports.view',       // ดูสถิติยอดเสิร์ฟ/คิว (GET /api/stats)
 };
 
@@ -179,8 +180,9 @@ const PERMISSION_CATALOGUE = [
     { key: PERMISSIONS.KITCHEN_MANAGE, name: 'จัดการออเดอร์ในครัว', description: 'กดเสิร์ฟแล้ว หรือยกเลิกออเดอร์' },
     { key: PERMISSIONS.QUEUE_VIEW, name: 'ดูคิว', description: 'ดูรายการคิวประจำวัน' },
     { key: PERMISSIONS.QUEUE_MANAGE, name: 'จัดการคิว', description: 'สร้างคิวใหม่ เรียกเข้าโต๊ะ แก้ไข หรือลบคิว' },
-    { key: PERMISSIONS.TABLES_VIEW, name: 'ดูสถานะโต๊ะ', description: 'ดูสถานะเปิด/ปิดโต๊ะและประวัติการสั่ง' },
+    { key: PERMISSIONS.TABLES_VIEW, name: 'ดูสถานะโต๊ะ', description: 'ดูสถานะเปิด/ปิดโต๊ะและประวัติการสั่ง (ไม่รวม QR/session secret)' },
     { key: PERMISSIONS.TABLES_MANAGE, name: 'จัดการโต๊ะ', description: 'เปิด/ปิดโต๊ะ และแก้ไขจำนวนลูกค้า' },
+    { key: PERMISSIONS.TABLES_QR, name: 'ดู QR/รหัสลับของโต๊ะ', description: 'ดึงลิงก์/QR สั่งอาหารของโต๊ะที่เปิดอยู่ทีละโต๊ะ (สำหรับปริ้นซ้ำ)' },
     { key: PERMISSIONS.REPORTS_VIEW, name: 'ดูรายงาน/สถิติ', description: 'ดูสถิติยอดเสิร์ฟและคิว' },
 ];
 
@@ -188,12 +190,14 @@ const PERMISSION_CATALOGUE = [
 // owner ได้ทุก permission เสมอ (รวมของใหม่ที่เพิ่มในอนาคต — ดู initRbac); role อื่นให้แบบระมัดระวัง/น้อยที่สุดเท่าที่จำเป็นจริงตามโค้ดที่มีอยู่
 // ไม่สร้าง role "cashier" ในเฟสนี้ — ระบบยังไม่มีความสามารถเรื่อง POS/บิล/เงินให้ผูก permission ด้วยเลย (ดูรายงานตรวจสอบเดิม)
 // "manager" ให้สิทธิ์ดูภาพรวมทุกโมดูล (อ่านอย่างเดียว) เป็นค่าเริ่มต้นที่ปลอดภัยไว้ก่อน เพราะยังไม่มีข้อกำหนดชัดเจนว่าผู้จัดการควรสั่งการอะไรได้บ้าง
+// tables.qr ให้เฉพาะ owner (ผ่าน '*') และ tables role เท่านั้น — เป็น role ที่รับผิดชอบเปิด/ปิดโต๊ะและจัดการ QR อยู่แล้วจริงๆ ตาม tables.manage
+// queue และ kitchen ต้อง "ไม่" ได้ tables.qr โดยเด็ดขาด แม้จะมี queue.manage ซึ่งยังคุม /api/tables (แบบไม่มี session_token) อยู่ก็ตาม
 const ROLE_CATALOGUE = {
     owner: { name: 'เจ้าของร้าน', description: 'สิทธิ์เต็มทุกอย่างในระบบ', permissions: '*' },
     kitchen: { name: 'ครัว', description: 'ดูและจัดการออเดอร์ในครัว', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE] },
     queue: { name: 'คิว', description: 'ดูและจัดการคิวลูกค้า รวมถึงเรียกเข้าโต๊ะ', permissions: [PERMISSIONS.QUEUE_VIEW, PERMISSIONS.QUEUE_MANAGE] },
-    tables: { name: 'โต๊ะ', description: 'ดูและจัดการสถานะโต๊ะ', permissions: [PERMISSIONS.TABLES_VIEW, PERMISSIONS.TABLES_MANAGE] },
-    manager: { name: 'ผู้จัดการ', description: 'ดูภาพรวมทุกส่วนแบบอ่านอย่างเดียว (ยังไม่ให้สิทธิ์สั่งการ)', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.QUEUE_VIEW, PERMISSIONS.TABLES_VIEW, PERMISSIONS.REPORTS_VIEW] },
+    tables: { name: 'โต๊ะ', description: 'ดูและจัดการสถานะโต๊ะ รวมถึง QR/session secret', permissions: [PERMISSIONS.TABLES_VIEW, PERMISSIONS.TABLES_MANAGE, PERMISSIONS.TABLES_QR] },
+    manager: { name: 'ผู้จัดการ', description: 'ดูภาพรวมทุกส่วนแบบอ่านอย่างเดียว (ยังไม่ให้สิทธิ์สั่งการหรือดู QR secret)', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.QUEUE_VIEW, PERMISSIONS.TABLES_VIEW, PERMISSIONS.REPORTS_VIEW] },
 };
 
 app.get('/dashboard', (req, res) => res.sendFile(__dirname + '/public/dashboard.html'));
@@ -524,12 +528,25 @@ app.post('/api/close-table', requireAuth, requirePermission(PERMISSIONS.TABLES_M
     });
 });
 
-// รายการโต๊ะทั้งหมด (รวม session_token) — สำหรับแอดมิน/แดชบอร์ดเท่านั้น
-// ลูกค้า/ผู้ใช้ทั่วไปไม่ควรเห็นรายชื่อโต๊ะทั้งร้านหรือ session_token ของโต๊ะไหนเลย
-// ให้ใช้ GET /api/table-session (ด้านล่าง) ซึ่งจำกัดขอบเขตแค่โต๊ะเดียวที่ตัวเองมี token แทน
+// รายการโต๊ะทั้งหมด — สำหรับแอดมิน/แดชบอร์ดเท่านั้น
+// (Phase 3.1) ไม่มี session_token อีกต่อไป แม้จะเป็นผู้ใช้ที่ login แล้วก็ตาม — ไม่มีหน้าจอไหนต้องใช้ token
+// ของ "ทุกโต๊ะพร้อมกัน" จริงๆ (ตาราง/ตัวเลือกโต๊ะตอนเรียกคิว ใช้แค่ is_open/table_no) ต้องการ token ของโต๊ะใดโต๊ะหนึ่ง
+// ให้ไปใช้ GET /api/table-qr/:table ด้านล่างแทน (ต้องมี tables.qr แยกต่างหาก)
+// ลูกค้า/ผู้ใช้ทั่วไปไม่ควรเห็นรายชื่อโต๊ะทั้งร้านหรือ session_token ของโต๊ะไหนเลย ให้ใช้ GET /api/table-session แทน
 // สิทธิ์: tables.view (แท็บโต๊ะ) หรือ queue.manage (ตัวเลือกโต๊ะตอนเรียกคิวเข้าโต๊ะ ในแท็บคิว) — ใช้ endpoint นี้ร่วมกันจริงในโค้ดปัจจุบัน
 app.get('/api/tables', requireAuth, requirePermission(PERMISSIONS.TABLES_VIEW, PERMISSIONS.QUEUE_MANAGE), (req, res) => {
-    db.all("SELECT * FROM tables", [], (err, rows) => res.json(rows || []));
+    db.all("SELECT table_no, is_open, can_order, adults, children, toddlers FROM tables", [], (err, rows) => res.json(rows || []));
+});
+
+// QR/session secret ของโต๊ะเดียวที่เปิดอยู่ — สำหรับแสดงลิงก์/QR ในโมดัลจัดการโต๊ะ และปุ่ม "ปริ้น QR ใหม่"
+// แยก permission ต่างหาก (tables.qr) จาก tables.view/tables.manage โดยตั้งใจ (ดู PERMISSIONS ด้านบน)
+// คืนค่าเฉพาะโต๊ะที่ระบุทีละโต๊ะเท่านั้น ไม่มีทางดึงของโต๊ะอื่นพ่วงมาได้จาก endpoint นี้
+app.get('/api/table-qr/:table', requireAuth, requirePermission(PERMISSIONS.TABLES_QR), (req, res) => {
+    db.get("SELECT table_no, is_open, session_token FROM tables WHERE table_no = ?", [req.params.table], (err, row) => {
+        if (!row || !row.is_open || !row.session_token) return res.status(404).json({ error: 'ไม่พบโต๊ะที่เปิดอยู่' });
+        const url = `${PUBLIC_BASE_URL}/?table=${row.table_no}&token=${row.session_token}`;
+        res.json({ table_no: row.table_no, token: row.session_token, url });
+    });
 });
 
 // กันเดา token แบบยิงรัวๆ ต่อ IP — ลอจิกเดียวกับที่ใช้กับ /api/login (ดูด้านบน)
@@ -582,7 +599,8 @@ app.get('/api/table-history/:table', requireAuth, requirePermission(PERMISSIONS.
 
 app.get('/api/daily-history', requireAuth, requirePermission(PERMISSIONS.TABLES_VIEW), (req, res) => {
     const date = req.query.date;
-    db.all("SELECT * FROM session_history WHERE closed_at IS NOT NULL AND date(opened_at) = ?", [date], (err, sessions) => {
+    // เลือกคอลัมน์ชัดเจนแทน SELECT * — session_token ที่ได้มาใช้แค่จับคู่กับ orders ภายในฟังก์ชันนี้เท่านั้น ไม่เคยถูกส่งออกไปใน response จริง (ดู res.json ท้ายฟังก์ชัน)
+    db.all("SELECT table_no, session_token, opened_at, closed_at FROM session_history WHERE closed_at IS NOT NULL AND date(opened_at) = ?", [date], (err, sessions) => {
         if (err || !sessions || sessions.length === 0) return res.json([]);
         // ดึงเฉพาะออเดอร์ของ session ในวันนั้น แทนการดึง orders ทั้งตาราง
         const tokens = sessions.map(s => s.session_token).filter(Boolean);
