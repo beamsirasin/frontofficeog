@@ -753,3 +753,61 @@ test('Password policy: creating a staff account with password "1" succeeds, that
     assert.equal(isRequired, '', 'the password field must still be required (empty submission blocked) even though minlength is gone');
     await ctx3.close();
 });
+
+// ==================== Phase 8.1.1: enforce single cashier day-close lifecycle ====================
+
+// ---- 37. Opening stays freely editable with no standalone irreversible control, right up until "ปิดยอดประจำวัน" locks the whole day ----
+test('Cashier single day-close lifecycle: Opening saves/edits/re-saves freely with no standalone Finalize control anywhere, and only "ปิดยอดประจำวัน" locks it', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.owner.username, app.personas.owner.password);
+    await page.click('#btn-cashier');
+    await page.waitForTimeout(400);
+    // (Phase 8.1.1) ต้องเป็นวันที่ในอดีต — การปิดยอดต้องกรอกยอดขาย POS ซึ่ง endpoint ปฏิเสธวันที่ในอนาคตเสมอ
+    const date = '2025-06-01';
+    await gotoCashierDate(page, date);
+
+    // บันทึกเงินเปิดร้าน
+    await page.click('#cashierTabOpening');
+    await page.waitForTimeout(300);
+    await page.fill('.cashier-qty-input[data-denom="1000"]', '4');
+    await page.click('#cashierSaveBtn');
+    await page.waitForTimeout(500);
+    assert.match(await page.textContent('#cashierStatusBadge'), /กำลังบันทึก/, 'an ordinary save must stay in the plain editable state');
+    assert.ok(await page.isHidden('#cashierFinalizeBtn'), 'no standalone Finalize control may ever appear on the Opening tab');
+
+    // แก้ไขแล้วบันทึกซ้ำ — ต้องยังแก้ไขได้อิสระ ไม่มีอะไรถูกล็อก
+    await page.fill('.cashier-qty-input[data-denom="1000"]', '6');
+    await page.click('#cashierSaveBtn');
+    await page.waitForTimeout(500);
+    const afterResaveReadOnly = await page.getAttribute('.cashier-qty-input[data-denom="1000"]', 'readonly');
+    assert.equal(afterResaveReadOnly, null, 'Opening must remain fully editable after any number of ordinary saves — no separate finalize step exists to lock it early');
+    assert.ok(await page.isHidden('#cashierFinalizeBtn'), 'still no standalone Finalize control after re-saving');
+
+    // เตรียมปิดยอดประจำวัน — POS + เงินนับปิดร้าน
+    await page.click('#cashierTabClosing');
+    await page.waitForTimeout(400);
+    await page.fill('#cashierPosSalesInput', '10000');
+    await page.click('#cashierPosSalesSaveBtn');
+    await page.waitForTimeout(400);
+    await page.fill('.cashier-qty-input[data-denom="1000"]', '16');
+    await page.click('#cashierSaveBtn');
+    await page.waitForTimeout(400);
+
+    // "ปิดยอดประจำวัน" คือปุ่มเดียวที่ล็อกได้ — อยู่บนแท็บ Closing เท่านั้น
+    assert.ok(await page.isVisible('#cashierFinalizeBtn'), 'the one true end-of-day action must be visible now that a Closing draft with POS sales exists');
+    await page.click('#cashierFinalizeBtn');
+    await page.waitForTimeout(300);
+    await page.click('#confirmModal button:has-text("ตกลง")');
+    await page.waitForTimeout(600);
+    assert.match(await page.textContent('#cashierStatusBadge'), /ปิดยอดแล้ว/);
+
+    // Opening ต้องถูกล็อกไปพร้อมกันแบบ atomic แม้จะไม่เคย "ยืนยัน" แยกต่างหากมาก่อนเลยทั้งวัน
+    await page.click('#cashierTabOpening');
+    await page.waitForTimeout(400);
+    assert.match(await page.textContent('#cashierStatusBadge'), /ปิดยอดแล้ว/, 'Opening must be locked automatically the moment the day closes');
+    const finalOpeningReadOnly = await page.getAttribute('.cashier-qty-input[data-denom="1000"]', 'readonly');
+    assert.notEqual(finalOpeningReadOnly, null, 'Opening fields must become read-only only now, after the day actually closed');
+
+    await ctx.close();
+});

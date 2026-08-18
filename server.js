@@ -2164,12 +2164,22 @@ app.put('/api/cashier/sheets/:type', requireAuth, requirePermission(PERMISSIONS.
 // ไม่ต้องมีการ "ยืนยัน" เงินเปิดร้านแยกต่างหากก่อนหน้าอีกต่อไป — แค่ต้อง "มีอยู่จริง" (เคย save อย่างน้อยหนึ่งครั้ง) เท่านั้น (ดูข้อกำหนด Phase 8.1 section 5)
 // ใบเปิดร้านที่ finalized ไปแล้วจากระบบเดิมก่อนหน้านี้ (เช่นจาก Phase 7/8 ที่เคยกด "ยืนยันรายการ" เอง) ยังคงใช้งานได้ปกติ — ข้ามการแช่แข็งซ้ำ ไม่ต้องเช็ค version ของมันอีก (มันนิ่งอยู่แล้ว)
 // ทุกเงื่อนไข (status/version ของ sheet เอง + เงื่อนไข Phase 8 ของ closing) ตรวจภายใน withTransaction เดียวกันทั้งหมด — กัน race ระหว่าง movement/void/แก้ยอด POS/แก้เงินเปิดร้าน กับ finalize (ดู section 18-20 ของข้อกำหนด Phase 8, section 20 ของ Phase 8.1)
+// (Phase 8.1.1) ปิดช่องโหว่: endpoint นี้ยังเรียกตรงๆ ด้วย id ของใบเปิดร้าน (sheet_type='opening') แล้วยืนยันแบบเดี่ยวๆ ได้อยู่ ทั้งที่ frontend ไม่มีปุ่มให้กดแล้ว — ต้องบล็อกที่ backend เองเสมอ ไม่พึ่งแค่การซ่อนปุ่ม
+// ใบเปิดร้านที่ยังเป็น draft อยู่: "ทาง" เดียวที่ทำให้กลายเป็น finalized ได้คือถูกแช่แข็งไปพร้อมกับ Closing ตอนปิดยอดประจำวันเท่านั้น (branch sheet_type==='closing' ด้านล่าง)
+// ใบเปิดร้านที่ finalized ไปแล้ว (ไม่ว่าจะจากการปิดยอดประจำวันจริง หรือจากระบบเดิมก่อนหน้า) ยังคงตกไปที่ UPDATE ท้ายฟังก์ชันตามปกติ ซึ่งจะไม่ match แถวใดเลย (status ไม่ใช่ 'draft' แล้ว) และตอบ 409 "ใบตรวจนับนี้ยืนยันไปแล้ว" เหมือนเดิมทุกประการ — ไม่ใช่ปัญหาใหม่
 app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
     const sheetId = parseInt(req.params.id, 10);
     if (!Number.isInteger(sheetId)) return res.status(400).json({ error: 'invalid_id' });
     try {
         const before = await getCashSheetById(sheetId);
         if (!before) return res.status(404).json({ error: 'not_found' });
+
+        if (before.sheet_type === 'opening' && before.status === 'draft') {
+            return res.status(409).json({
+                error: 'เงินเปิดร้านจะถูกยืนยันเมื่อปิดยอดประจำวัน',
+                conflict_reason: 'opening_finalizes_with_day_close',
+            });
+        }
 
         let expectedDayRevision = null;
         let expectedOpeningVersion = null;

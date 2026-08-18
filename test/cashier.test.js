@@ -233,25 +233,33 @@ test('13. only one opening sheet ever exists per business date at the DB level',
     assert.equal(rows.length, 1);
 });
 
-test('14. finalize an opening draft', async () => {
+test('14. (Phase 8.1.1) a standalone finalize on an opening draft is rejected with a controlled 409 — Opening only finalizes atomically with day-close', async () => {
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-08-14', lines: allNineLines({ 10: 1 }) });
     const id = (await create.json()).sheet.id;
     const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, {});
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 409);
     const body = await res.json();
-    assert.equal(body.sheet.status, 'finalized');
-    assert.ok(body.sheet.finalized_at);
-    assert.equal(body.sheet.finalized_by.id, (await dbGet("SELECT id FROM users WHERE username = ?", [process.env.ADMIN_USER])).id);
+    assert.equal(body.conflict_reason, 'opening_finalizes_with_day_close');
+    const row = await dbGet('SELECT status, version, finalized_by, finalized_at FROM cash_count_sheets WHERE id = ?', [id]);
+    assert.equal(row.status, 'draft', 'a rejected direct finalize must leave the Opening sheet exactly as draft');
+    assert.equal(row.version, 1, 'the rejected finalize must not have touched version at all');
+    assert.equal(row.finalized_by, null);
+    assert.equal(row.finalized_at, null);
 });
 
-test('15. a finalized opening sheet cannot be edited through the normal PUT endpoint', async () => {
+test('15. a rejected direct Opening finalize leaves the denomination quantities completely unchanged, and the sheet remains freely editable afterwards', async () => {
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-08-15', lines: allNineLines({ 10: 1 }) });
     const id = (await create.json()).sheet.id;
-    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, {});
-    const res = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-08-15', lines: allNineLines({ 10: 999 }) });
-    assert.equal(res.status, 409);
-    const row = await dbGet('SELECT quantity FROM cash_count_lines WHERE sheet_id = ? AND denomination = 10', [id]);
-    assert.equal(row.quantity, 1, 'the finalized line must remain unchanged after the rejected edit');
+    const rejected = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, {});
+    assert.equal(rejected.status, 409);
+    const rowAfterRejection = await dbGet('SELECT quantity FROM cash_count_lines WHERE sheet_id = ? AND denomination = 10', [id]);
+    assert.equal(rowAfterRejection.quantity, 1, 'quantities must be untouched by the rejected finalize attempt');
+
+    // ยังคงแก้ไขได้ตามปกติต่อไปเหมือนไม่มีอะไรเกิดขึ้น (Opening ไม่เคยถูกล็อกจากการพยายาม finalize ที่ถูกปฏิเสธ)
+    const edit = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-08-15', lines: allNineLines({ 10: 5 }), expected_version: 1 });
+    assert.equal(edit.status, 200);
+    const rowAfterEdit = await dbGet('SELECT quantity FROM cash_count_lines WHERE sheet_id = ? AND denomination = 10', [id]);
+    assert.equal(rowAfterEdit.quantity, 5);
 });
 
 test('16. a closing draft is created independently of the opening sheet for the same date', async () => {
@@ -263,29 +271,31 @@ test('16. a closing draft is created independently of the opening sheet for the 
     assert.equal(body.sheet.grand_total, 1500);
 });
 
-// (Phase 8) ปิดยอดได้ก็ต่อเมื่อ opening วันเดียวกัน finalized แล้ว + กรอกยอดขายเงินสด POS แล้วเท่านั้น — ตัวช่วยนี้ทำสองอย่างนั้นให้ก่อนเทสต์ finalize closing แบบเดิม (Phase 7)
-async function finalizeOpeningAndSetCashSales(cookie, date) {
+// (Phase 8.1.1) Opening ไม่มีทาง finalize แยกเดี่ยวๆ ได้อีกต่อไป — ตัวช่วยนี้เตรียมแค่ opening(draft)+ยอดขาย POS ให้พร้อมสำหรับขั้นต่อไปคือ finalize closing (ซึ่งจะแช่แข็ง opening ไปพร้อมกันแบบ atomic) เท่านั้น ไม่ finalize อะไรเองเลย
+async function prepareOpeningAndCashSalesForClose(cookie, date) {
     const openingCreate = await api(cookie, 'PUT', '/api/cashier/sheets/opening', { business_date: date, lines: allNineLines({ 10: 1 }) });
-    const openingId = (await openingCreate.json()).sheet.id;
-    await api(cookie, 'POST', `/api/cashier/sheets/${openingId}/finalize`, {});
+    const openingSheet = (await openingCreate.json()).sheet;
     const salesRes = await api(cookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 1000, expected_revision: 0 });
-    return (await salesRes.json()).day_state.revision;
+    const dayRevision = (await salesRes.json()).day_state.revision;
+    return { openingId: openingSheet.id, openingVersion: openingSheet.version, dayRevision };
 }
 
-test('17. finalize a closing sheet', async () => {
-    const dayRevision = await finalizeOpeningAndSetCashSales(ownerCookie, '2026-08-17');
+test('17. finalize a closing sheet (the day-close action, which atomically finalizes the day\'s Opening too)', async () => {
+    const { openingVersion, dayRevision } = await prepareOpeningAndCashSalesForClose(ownerCookie, '2026-08-17');
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: '2026-08-17', lines: allNineLines({ 500: 1 }) });
     const id = (await create.json()).sheet.id;
-    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: dayRevision });
+    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: dayRevision, expected_opening_version: openingVersion });
     assert.equal(res.status, 200);
-    assert.equal((await res.json()).sheet.status, 'finalized');
+    const body = await res.json();
+    assert.equal(body.sheet.status, 'finalized');
+    assert.equal(body.opening.status, 'finalized', 'the day\'s Opening must be finalized atomically alongside Closing');
 });
 
 test('18. a finalized closing sheet cannot be edited', async () => {
-    const dayRevision = await finalizeOpeningAndSetCashSales(ownerCookie, '2026-08-18');
+    const { openingVersion, dayRevision } = await prepareOpeningAndCashSalesForClose(ownerCookie, '2026-08-18');
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: '2026-08-18', lines: allNineLines({ 500: 1 }) });
     const id = (await create.json()).sheet.id;
-    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: dayRevision });
+    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: dayRevision, expected_opening_version: openingVersion });
     const res = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: '2026-08-18', lines: allNineLines({ 500: 999 }) });
     assert.equal(res.status, 409);
 });
@@ -338,10 +348,18 @@ test('23. calling prepare-next-day again updates the existing tomorrow draft ins
 });
 
 test('24. a finalized tomorrow opening cannot be overwritten by prepare-next-day', async () => {
-    const create = await api(ownerCookie, 'POST', '/api/cashier/sheets/prepare-next-day', { reference_business_date: '2026-08-26', lines: allNineLines({ 10: 1 }) });
-    const id = (await create.json()).sheet.id;
-    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, {});
-    const res = await api(ownerCookie, 'POST', '/api/cashier/sheets/prepare-next-day', { reference_business_date: '2026-08-26', lines: allNineLines({ 10: 999 }) });
+    // (Phase 8.1.1) เงินเปิดร้านไม่มีทาง finalize เดี่ยวๆ ได้อีกแล้ว ต้องปิดยอดประจำวันของวันที่นั้นจริงๆ — เลี่ยงใช้วันที่ในอนาคต (ห้ามกรอกยอดขาย POS ล่วงหน้า) จึงใช้วันที่ในอดีตแทน "พรุ่งนี้" ในที่นี้
+    const create = await api(ownerCookie, 'POST', '/api/cashier/sheets/prepare-next-day', { reference_business_date: '2026-01-05', lines: allNineLines({ 10: 1 }) });
+    const created = await create.json();
+    const targetDate = created.business_date; // 2026-01-06
+    const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${targetDate}/cash-sales`, { amount_baht: 1000, expected_revision: 0 });
+    const dayRevision = (await salesRes.json()).day_state.revision;
+    const closingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: targetDate, lines: allNineLines({ 500: 1 }) });
+    const closingId = (await closingCreate.json()).sheet.id;
+    const closeRes = await api(ownerCookie, 'POST', `/api/cashier/sheets/${closingId}/finalize`, { expected_day_revision: dayRevision, expected_opening_version: created.sheet.version });
+    assert.equal(closeRes.status, 200, 'closing the day must succeed and atomically finalize the prepared next-day Opening');
+
+    const res = await api(ownerCookie, 'POST', '/api/cashier/sheets/prepare-next-day', { reference_business_date: '2026-01-05', lines: allNineLines({ 10: 999 }) });
     assert.equal(res.status, 409);
 });
 
@@ -383,7 +401,7 @@ test('29. cashier.view cannot mutate (PUT / finalize / prepare-next-day all retu
     assert.equal((await api(viewOnly.cookie, 'POST', '/api/cashier/sheets/prepare-next-day', { reference_business_date: '2026-08-30', lines: allNineLines() })).status, 403);
 });
 
-test('30. cashier.manage can create, update, and finalize', async () => {
+test('30. cashier.manage can create and update an Opening draft, but even cashier.manage cannot standalone-finalize it — only closing the day can (Phase 8.1.1: this is a lifecycle rule, not a permission gate)', async () => {
     // (Phase 7.1) วันที่นี้ต้องไม่ชนกับวันถัดไปที่ test 21 (month-boundary 2026-08-31 -> 2026-09-01) เตรียมไว้แล้ว — ไม่งั้น PUT นี้จะเจอใบที่มีอยู่แล้วแทนที่จะสร้างใหม่จริงๆ
     const create = await api(manageOnly.cookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-09-02', lines: allNineLines({ 10: 1 }) });
     assert.equal(create.status, 200);
@@ -391,7 +409,23 @@ test('30. cashier.manage can create, update, and finalize', async () => {
     const update = await api(manageOnly.cookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2026-09-02', lines: allNineLines({ 10: 2 }), expected_version: 1 });
     assert.equal(update.status, 200);
     const finalize = await api(manageOnly.cookie, 'POST', `/api/cashier/sheets/${id}/finalize`, {});
-    assert.equal(finalize.status, 200);
+    assert.equal(finalize.status, 409, 'cashier.manage alone is not enough to standalone-finalize Opening — this is a lifecycle rule enforced regardless of permission level');
+    assert.equal((await finalize.json()).conflict_reason, 'opening_finalizes_with_day_close');
+});
+
+test('30b. cashier.manage CAN close an entire day end to end (Opening + Closing + POS sales), proving finalize still works through the legitimate day-close path', async () => {
+    const date = '2026-01-10';
+    const openingCreate = await api(manageOnly.cookie, 'PUT', '/api/cashier/sheets/opening', { business_date: date, lines: allNineLines({ 10: 1 }) });
+    const openingSheet = (await openingCreate.json()).sheet;
+    const salesRes = await api(manageOnly.cookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 500, expected_revision: 0 });
+    const dayRevision = (await salesRes.json()).day_state.revision;
+    const closingCreate = await api(manageOnly.cookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 500: 1 }) });
+    const closingId = (await closingCreate.json()).sheet.id;
+    const closeRes = await api(manageOnly.cookie, 'POST', `/api/cashier/sheets/${closingId}/finalize`, { expected_day_revision: dayRevision, expected_opening_version: openingSheet.version });
+    assert.equal(closeRes.status, 200);
+    const body = await closeRes.json();
+    assert.equal(body.sheet.status, 'finalized');
+    assert.equal(body.opening.status, 'finalized');
 });
 
 test('31. the owner can use every Cashier API without an explicit cashier role', async () => {

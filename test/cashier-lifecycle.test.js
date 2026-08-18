@@ -61,8 +61,16 @@ async function getDay(cookie, date) {
     const res = await api(cookie, 'GET', `/api/cashier/day?date=${date}`);
     return { status: res.status, body: await res.json() };
 }
+// (Phase 8.1.1) มาตรฐานใหม่: standalone finalize ของ Opening ถูกปิด API ไปแล้วเด็ดขาด — จำลอง "ใบเปิดร้านที่ finalized มาก่อนจากระบบรุ่นเก่า (pre-8.1)" ผ่าน DB ตรงๆ แทนการเรียก endpoint ที่ไม่มีให้เรียกแล้ว
+async function markSheetFinalizedDirectly(sheetId, finalizedByUserId) {
+    await dbRun(
+        "UPDATE cash_count_sheets SET status = 'finalized', finalized_by = ?, finalized_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ?",
+        [finalizedByUserId, sheetId]
+    );
+}
 
 let ownerCookie;
+let ownerUserId;
 
 before(async () => {
     await new Promise((resolve, reject) => server.listen(0, (err) => (err ? reject(err) : resolve())));
@@ -74,6 +82,7 @@ before(async () => {
         await new Promise((r) => setTimeout(r, 50));
     }
     ownerCookie = await loginAs(process.env.ADMIN_USER, process.env.ADMIN_PASS);
+    ownerUserId = (await dbGet('SELECT id FROM users WHERE username = ?', [process.env.ADMIN_USER])).id;
 });
 
 after(async () => {
@@ -298,6 +307,99 @@ test('20. concurrent mutation vs close retains Phase-8 safety: a movement racing
     }
 });
 
+test('21. concurrent Opening save vs day-close remains race-safe: exactly one ordering wins, never a lost update', async () => {
+    const date = '2025-08-11';
+    const openingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: date, lines: allNineLines({ 1000: 5 }) });
+    const opening = (await openingCreate.json()).sheet;
+    const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
+    const dayRevision = (await salesRes.json()).day_state.revision;
+    const closingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 25 }) });
+    const closing = (await closingCreate.json()).sheet;
+
+    // ทั้งสองฝั่งต่างถือ opening.version เดิม (ที่โหลดมาก่อนหน้านี้) พร้อมกัน — จำลองพนักงานสองคนเปิดหน้าจอไว้พร้อมกัน คนหนึ่งแก้เงินเปิดร้าน อีกคนกำลังกดปิดยอด
+    const [saveRes, closeRes] = await Promise.all([
+        api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: date, lines: allNineLines({ 1000: 9 }), expected_version: opening.version }),
+        closeDay(ownerCookie, date, closing.id, opening.id, dayRevision, opening.version),
+    ]);
+
+    const statuses = [saveRes.status, closeRes.status].sort((a, b) => a - b);
+    assert.deepEqual(statuses, [200, 409], 'exactly one of the two racing operations must win — never both, never neither');
+
+    const openingRow = await dbGet('SELECT status, version FROM cash_count_sheets WHERE id = ?', [opening.id]);
+    if (closeRes.status === 200) {
+        // ปิดยอดชนะ — เงินเปิดร้านต้องถูกแช่แข็งด้วยค่าที่โหลดไว้ตอนนั้น (1000:5) ไม่ใช่ค่าที่ save พยายามเปลี่ยนเป็น (1000:9) เพราะ save ถูกปฏิเสธไปแล้ว
+        assert.equal(openingRow.status, 'finalized');
+        assert.equal(saveRes.status, 409, 'the save that lost the race must be rejected, not silently applied after the freeze');
+        const line = await dbGet('SELECT quantity FROM cash_count_lines WHERE sheet_id = ? AND denomination = 1000', [opening.id]);
+        assert.equal(line.quantity, 5, 'the frozen value must be exactly what was loaded, not the losing save\'s value');
+    } else {
+        // save ชนะ — เงินเปิดร้านต้องยังเป็น draft ด้วยค่าใหม่ (1000:9) และการปิดยอด (ที่ถือ version เก่า) ต้องถูกปฏิเสธเป็น opening_stale_version
+        assert.equal(openingRow.status, 'draft');
+        assert.equal(closeRes.status, 409);
+        assert.equal((await closeRes.json()).conflict_reason, 'opening_stale_version');
+        const line = await dbGet('SELECT quantity FROM cash_count_lines WHERE sheet_id = ? AND denomination = 1000', [opening.id]);
+        assert.equal(line.quantity, 9, 'the winning save\'s value must be what persists');
+    }
+});
+
+// ==================== Historical finalized Opening: readable, printable, untouched by later closes ====================
+
+test('a historical finalized Opening remains readable (via GET) and printable (via the shared receipt formatter) after the day is closed', async () => {
+    const date = '2025-08-12';
+    const openingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: date, lines: allNineLines({ 1000: 7 }) });
+    const opening = (await openingCreate.json()).sheet;
+    const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
+    const dayRevision = (await salesRes.json()).day_state.revision;
+    const closingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 25 }) });
+    const closing = (await closingCreate.json()).sheet;
+    const closeRes = await closeDay(ownerCookie, date, closing.id, opening.id, dayRevision, opening.version);
+    assert.equal(closeRes.status, 200);
+
+    // อ่านได้ปกติผ่าน GET เหมือนใบทั่วไป — ไม่มี endpoint พิเศษแยกสำหรับใบเก่า
+    const readRes = await api(ownerCookie, 'GET', `/api/cashier/sheets?date=${date}&type=opening`);
+    assert.equal(readRes.status, 200);
+    const readSheet = (await readRes.json()).sheet;
+    assert.equal(readSheet.status, 'finalized');
+    assert.equal(readSheet.lines.find((l) => l.denomination === 1000).quantity, 7);
+    assert.ok(readSheet.finalized_by && readSheet.finalized_by.id, 'must expose who finalized it (via the atomic close)');
+
+    // ปริ้นได้ตามปกติผ่าน formatter ตัวเดียวกับใบอื่นๆ ทุกประการ — ไม่มี branch แยกสำหรับ "ใบเก่า" ที่จะพังหรือ throw
+    const { buildCashierReceiptLines } = require('../public/staff/cashier-print.js');
+    const receipt = buildCashierReceiptLines(readSheet, {});
+    assert.doesNotMatch(receipt.statusLabel || '', /ฉบับร่าง/, 'a finalized historical Opening must never print as a draft');
+});
+
+test('a historical finalized Opening is not mutated at all by the day-close transaction that finalized it (version/actor/timestamp/quantities frozen exactly as they were)', async () => {
+    const date = '2025-08-13';
+    const openingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: date, lines: allNineLines({ 1000: 3 }) });
+    const opening = (await openingCreate.json()).sheet;
+    const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
+    const dayRevision = (await salesRes.json()).day_state.revision;
+    const closingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 25 }) });
+    const closing = (await closingCreate.json()).sheet;
+    const closeRes = await closeDay(ownerCookie, date, closing.id, opening.id, dayRevision, opening.version);
+    assert.equal(closeRes.status, 200);
+    const closeBody = await closeRes.json();
+    const frozenAt = closeBody.opening.finalized_at;
+    const frozenVersion = closeBody.opening.version;
+
+    // ปิดยอดของ "วันอื่น" ในภายหลัง (จำลองเวลาผ่านไป มีการปิดยอดวันถัดๆ ไป) ต้องไม่แตะใบเก่าของวันนี้เลยแม้แต่นิดเดียว
+    const otherDate = '2025-08-14';
+    const otherOpening = (await (await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: otherDate, lines: allNineLines({ 1000: 1 }) })).json()).sheet;
+    const otherSalesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${otherDate}/cash-sales`, { amount_baht: 1000, expected_revision: 0 });
+    const otherDayRevision = (await otherSalesRes.json()).day_state.revision;
+    const otherClosing = (await (await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: otherDate, lines: allNineLines({ 1000: 1 }) })).json()).sheet;
+    const otherCloseRes = await closeDay(ownerCookie, otherDate, otherClosing.id, otherOpening.id, otherDayRevision, otherOpening.version);
+    assert.equal(otherCloseRes.status, 200, 'closing a different day must succeed normally, proving it runs a real close (not a no-op) that still leaves the earlier frozen day untouched');
+
+    const row = await dbGet('SELECT status, version, finalized_by, finalized_at FROM cash_count_sheets WHERE id = ?', [opening.id]);
+    assert.equal(row.status, 'finalized');
+    assert.equal(row.version, frozenVersion, 'version must remain exactly what it was the moment it was frozen');
+    assert.equal(row.finalized_at, frozenAt, 'finalized_at must remain exactly what it was the moment it was frozen');
+    const line = await dbGet('SELECT quantity FROM cash_count_lines WHERE sheet_id = ? AND denomination = 1000', [opening.id]);
+    assert.equal(line.quantity, 3, 'quantities must remain exactly as they were when frozen');
+});
+
 // ==================== New: draft Opening is sufficient to close (the core Phase 8.1 behavior change) ====================
 
 test('a draft (never separately finalized) Opening is sufficient for the day to close successfully', async () => {
@@ -353,9 +455,8 @@ test('an Opening already finalized under the old (pre-8.1) standalone-finalize m
     const date = '2025-08-10';
     const openingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: date, lines: allNineLines({ 1000: 5 }) });
     const opening = (await openingCreate.json()).sheet;
-    // จำลองพฤติกรรมเก่า: มีคน finalize opening แยกไว้ก่อนแล้วด้วยตัวเอง (endpoint เดิมยังใช้ได้อยู่ ไม่ถูกลบ)
-    const legacyFinalize = await api(ownerCookie, 'POST', `/api/cashier/sheets/${opening.id}/finalize`, {});
-    assert.equal(legacyFinalize.status, 200);
+    // (Phase 8.1.1) endpoint finalize เดี่ยวๆ ของ Opening ถูกปิดกั้นเด็ดขาดแล้ว ไม่มีทางเรียกได้อีกต่อไปไม่ว่าจากระบบเก่าหรือใหม่ — จำลอง "ใบที่ finalized มาก่อนจากระบบรุ่นก่อนหน้า" ผ่าน DB ตรงๆ แทน (ข้อมูลประเภทนี้มีอยู่จริงในฐานข้อมูลเก่า แม้ช่องทางสร้างมันแบบนี้จะถูกปิดไปแล้วก็ตาม)
+    await markSheetFinalizedDirectly(opening.id, ownerUserId);
 
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     const dayRevision = (await salesRes.json()).day_state.revision;

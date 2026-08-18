@@ -80,12 +80,12 @@ function allNineLines(overrides) {
     return denoms.map((d) => ({ denomination: d, quantity: overrides[d] !== undefined ? overrides[d] : 0 }));
 }
 
-// เปิด+finalize เงินเปิดร้านของวันนั้นด้วยยอดรวมที่กำหนด (ผ่าน denomination 1000 ล้วนๆ เพื่อคุมยอดง่าย) — คืน id ของ opening sheet
-async function finalizeOpeningWithAmount(cookie, date, amount) {
+// (Phase 8.1.1) เงินเปิดร้านไม่มีทาง finalize เดี่ยวๆ ได้อีกต่อไป — reconciliation อ่านค่าจาก opening draft ปัจจุบันได้อยู่แล้ว (Phase 8.1) จึงแค่สร้าง/บันทึก opening draft ด้วยยอดที่กำหนด (ผ่าน denomination 1000 ล้วนๆ เพื่อคุมยอดง่าย) ไม่ต้อง finalize เลย — คืน id ของ opening sheet
+// sheet ที่สร้างใหม่แบบนี้จะมี version=1 เสมอ (ยังไม่เคยถูกแก้ไขซ้ำ) — เทสต์ที่เรียก closing finalize ต่อจากนี้จึงส่ง expected_opening_version: 1 ได้ตรงเสมอ
+async function createOpeningWithAmount(cookie, date, amount) {
     assert.equal(amount % 1000, 0, 'test helper ใช้ธนบัตร 1000 ล้วนๆ — จำนวนต้องหารด้วย 1000 ลงตัว');
     const create = await api(cookie, 'PUT', '/api/cashier/sheets/opening', { business_date: date, lines: allNineLines({ 1000: amount / 1000 }) });
     const sheet = (await create.json()).sheet;
-    await api(cookie, 'POST', `/api/cashier/sheets/${sheet.id}/finalize`, {});
     return sheet.id;
 }
 async function getDaySummary(cookie, date) {
@@ -262,7 +262,7 @@ test('18. a voided movement remains stored with its full history', async () => {
 
 test('19. a voided movement is excluded from reconciliation totals', async () => {
     const date = '2025-01-19';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     const created = await (await createMovement(ownerCookie, date, 'cash_in', 'float_add', 9999)).json();
     await api(ownerCookie, 'POST', `/api/cashier/movements/${created.movement.id}/void`, { reason: 'ผิดพลาด' });
@@ -351,7 +351,7 @@ test('30b. a future Bangkok business date is rejected for cash movements', async
 
 test('31. opening + POS cash sales calculates expected cash correctly (no movements)', async () => {
     const date = '2025-02-01';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     const { body } = await getDaySummary(ownerCookie, date);
     assert.equal(body.reconciliation.expected_cash, 25000);
@@ -359,7 +359,7 @@ test('31. opening + POS cash sales calculates expected cash correctly (no moveme
 
 test('32. cash_in adds to expected cash', async () => {
     const date = '2025-02-02';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     await createMovement(ownerCookie, date, 'cash_in', 'float_add', 1000);
     const { body } = await getDaySummary(ownerCookie, date);
@@ -369,7 +369,7 @@ test('32. cash_in adds to expected cash', async () => {
 
 test('33. cash_out subtracts from expected cash', async () => {
     const date = '2025-02-03';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     await createMovement(ownerCookie, date, 'cash_out', 'safe_drop', 10000);
     const { body } = await getDaySummary(ownerCookie, date);
@@ -379,7 +379,7 @@ test('33. cash_out subtracts from expected cash', async () => {
 
 test('34. multiple movements aggregate correctly', async () => {
     const date = '2025-02-04';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     await createMovement(ownerCookie, date, 'cash_in', 'float_add', 500);
     await createMovement(ownerCookie, date, 'cash_in', 'other_in', 300, 'คืนเงินยืม');
@@ -393,7 +393,7 @@ test('34. multiple movements aggregate correctly', async () => {
 
 test('35. voided movements are ignored in aggregation', async () => {
     const date = '2025-02-05';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     await createMovement(ownerCookie, date, 'cash_in', 'float_add', 1000);
     const toVoid = await (await createMovement(ownerCookie, date, 'cash_in', 'float_add', 5000)).json();
@@ -411,7 +411,7 @@ test('36. actual closing cash comes from the server-computed Closing denominatio
 
 test('37. a balanced day returns variance 0', async () => {
     const date = '2025-02-07';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 25 }) });
     const { body } = await getDaySummary(ownerCookie, date);
@@ -421,7 +421,7 @@ test('37. a balanced day returns variance 0', async () => {
 
 test('38. a shortage returns a negative variance', async () => {
     const date = '2025-02-08';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 24, 500: 1, 100: 4, 10: 5 }) }); // 24000+500+400+50=24950
     const { body } = await getDaySummary(ownerCookie, date);
@@ -431,7 +431,7 @@ test('38. a shortage returns a negative variance', async () => {
 
 test('39. an overage returns a positive variance', async () => {
     const date = '2025-02-09';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 25, 100: 1 }) }); // 25100
     const { body } = await getDaySummary(ownerCookie, date);
@@ -442,7 +442,7 @@ test('39. an overage returns a positive variance', async () => {
 test('40. a forged browser expected_cash in the day-summary is impossible — the field is entirely server-computed', async () => {
     // ไม่มี endpoint ไหนรับ expected_cash จาก body เลย — GET /api/cashier/day ไม่อ่าน body ด้วยซ้ำ (เป็น GET) พิสูจน์โดยตรงว่าค่าที่ได้มาจากการคำนวณเท่านั้น
     const date = '2025-02-10';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     const res = await fetch(`${baseURL}/api/cashier/day?date=${date}&expected_cash=999999999`, { headers: { Cookie: ownerCookie } });
     const body = await res.json();
@@ -451,7 +451,7 @@ test('40. a forged browser expected_cash in the day-summary is impossible — th
 
 test('41. a forged browser variance is impossible — the field is entirely server-computed', async () => {
     const date = '2025-02-11';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 25 }) });
     const res = await fetch(`${baseURL}/api/cashier/day?date=${date}&variance=999999`, { headers: { Cookie: ownerCookie } });
@@ -461,7 +461,7 @@ test('41. a forged browser variance is impossible — the field is entirely serv
 
 test('42. safe-drop example (section 38 of the spec) returns variance 0', async () => {
     const date = '2025-02-12';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 25000, expected_revision: 0 });
     await createMovement(ownerCookie, date, 'cash_out', 'safe_drop', 10000);
     await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) }); // 20000
@@ -472,7 +472,7 @@ test('42. safe-drop example (section 38 of the spec) returns variance 0', async 
 
 test('43. float-add example (section 39 of the spec) returns variance 0', async () => {
     const date = '2025-02-13';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     await createMovement(ownerCookie, date, 'cash_in', 'float_add', 1000);
     await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 26 }) }); // 26000
@@ -483,7 +483,7 @@ test('43. float-add example (section 39 of the spec) returns variance 0', async 
 
 test('44. cash-expense example (section 40 of the spec) returns variance 0', async () => {
     const date = '2025-02-14';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 20000, expected_revision: 0 });
     await createMovement(ownerCookie, date, 'cash_out', 'cash_expense', 350, 'ซื้อผักเพิ่ม');
     await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', {
@@ -501,47 +501,47 @@ test('45. Closing cannot finalize without any Opening data for the same date (Ph
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 10000, expected_revision: 0 });
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 10 }) });
     const id = (await create.json()).sheet.id;
-    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: 1 });
+    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: 1, expected_opening_version: 1 });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).conflict_reason, 'opening_missing');
 });
 
 test('46. Closing cannot finalize with manual POS sales still NULL', async () => {
     const date = '2025-03-02';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 10 }) });
     const id = (await create.json()).sheet.id;
-    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: 0 });
+    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: 0, expected_opening_version: 1 });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).conflict_reason, 'cash_sales_missing');
 });
 
 test('47. manual POS sales = 0 allows Closing to finalize', async () => {
     const date = '2025-03-03';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 0, expected_revision: 0 });
     const revision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 5 }) });
     const id = (await create.json()).sheet.id;
-    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision });
+    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision, expected_opening_version: 1 });
     assert.equal(res.status, 200);
 });
 
 test('48. Closing finalizes successfully with matching sheet version + day revision', async () => {
     const date = '2025-03-04';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 0 });
     const revision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
     const id = (await create.json()).sheet.id;
-    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision });
+    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision, expected_opening_version: 1 });
     assert.equal(res.status, 200);
     assert.equal((await res.json()).sheet.status, 'finalized');
 });
 
 test('49. a stale Closing sheet version → 409', async () => {
     const date = '2025-03-05';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 0 });
     const revision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
@@ -549,71 +549,71 @@ test('49. a stale Closing sheet version → 409', async () => {
     // แก้ไข draft อีกครั้งให้ version ขยับไปแล้วก่อน finalize (จำลอง "sheet version ไม่ตรงกับที่ client ถืออยู่" — แต่ finalize เองไม่รับ expected_version จาก client เลย
     // เงื่อนไข version ที่แท้จริงของ finalize คือ status='draft' เท่านั้น การทดสอบนี้จึงพิสูจน์ว่า finalize ยังทำงานถูกต้องแม้ sheet จะถูกแก้ไขหลายรอบก่อนหน้า)
     await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }), expected_version: sheet.version });
-    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${sheet.id}/finalize`, { expected_day_revision: revision });
+    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${sheet.id}/finalize`, { expected_day_revision: revision, expected_opening_version: 1 });
     assert.equal(res.status, 200, 'finalize ใช้แค่ status=draft เป็นเงื่อนไขของตัว sheet เอง ไม่ผูกกับ version ที่เปลี่ยนไปตามการแก้ไข draft ปกติ');
 });
 
 test('50. a stale day revision at finalize time → 409', async () => {
     const date = '2025-03-06';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 0 });
     const staleRevision = (await salesRes.json()).day_state.revision;
     await createMovement(ownerCookie, date, 'cash_in', 'float_add', 500); // ขยับ revision ไปอีกหลังจากที่ client "โหลด" staleRevision ไว้แล้ว
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
     const id = (await create.json()).sheet.id;
-    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: staleRevision });
+    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: staleRevision, expected_opening_version: 1 });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).conflict_reason, 'stale_day_revision');
 });
 
 test('51. a movement created after the UI loaded the day makes finalize stale', async () => {
     const date = '2025-03-07';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 0 });
     const loadedRevision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
     const id = (await create.json()).sheet.id;
     await createMovement(ownerCookie, date, 'cash_out', 'cash_expense', 50, 'ซื้อของ');
-    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: loadedRevision });
+    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: loadedRevision, expected_opening_version: 1 });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).conflict_reason, 'stale_day_revision');
 });
 
 test('52. a movement voided after the UI loaded the day makes finalize stale', async () => {
     const date = '2025-03-08';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const movement = await (await createMovement(ownerCookie, date, 'cash_in', 'float_add', 500)).json();
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 1 });
     const loadedRevision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
     const id = (await create.json()).sheet.id;
     await api(ownerCookie, 'POST', `/api/cashier/movements/${movement.movement.id}/void`, { reason: 'เปลี่ยนใจ' });
-    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: loadedRevision });
+    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: loadedRevision, expected_opening_version: 1 });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).conflict_reason, 'stale_day_revision');
 });
 
 test('53. a POS sales edit after the UI loaded the day makes finalize stale', async () => {
     const date = '2025-03-09';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 0 });
     const loadedRevision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
     const id = (await create.json()).sheet.id;
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 16000, expected_revision: loadedRevision });
-    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: loadedRevision });
+    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: loadedRevision, expected_opening_version: 1 });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).conflict_reason, 'stale_day_revision');
 });
 
 test('54. once Closing is finalized, a new movement is blocked with a controlled 409', async () => {
     const date = '2025-03-10';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 0 });
     const revision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
     const id = (await create.json()).sheet.id;
-    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision });
+    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision, expected_opening_version: 1 });
     const res = await createMovement(ownerCookie, date, 'cash_in', 'float_add', 100);
     assert.equal(res.status, 409);
     assert.equal((await res.json()).conflict_reason, 'day_locked');
@@ -622,12 +622,12 @@ test('54. once Closing is finalized, a new movement is blocked with a controlled
 test('55. once Closing is finalized, voiding an existing movement is blocked', async () => {
     const date = '2025-03-11';
     const movement = await (await createMovement(ownerCookie, date, 'cash_in', 'float_add', 500)).json();
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 1 });
     const revision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
     const id = (await create.json()).sheet.id;
-    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision });
+    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision, expected_opening_version: 1 });
     const res = await api(ownerCookie, 'POST', `/api/cashier/movements/${movement.movement.id}/void`, { reason: 'สายเกินไป' });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).conflict_reason, 'day_locked');
@@ -635,12 +635,12 @@ test('55. once Closing is finalized, voiding an existing movement is blocked', a
 
 test('56. once Closing is finalized, editing the manual POS cash-sales figure is blocked', async () => {
     const date = '2025-03-12';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 0 });
     const revision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
     const id = (await create.json()).sheet.id;
-    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision });
+    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision, expected_opening_version: 1 });
     const res = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 99999, expected_revision: revision });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).conflict_reason, 'day_locked');
@@ -652,14 +652,14 @@ test('56. once Closing is finalized, editing the manual POS cash-sales figure is
 
 test('57. movement-vs-Closing-finalize race: exactly one ordering wins, never a silent post-close movement', async () => {
     const date = '2025-04-01';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 0 });
     const revision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
     const id = (await create.json()).sheet.id;
 
     const [finalizeRes, movementRes] = await Promise.all([
-        api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision }),
+        api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision, expected_opening_version: 1 }),
         createMovement(ownerCookie, date, 'cash_in', 'float_add', 100),
     ]);
 
@@ -683,14 +683,14 @@ test('57. movement-vs-Closing-finalize race: exactly one ordering wins, never a 
 test('58. void-vs-finalize race: never mutate a movement after finalization', async () => {
     const date = '2025-04-02';
     const movement = await (await createMovement(ownerCookie, date, 'cash_in', 'float_add', 500)).json();
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 1 });
     const revision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
     const id = (await create.json()).sheet.id;
 
     const [finalizeRes, voidRes] = await Promise.all([
-        api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision }),
+        api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision, expected_opening_version: 1 }),
         api(ownerCookie, 'POST', `/api/cashier/movements/${movement.movement.id}/void`, { reason: 'race test' }),
     ]);
 
@@ -705,14 +705,14 @@ test('58. void-vs-finalize race: never mutate a movement after finalization', as
 
 test('59. manual-POS-sales-vs-finalize race: never mutate cash sales after finalization', async () => {
     const date = '2025-04-03';
-    await finalizeOpeningWithAmount(ownerCookie, date, 5000);
+    await createOpeningWithAmount(ownerCookie, date, 5000);
     const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 15000, expected_revision: 0 });
     const revision = (await salesRes.json()).day_state.revision;
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 20 }) });
     const id = (await create.json()).sheet.id;
 
     const [finalizeRes, salesEditRes] = await Promise.all([
-        api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision }),
+        api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: revision, expected_opening_version: 1 }),
         api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 77777, expected_revision: revision }),
     ]);
 

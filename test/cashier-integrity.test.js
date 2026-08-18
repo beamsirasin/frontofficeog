@@ -79,6 +79,14 @@ function allNineLines(overrides) {
     const denoms = [1, 2, 5, 10, 20, 50, 100, 500, 1000];
     return denoms.map((d) => ({ denomination: d, quantity: overrides[d] !== undefined ? overrides[d] : 0 }));
 }
+// (Phase 8.1.1) เงินเปิดร้าน "ไม่มีทาง" finalize เดี่ยวๆ ผ่าน API ได้อีกแล้ว (ต้องผ่านปิดยอดประจำวันเท่านั้น) — เทสต์ในไฟล์นี้หลายตัวแค่ต้องการ "ใบที่ finalized ไปแล้ว"
+// เป็นจุดเริ่มต้นเพื่อพิสูจน์พฤติกรรม immutable/version-guard ทั่วไป ไม่ได้ทดสอบกลไกปิดยอดประจำวันเอง จึงจำลองผ่าน DB ตรงๆ (เหมือนใบเก่าจากระบบก่อนหน้า/legacy finalized sheet) แทนการเรียก API
+async function markSheetFinalizedDirectly(sheetId, finalizedByUserId) {
+    await dbRun(
+        "UPDATE cash_count_sheets SET status = 'finalized', finalized_by = ?, finalized_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ?",
+        [finalizedByUserId, sheetId]
+    );
+}
 
 let ownerCookie;
 let ownerUserId;
@@ -163,8 +171,9 @@ test('2. a simulated mid-save failure leaves the previous draft state completely
 test('3. a finalized sheet cannot be modified even with a correct/fresh expected_version', async () => {
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2027-01-03', lines: allNineLines({ 10: 1 }) });
     const sheet = (await create.json()).sheet;
-    await api(ownerCookie, 'POST', `/api/cashier/sheets/${sheet.id}/finalize`, {});
-    const res = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2027-01-03', lines: allNineLines({ 10: 2 }), expected_version: sheet.version });
+    await markSheetFinalizedDirectly(sheet.id, ownerUserId);
+    const finalizedVersion = (await dbGet('SELECT version FROM cash_count_sheets WHERE id = ?', [sheet.id])).version;
+    const res = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2027-01-03', lines: allNineLines({ 10: 2 }), expected_version: finalizedVersion });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).conflict_reason, 'finalized');
 });
@@ -174,9 +183,8 @@ test('4. a stale save that loaded state before finalization cannot modify the sh
     const sheet = (await create.json()).sheet;
     assert.equal(sheet.version, 1);
 
-    // actor "โหลด" version=1 ไว้ก่อนหน้านี้ (ตั้งใจจะแก้ไข) — แต่ก่อนที่จะกด save จริง มีคนอื่น finalize ไปก่อนแล้ว
-    const finalizeRes = await api(ownerCookie, 'POST', `/api/cashier/sheets/${sheet.id}/finalize`, {});
-    assert.equal(finalizeRes.status, 200);
+    // actor "โหลด" version=1 ไว้ก่อนหน้านี้ (ตั้งใจจะแก้ไข) — แต่ก่อนที่จะกด save จริง วันนั้นถูกปิดยอดไปแล้ว (จำลองผ่าน DB ตรงๆ แทนการเรียก API ปิดยอดประจำวันจริง เพราะไม่ใช่จุดที่เทสต์นี้สนใจ)
+    await markSheetFinalizedDirectly(sheet.id, ownerUserId);
 
     // stale save ของ actor (ยังถือ expected_version=1 ตามที่โหลดมาก่อนหน้า) มาถึงเซิร์ฟเวอร์หลัง finalize ไปแล้ว
     const staleRes = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2027-01-04', lines: allNineLines({ 10: 999 }), expected_version: 1 });
@@ -188,17 +196,24 @@ test('4. a stale save that loaded state before finalization cannot modify the sh
 });
 
 // ==================== 5-7. Concurrent finalize: exactly one winner ====================
+// (Phase 8.1.1) เงินเปิดร้านไม่มีทาง finalize เดี่ยวๆ ได้อีกแล้ว (ปฏิเสธทันทีไม่ว่าใครเรียก ไม่ใช่ race) — action ที่ยัง "แข่งกัน" ได้จริงตอนนี้มีแค่ finalize ของ Closing (ปิดยอดประจำวัน) เท่านั้น ย้ายเทสต์นี้มาทดสอบที่นั่นแทน
 
-test('5/6/7. two simultaneous finalize attempts on the same draft: exactly one succeeds, finalized_by belongs to the winner only', async () => {
-    const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2027-01-05', lines: allNineLines({ 10: 1 }) });
-    const sheetId = (await create.json()).sheet.id;
+test('5/6/7. two simultaneous day-close (Closing finalize) attempts on the same draft: exactly one succeeds, finalized_by belongs to the winner only', async () => {
+    const date = '2026-01-15';
+    const openingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: date, lines: allNineLines({ 10: 1 }) });
+    const openingSheet = (await openingCreate.json()).sheet;
+    const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 1000, expected_revision: 0 });
+    const dayRevision = (await salesRes.json()).day_state.revision;
+    const closingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 500: 1 }) });
+    const sheetId = (await closingCreate.json()).sheet.id;
 
     const actorA = await createPersona(['cashier.manage'], 'race_a');
     const actorB = await createPersona(['cashier.manage'], 'race_b');
 
+    const payload = { expected_day_revision: dayRevision, expected_opening_version: openingSheet.version };
     const [resA, resB] = await Promise.all([
-        api(actorA.cookie, 'POST', `/api/cashier/sheets/${sheetId}/finalize`, {}),
-        api(actorB.cookie, 'POST', `/api/cashier/sheets/${sheetId}/finalize`, {}),
+        api(actorA.cookie, 'POST', `/api/cashier/sheets/${sheetId}/finalize`, payload),
+        api(actorB.cookie, 'POST', `/api/cashier/sheets/${sheetId}/finalize`, payload),
     ]);
 
     const statuses = [resA.status, resB.status].sort((a, b) => a - b);
@@ -253,8 +268,9 @@ test('10. two simultaneous prepare-next-day requests for the same reference date
 test('11. a finalized tomorrow-opening cannot be overwritten by prepare-next-day even with a fresh expected_version', async () => {
     const create = await api(ownerCookie, 'POST', '/api/cashier/sheets/prepare-next-day', { reference_business_date: '2027-01-13', lines: allNineLines({ 10: 1 }) });
     const created = await create.json();
-    await api(ownerCookie, 'POST', `/api/cashier/sheets/${created.sheet.id}/finalize`, {});
-    const res = await api(ownerCookie, 'POST', '/api/cashier/sheets/prepare-next-day', { reference_business_date: '2027-01-13', lines: allNineLines({ 10: 2 }), expected_version: created.sheet.version });
+    await markSheetFinalizedDirectly(created.sheet.id, ownerUserId);
+    const finalizedVersion = (await dbGet('SELECT version FROM cash_count_sheets WHERE id = ?', [created.sheet.id])).version;
+    const res = await api(ownerCookie, 'POST', '/api/cashier/sheets/prepare-next-day', { reference_business_date: '2027-01-13', lines: allNineLines({ 10: 2 }), expected_version: finalizedVersion });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).conflict_reason, 'finalized');
 });
@@ -283,15 +299,28 @@ test('13. updated_by cannot be forged by the client', async () => {
     assert.notEqual(updated.updated_by.id, forgedTargetId);
 });
 
-test('14. finalized_by cannot be forged by the client', async () => {
-    const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: '2027-01-15', lines: allNineLines({ 10: 1 }) });
-    const sheetId = (await create.json()).sheet.id;
+test('14. finalized_by cannot be forged by the client (verified through the only remaining finalize path: Closing day-close, which also atomically finalizes Opening)', async () => {
+    const date = '2026-01-16';
+    const openingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/opening', { business_date: date, lines: allNineLines({ 10: 1 }) });
+    const openingSheet = (await openingCreate.json()).sheet;
+    const salesRes = await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 1000, expected_revision: 0 });
+    const dayRevision = (await salesRes.json()).day_state.revision;
+    const closingCreate = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 500: 1 }) });
+    const sheetId = (await closingCreate.json()).sheet.id;
+
     const actor = await createPersona(['cashier.manage'], 'forge_finalized_by');
     const forgedTargetId = 999999;
-    const res = await api(actor.cookie, 'POST', `/api/cashier/sheets/${sheetId}/finalize`, { finalized_by: forgedTargetId });
+    const res = await api(actor.cookie, 'POST', `/api/cashier/sheets/${sheetId}/finalize`, {
+        expected_day_revision: dayRevision, expected_opening_version: openingSheet.version, finalized_by: forgedTargetId,
+    });
     const finalized = (await res.json()).sheet;
     assert.equal(finalized.finalized_by.id, actor.uid);
     assert.notEqual(finalized.finalized_by.id, forgedTargetId);
+
+    // opening ที่ถูกแช่แข็งไปพร้อมกันแบบ atomic ก็ต้องไม่ถูกปลอมแปลง finalized_by เช่นกัน
+    const openingRow = await dbGet('SELECT finalized_by FROM cash_count_sheets WHERE id = ?', [openingSheet.id]);
+    assert.equal(openingRow.finalized_by, actor.uid);
+    assert.notEqual(openingRow.finalized_by, forgedTargetId);
 });
 
 // ==================== 15. Printing never mutates ====================
