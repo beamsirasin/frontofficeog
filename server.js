@@ -261,6 +261,10 @@ const PERMISSIONS = {
     // (Phase 7) ตรวจนับเงินสดเปิด/ปิดร้านประจำวัน — ไม่ใช่ POS/บิล ไม่คำนวณยอดขาย ไม่กระทบ role ระบบเดิมตัวใดเลย
     CASHIER_VIEW: 'cashier.view',     // ดูใบตรวจนับเงินสด (เปิด/ปิด) ทั้งของวันนี้และย้อนหลัง + ปริ้นใบที่ดูได้ (GET /api/cashier/sheets, /api/cashier/server-time)
     CASHIER_MANAGE: 'cashier.manage', // สร้าง/แก้ไขฉบับร่าง ยืนยันใบตรวจนับ และเตรียมเงินเปิดร้านวันถัดไป (PUT/POST /api/cashier/sheets/*)
+
+    // (Phase 9) ประวัติการใช้งาน/operational audit log — ดูได้อย่างเดียว ไม่มี manage เพราะเป็น append-only โดยธรรมชาติ ไม่มีอะไรให้ "จัดการ"
+    // ไม่ให้ role ระบบตัวไหนได้เป็นค่าเริ่มต้นเลยแม้แต่ตัวเดียว (รวมถึง manager) — owner ได้อัตโนมัติผ่าน '*' เท่านั้น เจ้าของร้านมอบผ่าน custom role เองถ้าต้องการให้พนักงานคนอื่นดูได้
+    AUDIT_VIEW: 'audit.view', // ดูประวัติการใช้งาน (GET /api/admin/audit-events)
 };
 
 const PERMISSION_CATALOGUE = [
@@ -285,6 +289,7 @@ const PERMISSION_CATALOGUE = [
     { key: PERMISSIONS.ROLES_PERMISSIONS, name: 'กำหนด permission ของ custom role', description: 'ตั้ง/แก้ไขชุด permission ที่ผูกกับ custom role' },
     { key: PERMISSIONS.CASHIER_VIEW, name: 'ดูใบตรวจนับเงินสด', description: 'ดูใบตรวจนับเงินสดเปิด/ปิดร้าน ทั้งวันนี้และย้อนหลัง พร้อมปริ้นใบที่ดูได้' },
     { key: PERMISSIONS.CASHIER_MANAGE, name: 'จัดการใบตรวจนับเงินสด', description: 'สร้าง/แก้ไขฉบับร่าง ยืนยันใบตรวจนับ และเตรียมเงินเปิดร้านวันถัดไป' },
+    { key: PERMISSIONS.AUDIT_VIEW, name: 'ดูประวัติการใช้งาน', description: 'ดู Activity Log ของการกระทำที่มีนัยสำคัญทั้งหมดในระบบ (เปิด/ปิดโต๊ะ คิว ครัว แคชเชียร์ บัญชีพนักงาน role)' },
 ];
 
 // role ระบบชุดแรก — ข้อมูล ไม่ใช่เงื่อนไขในโค้ด (ห้าม hardcode if(role==='kitchen_staff') ที่ไหนเลย)
@@ -440,6 +445,27 @@ db.serialize(() => {
         FOREIGN KEY (sales_updated_by) REFERENCES users(id)
     )`);
 
+    // (Phase 9) operational audit log — "ใครทำอะไร เมื่อไหร่ กับอะไร" สำหรับ mutation ที่มีนัยสำคัญทางธุรกิจ/ความปลอดภัยเท่านั้น
+    // ไม่ใช่ HTTP access log/debug log — ห้าม insert แถวสำหรับ GET/read-only action หรือความพยายามที่ล้มเหลว (ยกเว้นที่ระบุไว้เจาะจง)
+    // append-only โดยเจตนา: ไม่มี UPDATE/DELETE บนตารางนี้ในโค้ดทั้งระบบเลยแม้แต่จุดเดียว (ดู recordAuditEvent — เป็นจุดเดียวที่ INSERT ได้)
+    // actor_user_id เป็น NULL ได้เฉพาะ action สาธารณะที่แท้จริงเท่านั้น (เช่นลูกค้ายกเลิกคิวเอง) — snapshot username/display_name ไว้ ณ ขณะเกิดเหตุการณ์
+    // เพื่อให้ประวัติยังอ่านเข้าใจได้แม้บัญชีจะถูกเปลี่ยนชื่อ/ปิดใช้งาน/ลบสิทธิ์ไปแล้วภายหลัง
+    db.run(`CREATE TABLE IF NOT EXISTS audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        business_date TEXT NOT NULL,
+        actor_user_id INTEGER,
+        actor_username TEXT,
+        actor_display_name TEXT,
+        event_key TEXT NOT NULL,
+        category TEXT NOT NULL,
+        entity_type TEXT,
+        entity_id TEXT,
+        summary TEXT,
+        details_json TEXT,
+        FOREIGN KEY (actor_user_id) REFERENCES users(id)
+    )`);
+
     // Index เร่งการค้นหา (กัน full table scan เมื่อข้อมูลสะสมเยอะ)
     db.run("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)", () => {});
     db.run("CREATE INDEX IF NOT EXISTS idx_orders_session_token ON orders(session_token)", () => {});
@@ -452,6 +478,12 @@ db.serialize(() => {
     db.run("CREATE INDEX IF NOT EXISTS idx_cash_count_sheets_business_date ON cash_count_sheets(business_date)", () => {});
     db.run("CREATE INDEX IF NOT EXISTS idx_cash_count_lines_sheet_id ON cash_count_lines(sheet_id)", () => {});
     db.run("CREATE INDEX IF NOT EXISTS idx_cash_movements_business_date ON cash_movements(business_date)", () => {});
+    // (Phase 9) query หลักของ Activity Log คือ "เหตุการณ์ล่าสุดของวัน/หมวดหมู่ที่เลือก" — เรียงจาก id DESC (keyset pagination) เสมอ
+    db.run("CREATE INDEX IF NOT EXISTS idx_audit_events_occurred_id ON audit_events(id DESC)", () => {});
+    db.run("CREATE INDEX IF NOT EXISTS idx_audit_events_business_date ON audit_events(business_date)", () => {});
+    db.run("CREATE INDEX IF NOT EXISTS idx_audit_events_category ON audit_events(category)", () => {});
+    db.run("CREATE INDEX IF NOT EXISTS idx_audit_events_actor_user_id ON audit_events(actor_user_id)", () => {});
+    db.run("CREATE INDEX IF NOT EXISTS idx_audit_events_event_key ON audit_events(event_key)", () => {});
 
     for(let i=1; i<=27; i++) {
         db.run("INSERT OR IGNORE INTO tables (table_no, is_open, can_order) VALUES (?, false, true)", [i.toString()]);
@@ -529,6 +561,67 @@ function dbAllAsync(sql, params = []) {
     return new Promise((resolve, reject) => {
         db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows || [])));
     });
+}
+
+// ================== Operational Audit Log (Phase 9) ==================
+// "ใครทำอะไร เมื่อไหร่ กับอะไร" — เก็บเฉพาะ mutation ที่มีนัยสำคัญทางธุรกิจ/ความปลอดภัยเท่านั้น
+// ไม่ใช่ HTTP access log/debug log/analytics/SIEM — ห้าม insert แถวสำหรับ GET/read-only action หรือความพยายามที่ล้มเหลว (ยกเว้นที่ระบุไว้เจาะจงในแต่ละจุดเรียกใช้)
+// ตารางจริงอยู่ใน db.serialize() ด้านบน (audit_events) — append-only, ไม่มี UPDATE/DELETE บนตารางนี้ในโค้ดทั้งระบบเลยแม้แต่จุดเดียว
+
+// รายการ event key/category ที่รู้จัก — validate ก่อน insert เสมอ กันพิมพ์ผิด/event key หลุดจากรายการที่ตั้งใจไว้ (SQLite ไม่มี ENUM ให้บังคับที่ชั้น DB)
+const AUDIT_EVENT_KEYS = new Set([
+    'table.opened', 'table.pax_updated', 'table.closed',
+    'queue.created', 'queue.updated', 'queue.assigned_table', 'queue.deleted', 'queue.customer_cancelled',
+    'order.served', 'order.cancelled',
+    'cashier.opening_saved', 'cashier.closing_saved', 'cashier.movement_created', 'cashier.movement_voided',
+    'cashier.cash_sales_updated', 'cashier.next_day_opening_prepared', 'cashier.day_closed',
+    'user.created', 'user.profile_updated', 'user.roles_changed', 'user.disabled', 'user.enabled', 'user.password_reset',
+    'role.created', 'role.updated', 'role.permissions_changed', 'role.deleted',
+]);
+const AUDIT_CATEGORIES = new Set(['tables', 'queue', 'kitchen', 'cashier', 'users', 'roles']);
+const AUDIT_DETAILS_MAX_BYTES = 4000; // กันรายละเอียดบวมเกินจำเป็น — เก็บแค่ metadata เชิงโครงสร้างเล็กๆ ที่ปลอดภัย ไม่ใช่ log ก้อนใหญ่/request body ทั้งดุ้น
+
+// actor เสมอมาจาก req.authUser (HTTP, ผ่าน requireAuth แล้ว) หรือ authUser ที่ resolve จาก socket session ที่ authenticate แล้วเท่านั้น — ไม่เคยรับจาก body/query ของ caller เด็ดขาด
+function auditActorFromAuthUser(authUser) {
+    if (!authUser) return { id: null, username: null, display_name: null };
+    return { id: authUser.id, username: authUser.username, display_name: authUser.display_name || authUser.username };
+}
+// สำหรับ action สาธารณะที่แท้จริง (ไม่มี login เลย) เช่นลูกค้ายกเลิกคิวเอง — ไม่มี id/username เด็ดขาด มีแค่ label ให้อ่านเข้าใจว่าไม่ใช่พนักงาน
+const AUDIT_ACTOR_PUBLIC = { id: null, username: null, display_name: 'ลูกค้า' };
+
+// จุดเดียวที่ INSERT ตาราง audit_events ได้ในทั้งระบบ — ต้องเรียกจาก "ภายใน" withTransaction ของ mutation ที่เกี่ยวข้องเสมอถ้า mutation นั้นใช้ withTransaction อยู่แล้ว
+// (Cashier, user/role) เพื่อให้ business mutation กับ audit event commit/rollback เป็นก้อนเดียวกันเสมอ — ถ้า insert ล้มเหลวใน mutation แบบ transactional จะ throw ทำให้ทั้ง transaction rollback (ไม่ยอม commit mutation ที่ไม่มีการบันทึกประวัติ)
+// ไม่รับ request body ทั้งก้อนมาเก็บตรงๆ เด็ดขาด — ผู้เรียกต้องประกอบ details เป็น object เล็กๆ ที่ปลอดภัยเองเสมอ (ห้ามมี password/token/session/header ใดๆ)
+async function recordAuditEvent({ actor, eventKey, category, entityType, entityId, summary, details, businessDate }) {
+    if (!AUDIT_EVENT_KEYS.has(eventKey)) throw new Error(`ไม่รู้จัก audit event_key: ${eventKey}`);
+    if (!AUDIT_CATEGORIES.has(category)) throw new Error(`ไม่รู้จัก audit category: ${category}`);
+    const detailsJson = (details !== undefined && details !== null) ? JSON.stringify(details) : null;
+    if (detailsJson && Buffer.byteLength(detailsJson, 'utf8') > AUDIT_DETAILS_MAX_BYTES) {
+        throw new Error(`audit details เกินขนาดที่กำหนด (event_key=${eventKey})`);
+    }
+    const a = actor || { id: null, username: null, display_name: null };
+    await dbRunAsync(
+        `INSERT INTO audit_events (business_date, actor_user_id, actor_username, actor_display_name, event_key, category, entity_type, entity_id, summary, details_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            businessDate || bangkokBusinessDateStr(),
+            a.id ?? null,
+            a.username ?? null,
+            a.display_name ?? null,
+            eventKey,
+            category,
+            entityType || null,
+            (entityId === undefined || entityId === null) ? null : String(entityId),
+            summary || null,
+            detailsJson,
+        ]
+    );
+}
+// (Phase 9) สำหรับ mutation ที่ "ยังไม่ได้" ใช้ withTransaction อยู่แล้วในสถาปัตยกรรมปัจจุบัน (tables/queue/kitchen — ดูรายงานท้ายเฟสสำหรับเหตุผล) —
+// ล้มเหลวได้โดยไม่ทำให้ mutation หลักที่สำเร็จไปแล้วพัง (แค่ log error ไว้) เพราะไม่มีธุรกรรมร่วมให้ rollback อยู่แล้วตั้งแต่ต้น
+async function recordAuditEventSafe(args) {
+    try { await recordAuditEvent(args); }
+    catch (e) { console.error(`[audit] บันทึกประวัติไม่สำเร็จ (event_key=${args.eventKey}):`, e.message); }
 }
 
 // ---- (Phase 8.2) ย้าย role ระบบเดิม/custom role ที่ผู้ใช้สร้างไว้เองแล้วให้เข้ากับโมเดล role ระบบใหม่ อย่างปลอดภัยและ idempotent ----
@@ -687,6 +780,8 @@ const ADMIN_PAGE_PERMISSIONS = [
     PERMISSIONS.USERS_ROLES,
     // (Phase 5B) a role-only delegated admin (e.g. only roles.view/roles.edit, no users.*) must still be able to enter /admin/
     PERMISSIONS.ROLES_VIEW,
+    // (Phase 9) audit.view เพียวๆ ก็ต้องเข้า /admin/ ได้เหมือนกัน (เห็นแค่แผง Activity Log) — เหมือนที่ roles-only delegated admin เข้าได้ด้านบน
+    PERMISSIONS.AUDIT_VIEW,
     PERMISSIONS.ROLES_CREATE,
     PERMISSIONS.ROLES_EDIT,
     PERMISSIONS.ROLES_DELETE,
@@ -772,9 +867,15 @@ app.post('/api/open-table', requireAuth, requirePermission(PERMISSIONS.TABLES_MA
     try {
         const qrImage = await QRCode.toDataURL(url);
         db.run("UPDATE tables SET is_open = true, can_order = true, session_token = ?, adults = ?, children = ?, toddlers = ? WHERE table_no = ?", [token, adults, children, toddlers, table], () => {
-            db.run("INSERT INTO session_history (table_no, session_token, opened_at, adults, children, toddlers) VALUES (?, ?, datetime('now', 'localtime'), ?, ?, ?)", [table, token, adults, children, toddlers], () => {
+            db.run("INSERT INTO session_history (table_no, session_token, opened_at, adults, children, toddlers) VALUES (?, ?, datetime('now', 'localtime'), ?, ?, ?)", [table, token, adults, children, toddlers], async () => {
                 res.json({ success: true, table: table, qr: qrImage, url: url, token: token, adults, children, toddlers });
                 io.emit('table_updated');
+                // (Phase 9) ไม่เก็บ token/QR secret ใดๆ ในประวัติเด็ดขาด — มีแค่จำนวนลูกค้าเท่านั้น
+                await recordAuditEventSafe({
+                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'table.opened', category: 'tables',
+                    entityType: 'table', entityId: table, summary: `เปิดโต๊ะ ${table}`,
+                    details: { table_no: table, adults, children, toddlers },
+                });
             });
         });
     } catch (err) { res.status(500).json({ error: 'Failed' }); }
@@ -786,7 +887,7 @@ app.post('/api/close-table', requireAuth, requirePermission(PERMISSIONS.TABLES_M
         if (row && row.session_token) {
             const token = row.session_token;
             db.run("UPDATE tables SET is_open = false, session_token = NULL WHERE table_no = ?", [table], () => {
-                db.run("UPDATE session_history SET closed_at = datetime('now', 'localtime') WHERE session_token = ?", [token], () => {
+                db.run("UPDATE session_history SET closed_at = datetime('now', 'localtime') WHERE session_token = ?", [token], async () => {
                     // ยกเลิกออเดอร์ที่ยังค้าง (pending) ของ session นี้ เพื่อไม่ให้การ์ดค้างบนหน้าครัว
                     db.all("SELECT id FROM orders WHERE session_token = ? AND status = 'pending'", [token], (err, pendingRows) => {
                         const pendingIds = (pendingRows || []).map(r => r.id);
@@ -797,8 +898,17 @@ app.post('/api/close-table', requireAuth, requirePermission(PERMISSIONS.TABLES_M
                     res.json({ success: true });
                     io.emit('table_updated');
                     io.emit('table_closed', { table: table });
+                    await recordAuditEventSafe({
+                        actor: auditActorFromAuthUser(req.authUser), eventKey: 'table.closed', category: 'tables',
+                        entityType: 'table', entityId: table, summary: `ปิดโต๊ะ ${table}`,
+                        details: { table_no: table },
+                    });
                 });
             });
+        } else {
+            // (Phase 9) เดิม endpoint นี้ไม่ตอบอะไรเลยถ้าโต๊ะไม่ได้เปิดอยู่ (ไม่มี else มาก่อน) — ปล่อยให้ผู้เรียกค้างรอ response ตลอดไปโดยไม่ตั้งใจ
+            // แก้เป็นตอบ 400 ชัดเจนแทน ไม่กระทบ flow ปกติเลยเพราะ UI ที่มีอยู่ไม่เคยเสนอปุ่ม "ปิดโต๊ะ" ให้กดสำหรับโต๊ะที่ไม่ได้เปิดอยู่แล้วอยู่แล้ว
+            res.status(400).json({ error: 'โต๊ะนี้ไม่ได้เปิดอยู่' });
         }
     });
 });
@@ -858,8 +968,19 @@ app.get('/api/table-session', (req, res) => {
 
 app.post('/api/update-table-pax', requireAuth, requirePermission(PERMISSIONS.TABLES_MANAGE), (req, res) => {
     const { table, adults = 0, children = 0, toddlers = 0 } = req.body;
-    db.run("UPDATE tables SET adults = ?, children = ?, toddlers = ? WHERE table_no = ?",
-        [adults, children, toddlers, table], () => res.json({ success: true }));
+    db.get("SELECT adults, children, toddlers FROM tables WHERE table_no = ?", [table], (err, before) => {
+        db.run("UPDATE tables SET adults = ?, children = ?, toddlers = ? WHERE table_no = ?",
+            [adults, children, toddlers, table], async function (err) {
+                res.json({ success: true });
+                if (!err && this.changes > 0 && before) {
+                    await recordAuditEventSafe({
+                        actor: auditActorFromAuthUser(req.authUser), eventKey: 'table.pax_updated', category: 'tables',
+                        entityType: 'table', entityId: table, summary: `แก้จำนวนลูกค้าโต๊ะ ${table}`,
+                        details: { table_no: table, before, after: { adults, children, toddlers } },
+                    });
+                }
+            });
+    });
 });
 
 app.get('/api/table-history/:table', requireAuth, requirePermission(PERMISSIONS.TABLES_VIEW), (req, res) => {
@@ -1029,9 +1150,15 @@ app.post('/api/queue', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE),
                 WHERE date(created_at, 'localtime') = date('now', 'localtime') AND q_number LIKE 'Q%'`, [], (err, row) => {
             const qNum = "Q" + ((row ? row.maxNum : 0) + 1);
             db.run("INSERT INTO queues (q_number, pax, adults, children, pots, status, token, is_foreign, is_separate_table) VALUES (?, ?, ?, ?, ?, 'waiting', ?, ?, ?)",
-                [qNum, pax, adults, children, JSON.stringify(pots), token, is_foreign ? 1 : 0, is_separate_table ? 1 : 0], function(err) {
+                [qNum, pax, adults, children, JSON.stringify(pots), token, is_foreign ? 1 : 0, is_separate_table ? 1 : 0], async function(err) {
                 res.json({ success: true, q_number: qNum, token: token, created_at: new Date().toISOString() });
                 io.emit('queue_updated');
+                // (Phase 9) ไม่เก็บ cancellation token ใดๆ ในประวัติเด็ดขาด
+                await recordAuditEventSafe({
+                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'queue.created', category: 'queue',
+                    entityType: 'queue', entityId: this.lastID, summary: `สร้างคิว ${qNum}`,
+                    details: { queue_id: this.lastID, q_number: qNum, pax, adults, children },
+                });
             });
         });
     });
@@ -1054,9 +1181,22 @@ app.post('/api/queue/update', requireAuth, requirePermission(PERMISSIONS.QUEUE_M
     const sql = status === 'entered'
         ? `UPDATE queues SET status = ?, table_assigned = ?, is_billed = ?, entered_at = COALESCE(entered_at, CURRENT_TIMESTAMP) WHERE id = ?`
         : `UPDATE queues SET status = ?, table_assigned = ?, is_billed = ?, entered_at = NULL WHERE id = ?`;
-    db.run(sql, [status, table, is_billed ? 1 : 0, id], () => {
-        res.json({ success: true });
-        io.emit('queue_updated');
+    db.get("SELECT q_number, status, pax FROM queues WHERE id = ?", [id], (getErr, before) => {
+        db.run(sql, [status, table, is_billed ? 1 : 0, id], async function (err) {
+            res.json({ success: true });
+            io.emit('queue_updated');
+            if (!err && this.changes > 0 && before) {
+                // (Phase 9) การเข้าโต๊ะ (status='entered') คือการเรียก/มอบหมายโต๊ะจริง ให้ event ที่สื่อความหมายตรงกว่า "แก้ไขทั่วไป"
+                const isAssign = status === 'entered';
+                await recordAuditEventSafe({
+                    actor: auditActorFromAuthUser(req.authUser),
+                    eventKey: isAssign ? 'queue.assigned_table' : 'queue.updated',
+                    category: 'queue', entityType: 'queue', entityId: id,
+                    summary: isAssign ? `เรียกคิว ${before.q_number} เข้าโต๊ะ ${table || '-'}` : `แก้ไขสถานะคิว ${before.q_number}`,
+                    details: { queue_id: id, q_number: before.q_number, party_size: before.pax, previous_status: before.status, new_status: status, assigned_table: table || null },
+                });
+            }
+        });
     });
 });
 
@@ -1098,27 +1238,57 @@ app.post('/api/queue/cancel-by-token', (req, res) => {
         [token], function () {
             if (this.changes === 0) {
                 queueCancelFailedLimiter.hit(ip); // นับเป็นความล้มเหลวจริง (token ผิด/ใช้ไปแล้ว/หมดอายุ) — ข้อความตอบเหมือนเดิมทุกกรณี ไม่บอกใบ้เหตุผล
+                // (Phase 9) ความพยายามที่ล้มเหลว/token ผิด "ไม่" สร้างแถวประวัติ — กันโดนโจมตียิง token มั่วๆ ถล่มตาราง audit
                 return res.status(400).json({ error: 'ยกเลิกคิวนี้ไม่ได้' });
             }
             res.json({ success: true });
             io.emit('queue_updated');
+            // (Phase 9) ลูกค้ายกเลิกคิวเอง — actor เป็นสาธารณะ (ไม่มี login) ไม่เก็บ token ใดๆ ในประวัติเด็ดขาด
+            db.get("SELECT id, q_number FROM queues WHERE token = ?", [token], async (selErr, row) => {
+                if (!selErr && row) {
+                    await recordAuditEventSafe({
+                        actor: AUDIT_ACTOR_PUBLIC, eventKey: 'queue.customer_cancelled', category: 'queue',
+                        entityType: 'queue', entityId: row.id, summary: `ลูกค้ายกเลิกคิว ${row.q_number} เอง`,
+                        details: { queue_id: row.id, q_number: row.q_number },
+                    });
+                }
+            });
         });
 });
 
 // API สำหรับแก้ไขข้อมูลคิว
 app.delete('/api/queue/:id', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), (req, res) => {
-    db.run("DELETE FROM queues WHERE id = ?", [req.params.id], () => {
-        res.json({ success: true });
-        io.emit('queue_updated');
+    const id = req.params.id;
+    db.get("SELECT q_number, pax FROM queues WHERE id = ?", [id], (getErr, before) => {
+        db.run("DELETE FROM queues WHERE id = ?", [id], async function (err) {
+            res.json({ success: true });
+            io.emit('queue_updated');
+            if (!err && this.changes > 0 && before) {
+                await recordAuditEventSafe({
+                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'queue.deleted', category: 'queue',
+                    entityType: 'queue', entityId: id, summary: `ลบคิว ${before.q_number}`,
+                    details: { queue_id: Number(id), q_number: before.q_number, party_size: before.pax },
+                });
+            }
+        });
     });
 });
 
 app.post('/api/queue/edit', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), (req, res) => {
     const { id, pax, adults, children, pots, is_foreign, is_separate_table } = req.body;
-    db.run("UPDATE queues SET pax = ?, adults = ?, children = ?, pots = ?, is_foreign = ?, is_separate_table = ? WHERE id = ?",
-        [pax, adults || 0, children || 0, JSON.stringify(pots), is_foreign ? 1 : 0, is_separate_table ? 1 : 0, id], () => {
-        res.json({ success: true });
-        io.emit('queue_updated');
+    db.get("SELECT q_number, pax, adults, children FROM queues WHERE id = ?", [id], (getErr, before) => {
+        db.run("UPDATE queues SET pax = ?, adults = ?, children = ?, pots = ?, is_foreign = ?, is_separate_table = ? WHERE id = ?",
+            [pax, adults || 0, children || 0, JSON.stringify(pots), is_foreign ? 1 : 0, is_separate_table ? 1 : 0, id], async function (err) {
+            res.json({ success: true });
+            io.emit('queue_updated');
+            if (!err && this.changes > 0 && before) {
+                await recordAuditEventSafe({
+                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'queue.updated', category: 'queue',
+                    entityType: 'queue', entityId: id, summary: `แก้ไขข้อมูลคิว ${before.q_number}`,
+                    details: { queue_id: Number(id), q_number: before.q_number, before: { pax: before.pax, adults: before.adults, children: before.children }, after: { pax, adults: adults || 0, children: children || 0 } },
+                });
+            }
+        });
     });
 });
 
@@ -1628,6 +1798,16 @@ app.post('/api/admin/users', requireAuth, requirePermission(PERMISSIONS.USERS_CR
             for (const roleId of roleIdsCheck.ids) {
                 await dbRunAsync("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)", [result.lastID, roleId]);
             }
+            let roleKeys = [];
+            if (roleIdsCheck.ids.length > 0) {
+                const roleRows = await dbAllAsync(`SELECT key FROM roles WHERE id IN (${roleIdsCheck.ids.map(() => '?').join(',')})`, roleIdsCheck.ids);
+                roleKeys = roleRows.map((r) => r.key);
+            }
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'user.created', category: 'users',
+                entityType: 'user', entityId: result.lastID, summary: `สร้างบัญชีพนักงาน ${displayNameCheck.value}`,
+                details: { target_user_id: result.lastID, username: usernameCheck.value, display_name: displayNameCheck.value, role_keys: roleKeys },
+            });
             return result.lastID;
         });
         const row = await dbGetAsync("SELECT id, username, display_name, is_active FROM users WHERE id = ?", [newUserId]);
@@ -1679,6 +1859,7 @@ app.patch('/api/admin/users/:id', requireAuth, async (req, res) => {
         }
 
         let roleIds;
+        let roleKeysBefore = [];
         if (wantsRoleChange) {
             // เจ้าของร้าน (owner) ที่มีอยู่แล้วต้อง "คง role ไว้เสมอ" ผ่านหน้านี้ — ห้ามแก้ role ของบัญชีที่ถือ owner อยู่โดยเด็ดขาด
             // ครอบคลุมทั้งกรณีถอด owner role ของตัวเอง และของบัญชี owner อื่น (ไม่ใช่แค่กัน self) — เข้มกว่าที่ข้อกำหนดขอไว้แต่ปลอดภัยกว่า
@@ -1689,6 +1870,8 @@ app.patch('/api/admin/users/:id', requireAuth, async (req, res) => {
             const ceilingErr = await roleAssignmentCeilingError(req.authUser.id, roleIdsCheck.ids);
             if (ceilingErr) return res.status(403).json({ error: ceilingErr });
             roleIds = roleIdsCheck.ids;
+            const beforeRows = await dbAllAsync("SELECT roles.key FROM user_roles JOIN roles ON roles.id = user_roles.role_id WHERE user_roles.user_id = ?", [targetId]);
+            roleKeysBefore = beforeRows.map((r) => r.key);
         }
 
         await withTransaction(async () => {
@@ -1700,12 +1883,31 @@ app.patch('/api/admin/users/:id', requireAuth, async (req, res) => {
                 sets.push('updated_at = CURRENT_TIMESTAMP');
                 params.push(targetId);
                 await dbRunAsync(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
+                await recordAuditEvent({
+                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'user.profile_updated', category: 'users',
+                    entityType: 'user', entityId: targetId, summary: `แก้ไขข้อมูลบัญชี ${target.display_name}`,
+                    details: {
+                        target_user_id: targetId, target_username: target.username, target_display_name: target.display_name,
+                        before: { username: target.username, display_name: target.display_name },
+                        after: { username: usernameValue ?? target.username, display_name: displayNameValue ?? target.display_name },
+                    },
+                });
             }
             if (wantsRoleChange) {
                 await dbRunAsync("DELETE FROM user_roles WHERE user_id = ?", [targetId]);
                 for (const roleId of roleIds) {
                     await dbRunAsync("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)", [targetId, roleId]);
                 }
+                let roleKeysAfter = [];
+                if (roleIds.length > 0) {
+                    const afterRows = await dbAllAsync(`SELECT key FROM roles WHERE id IN (${roleIds.map(() => '?').join(',')})`, roleIds);
+                    roleKeysAfter = afterRows.map((r) => r.key);
+                }
+                await recordAuditEvent({
+                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'user.roles_changed', category: 'users',
+                    entityType: 'user', entityId: targetId, summary: `เปลี่ยน role ของ ${target.display_name}`,
+                    details: { target_user_id: targetId, target_username: target.username, target_display_name: target.display_name, before_role_keys: roleKeysBefore, after_role_keys: roleKeysAfter },
+                });
             }
         });
 
@@ -1724,7 +1926,7 @@ app.post('/api/admin/users/:id/disable', requireAuth, requirePermission(PERMISSI
     if (!Number.isInteger(targetId)) return res.status(400).json({ error: 'invalid_id' });
     if (targetId === req.authUser.id) return res.status(400).json({ error: 'ไม่สามารถปิดใช้งานบัญชีของตัวเองได้' });
     try {
-        const target = await dbGetAsync("SELECT id FROM users WHERE id = ?", [targetId]);
+        const target = await dbGetAsync("SELECT id, username, display_name FROM users WHERE id = ?", [targetId]);
         if (!target) return res.status(404).json({ error: 'not_found' });
         // (Phase 5A.1) delegated admin (ไม่ใช่ owner เอง) ห้ามปิดใช้งานบัญชี owner คนอื่นเด็ดขาด แม้จะมี users.disable ครบก็ตาม
         // ต้องเช็คก่อน invariant ด้านล่าง — ไม่งั้น delegated admin จะปิด owner ได้ตราบใดที่ยังมี owner คนอื่นเหลืออยู่ ซึ่งไม่ควรทำได้เลยไม่ว่ากรณีไหน
@@ -1737,6 +1939,11 @@ app.post('/api/admin/users/:id/disable', requireAuth, requirePermission(PERMISSI
         await withTransaction(async () => {
             await dbRunAsync("UPDATE users SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetId]);
             await revokeAllSessionsForUser(targetId);
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'user.disabled', category: 'users',
+                entityType: 'user', entityId: targetId, summary: `ปิดใช้งานบัญชี ${target.display_name}`,
+                details: { target_user_id: targetId, target_username: target.username, target_display_name: target.display_name },
+            });
         });
         const row = await dbGetAsync("SELECT id, username, display_name, is_active FROM users WHERE id = ?", [targetId]);
         res.json(await summarizeUser(row));
@@ -1751,12 +1958,19 @@ app.post('/api/admin/users/:id/enable', requireAuth, requirePermission(PERMISSIO
     const targetId = parseInt(req.params.id, 10);
     if (!Number.isInteger(targetId)) return res.status(400).json({ error: 'invalid_id' });
     try {
-        const target = await dbGetAsync("SELECT id FROM users WHERE id = ?", [targetId]);
+        const target = await dbGetAsync("SELECT id, username, display_name FROM users WHERE id = ?", [targetId]);
         if (!target) return res.status(404).json({ error: 'not_found' });
         // (Phase 5A.1) ขอบเขตเดียวกับ disable — delegated admin ที่ไม่ใช่ owner ต้องไม่ยุ่งกับบัญชี owner แม้แต่การเปิดใช้งานคืน
         const ownerProtectionErr = await ownerTargetProtectionError(req, targetId);
         if (ownerProtectionErr) return res.status(403).json({ error: ownerProtectionErr });
-        await dbRunAsync("UPDATE users SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetId]);
+        await withTransaction(async () => {
+            await dbRunAsync("UPDATE users SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetId]);
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'user.enabled', category: 'users',
+                entityType: 'user', entityId: targetId, summary: `เปิดใช้งานบัญชี ${target.display_name}`,
+                details: { target_user_id: targetId, target_username: target.username, target_display_name: target.display_name },
+            });
+        });
         const row = await dbGetAsync("SELECT id, username, display_name, is_active FROM users WHERE id = ?", [targetId]);
         res.json(await summarizeUser(row));
     } catch (e) {
@@ -1772,16 +1986,21 @@ app.post('/api/admin/users/:id/reset-password', requireAuth, requirePermission(P
     const passwordError = passwordPolicyError((req.body || {}).new_password);
     if (passwordError) return res.status(400).json({ error: passwordError });
     try {
-        const target = await dbGetAsync("SELECT id FROM users WHERE id = ?", [targetId]);
+        const target = await dbGetAsync("SELECT id, username, display_name FROM users WHERE id = ?", [targetId]);
         if (!target) return res.status(404).json({ error: 'not_found' });
         // (Phase 5A.1) จุดวิกฤต: delegated admin ที่ไม่ใช่ owner ต้อง "ไม่มีทาง" รีเซ็ตรหัสผ่านบัญชี owner ได้เด็ดขาด
         // ต้องเช็คก่อน hash/แตะ DB ใดๆ ทั้งสิ้น — owner เองยังรีเซ็ตรหัสผ่านของตัวเอง (หรือ owner คนอื่นถ้ามีในอนาคต) ได้ตามปกติ
         const ownerProtectionErr = await ownerTargetProtectionError(req, targetId);
         if (ownerProtectionErr) return res.status(403).json({ error: ownerProtectionErr });
-        const passwordHash = hashPassword(req.body.new_password); // ไม่ log/ไม่ตอบรหัสผ่านหรือ hash กลับเด็ดขาด
+        const passwordHash = hashPassword(req.body.new_password); // ไม่ log/ไม่ตอบรหัสผ่านหรือ hash กลับเด็ดขาด — ต้องไม่มีรหัสผ่าน/hash หลุดเข้า audit เด็ดขาดเช่นกัน
         await withTransaction(async () => {
             await dbRunAsync("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [passwordHash, targetId]);
             await revokeAllSessionsForUser(targetId);
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'user.password_reset', category: 'users',
+                entityType: 'user', entityId: targetId, summary: `รีเซ็ตรหัสผ่านพนักงาน ${target.display_name}`,
+                details: { target_user_id: targetId, target_username: target.username, target_display_name: target.display_name },
+            });
         });
         res.json({ success: true });
     } catch (e) {
@@ -1825,6 +2044,11 @@ app.post('/api/admin/roles', requireAuth, requirePermission(PERMISSIONS.ROLES_CR
             for (const permId of permIdsCheck.ids) {
                 await dbRunAsync("INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)", [result.lastID, permId]);
             }
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'role.created', category: 'roles',
+                entityType: 'role', entityId: result.lastID, summary: `สร้าง role "${nameCheck.value}"`,
+                details: { role_id: result.lastID, key, name: nameCheck.value, permission_keys: permIdsCheck.keys },
+            });
             return result.lastID;
         });
         const row = await dbGetAsync('SELECT id, key, name, description, is_system FROM roles WHERE id = ?', [newRoleId]);
@@ -1875,6 +2099,8 @@ app.patch('/api/admin/roles/:id', requireAuth, async (req, res) => {
         }
 
         let permIds;
+        let permKeysBefore = [];
+        let permKeysAfter = [];
         if (wantsPermChange) {
             const permIdsCheck = await validatePermissionKeys(body.permission_keys);
             if (permIdsCheck.error) return res.status(400).json({ error: permIdsCheck.error });
@@ -1882,6 +2108,8 @@ app.patch('/api/admin/roles/:id', requireAuth, async (req, res) => {
             const ceilingErr2 = await permissionCeilingError(req.authUser.id, permIdsCheck.keys);
             if (ceilingErr2) return res.status(403).json({ error: ceilingErr2 });
             permIds = permIdsCheck.ids;
+            permKeysAfter = permIdsCheck.keys;
+            permKeysBefore = await rolePermissionKeys(roleId);
         }
 
         await withTransaction(async () => {
@@ -1893,12 +2121,26 @@ app.patch('/api/admin/roles/:id', requireAuth, async (req, res) => {
                 sets.push('updated_at = CURRENT_TIMESTAMP');
                 params.push(roleId);
                 await dbRunAsync(`UPDATE roles SET ${sets.join(', ')} WHERE id = ?`, params);
+                await recordAuditEvent({
+                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'role.updated', category: 'roles',
+                    entityType: 'role', entityId: roleId, summary: `แก้ไขข้อมูล role "${target.name}"`,
+                    details: {
+                        role_id: roleId, key: target.key,
+                        before: { name: target.name, description: target.description },
+                        after: { name: nameValue ?? target.name, description: descValue ?? target.description },
+                    },
+                });
             }
             if (wantsPermChange) {
                 await dbRunAsync('DELETE FROM role_permissions WHERE role_id = ?', [roleId]);
                 for (const permId of permIds) {
                     await dbRunAsync('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [roleId, permId]);
                 }
+                await recordAuditEvent({
+                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'role.permissions_changed', category: 'roles',
+                    entityType: 'role', entityId: roleId, summary: `เปลี่ยนสิทธิ์ role "${target.name}"`,
+                    details: { role_id: roleId, key: target.key, before_permission_keys: permKeysBefore, after_permission_keys: permKeysAfter },
+                });
             }
         });
 
@@ -1915,7 +2157,7 @@ app.delete('/api/admin/roles/:id', requireAuth, requirePermission(PERMISSIONS.RO
     const roleId = parseInt(req.params.id, 10);
     if (!Number.isInteger(roleId)) return res.status(400).json({ error: 'invalid_id' });
     try {
-        const target = await dbGetAsync('SELECT id, is_system FROM roles WHERE id = ?', [roleId]);
+        const target = await dbGetAsync('SELECT id, key, name, is_system FROM roles WHERE id = ?', [roleId]);
         if (!target) return res.status(404).json({ error: 'not_found' });
         if (target.is_system) return res.status(400).json({ error: 'ไม่สามารถลบ role ระบบได้' });
 
@@ -1930,13 +2172,89 @@ app.delete('/api/admin/roles/:id', requireAuth, requirePermission(PERMISSIONS.RO
             });
         }
 
+        const permKeysSnapshot = await rolePermissionKeys(roleId);
         await withTransaction(async () => {
             await dbRunAsync('DELETE FROM role_permissions WHERE role_id = ?', [roleId]);
             await dbRunAsync('DELETE FROM roles WHERE id = ?', [roleId]);
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'role.deleted', category: 'roles',
+                entityType: 'role', entityId: roleId, summary: `ลบ role "${target.name}"`,
+                details: { role_id: roleId, key: target.key, name: target.name, permission_keys: permKeysSnapshot },
+            });
         });
         res.json({ success: true });
     } catch (e) {
         console.error(`[admin] ลบ role ไม่สำเร็จ (id=${roleId}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// ================== Admin: ประวัติการใช้งาน / Activity Log (Phase 9) ==================
+// ---- แปลงแถวดิบจาก audit_events เป็นรูปแบบปลอดภัยสำหรับตอบ API — ไม่มี field ภายในของ DB หลุดออกไปเลย ----
+// JSON ประวัติเก่าที่อาจเพี้ยน (เช่นถ้าอนาคตมี schema เปลี่ยน) ต้องไม่ทำให้ endpoint พังทั้งเส้น — parse ไม่ผ่านก็แค่ details เป็น null
+function summarizeAuditEvent(row) {
+    let details = null;
+    if (row.details_json) {
+        try { details = JSON.parse(row.details_json); } catch (e) { details = null; }
+    }
+    const hasActor = row.actor_user_id !== null && row.actor_user_id !== undefined || !!row.actor_username || !!row.actor_display_name;
+    return {
+        id: row.id,
+        occurred_at: row.occurred_at,
+        business_date: row.business_date,
+        actor: hasActor ? { id: row.actor_user_id, username: row.actor_username, display_name: row.actor_display_name } : null,
+        event_key: row.event_key,
+        category: row.category,
+        entity: (row.entity_type || row.entity_id) ? { type: row.entity_type, id: row.entity_id } : null,
+        summary: row.summary,
+        details,
+    };
+}
+
+// GET /api/admin/audit-events — Activity Log แบบอ่านอย่างเดียว เรียงใหม่สุดก่อนเสมอ (id DESC) ใช้ keyset pagination (cursor = id ของแถวสุดท้ายที่เห็นแล้ว) แทนการ OFFSET
+// ไม่มี POST/PATCH/DELETE คู่กันเลยโดยเจตนา — audit_events เป็น append-only, ไม่มีทาง "แก้ไข/ลบ" ผ่าน API นี้หรือที่ไหนในระบบ
+const AUDIT_EVENTS_DEFAULT_LIMIT = 50;
+const AUDIT_EVENTS_MAX_LIMIT = 100;
+app.get('/api/admin/audit-events', requireAuth, requirePermission(PERMISSIONS.AUDIT_VIEW), async (req, res) => {
+    const { business_date, category, event_key } = req.query;
+    if (business_date !== undefined && !isValidBusinessDate(business_date)) return res.status(400).json({ error: 'business_date ไม่ถูกต้อง' });
+    if (category !== undefined && !AUDIT_CATEGORIES.has(category)) return res.status(400).json({ error: 'category ไม่ถูกต้อง' });
+    if (event_key !== undefined && !AUDIT_EVENT_KEYS.has(event_key)) return res.status(400).json({ error: 'event_key ไม่ถูกต้อง' });
+
+    let actorId = null;
+    if (req.query.actor_user_id !== undefined) {
+        actorId = Number(req.query.actor_user_id);
+        if (!Number.isInteger(actorId)) return res.status(400).json({ error: 'actor_user_id ไม่ถูกต้อง' });
+    }
+    let cursorId = null;
+    if (req.query.cursor !== undefined) {
+        cursorId = Number(req.query.cursor);
+        if (!Number.isInteger(cursorId)) return res.status(400).json({ error: 'cursor ไม่ถูกต้อง' });
+    }
+    let limit = Number(req.query.limit);
+    if (!Number.isInteger(limit) || limit < 1) limit = AUDIT_EVENTS_DEFAULT_LIMIT;
+    if (limit > AUDIT_EVENTS_MAX_LIMIT) limit = AUDIT_EVENTS_MAX_LIMIT;
+
+    // parameterized ล้วนๆ เสมอ — ไม่มี string fragment จาก query parameter ใดๆ หลุดเข้า SQL โดยตรงเด็ดขาด
+    const where = [];
+    const params = [];
+    if (business_date !== undefined) { where.push('business_date = ?'); params.push(business_date); }
+    if (category !== undefined) { where.push('category = ?'); params.push(category); }
+    if (event_key !== undefined) { where.push('event_key = ?'); params.push(event_key); }
+    if (actorId !== null) { where.push('actor_user_id = ?'); params.push(actorId); }
+    if (cursorId !== null) { where.push('id < ?'); params.push(cursorId); }
+
+    try {
+        // ดึงเกินมา 1 แถวเพื่อรู้ว่ามีหน้าถัดไปอีกไหม โดยไม่ต้อง COUNT(*) แยกรอบ (กันโหลดทั้งตารางเวลาข้อมูลสะสมเยอะ)
+        const rows = await dbAllAsync(
+            `SELECT * FROM audit_events ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY id DESC LIMIT ?`,
+            [...params, limit + 1]
+        );
+        const hasMore = rows.length > limit;
+        const page = rows.slice(0, limit);
+        res.json({ events: page.map(summarizeAuditEvent), next_cursor: hasMore ? page[page.length - 1].id : null });
+    } catch (e) {
+        console.error('[audit] ดึงประวัติการใช้งานไม่สำเร็จ:', e.message);
         res.status(500).json({ error: 'internal_error' });
     }
 });
@@ -2113,6 +2431,12 @@ app.put('/api/cashier/sheets/:type', requireAuth, requirePermission(PERMISSIONS.
                 return res.status(409).json({ error: 'ข้อมูลที่ถืออยู่อาจไม่ใช่ฉบับล่าสุด กรุณาโหลดข้อมูลล่าสุดก่อนบันทึก', conflict_reason: 'missing_version' });
             }
         }
+        // (Phase 9) ยอดเดิมก่อนบันทึกทับ (สำหรับ audit เท่านั้น) — อ่านจากสถานะที่ commit แล้วก่อนหน้า ไม่เกี่ยวกับ transaction ที่กำลังจะเกิดขึ้น
+        let previousTotal = null;
+        if (existing) {
+            const prevLineRows = await dbAllAsync("SELECT denomination, quantity FROM cash_count_lines WHERE sheet_id = ?", [existing.id]);
+            previousTotal = computeCashTotals(new Map(prevLineRows.map((r) => [r.denomination, r.quantity]))).grand_total;
+        }
 
         let conflict = false;
         const sheetId = await withTransaction(async () => {
@@ -2136,6 +2460,16 @@ app.put('/api/cashier/sheets/:type', requireAuth, requirePermission(PERMISSIONS.
                 for (const [denomination, quantity] of linesCheck.qtyByDenom) {
                     await dbRunAsync("INSERT INTO cash_count_lines (sheet_id, denomination, quantity) VALUES (?, ?, ?)", [id, denomination, quantity]);
                 }
+                // (Phase 9) บันทึกประวัติในธุรกรรมเดียวกันเป๊ะ — ถ้า insert ประวัติล้มเหลว ทั้งการบันทึกฉบับร่างนี้ต้อง rollback ไปด้วย ไม่ยอม commit มิวเทชันที่ไม่มีประวัติกำกับ
+                const newTotal = computeCashTotals(linesCheck.qtyByDenom).grand_total;
+                await recordAuditEvent({
+                    actor: auditActorFromAuthUser(req.authUser),
+                    eventKey: sheetType === 'opening' ? 'cashier.opening_saved' : 'cashier.closing_saved',
+                    category: 'cashier', entityType: 'cash_sheet', entityId: id,
+                    summary: sheetType === 'opening' ? `บันทึกเงินเปิดร้าน ${formatThaiDate(body.business_date)}` : `บันทึกเงินปิดร้าน ${formatThaiDate(body.business_date)}`,
+                    details: { business_date: body.business_date, sheet_id: id, previous_total: previousTotal, new_total: newTotal, version: existing ? expectedVersion + 1 : 1 },
+                    businessDate: body.business_date,
+                });
             }
             return id;
         });
@@ -2225,10 +2559,34 @@ app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERM
                 }
                 // openingRow.status === 'finalized' อยู่แล้ว (เช่นใบเก่าจากระบบก่อนหน้า) — ข้ามไปเฉยๆ ไม่ต้องแตะ ไม่ต้องเช็ค version
             }
-            return dbRunAsync(
+            const finalUpdateResult = await dbRunAsync(
                 "UPDATE cash_count_sheets SET status = 'finalized', finalized_by = ?, finalized_at = CURRENT_TIMESTAMP, updated_by = ?, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ? AND status = 'draft'",
                 [req.authUser.id, req.authUser.id, sheetId]
             );
+            // (Phase 9) ปิดยอดประจำวัน (closing) คือจุดเดียวที่สร้าง cashier.day_closed — คำนวณ reconciliation "หลัง" แช่แข็ง opening ในธุรกรรมเดียวกันนี้เอง เป็นตัวเลข authoritative จริงๆ ไม่ใช่ค่าที่ client ส่งมา
+            // ถ้า insert ประวัติล้มเหลว ทั้งการปิดยอดนี้ต้อง rollback ไปด้วย ไม่ยอม commit การปิดยอดที่ไม่มีประวัติกำกับ (มูลค่าเงินจริง — สำคัญที่สุดในทั้งระบบ)
+            if (finalUpdateResult.changes > 0 && before.sheet_type === 'closing') {
+                const [openingSummaryFinal, closingSummaryFinal, dayStateRowFinal, movementRows] = await Promise.all([
+                    getCashSheetById(openingIdToReturn).then(summarizeCashSheet),
+                    getCashSheetById(sheetId).then(summarizeCashSheet),
+                    getDayStateRow(before.business_date),
+                    dbAllAsync("SELECT * FROM cash_movements WHERE business_date = ?", [before.business_date]),
+                ]);
+                const movementsFinal = await Promise.all(movementRows.map(summarizeCashMovement));
+                const recon = computeReconciliation(openingSummaryFinal, closingSummaryFinal, dayStateRowFinal, movementsFinal);
+                await recordAuditEvent({
+                    actor: auditActorFromAuthUser(req.authUser),
+                    eventKey: 'cashier.day_closed', category: 'cashier', entityType: 'cash_sheet', entityId: sheetId,
+                    summary: `ปิดยอดเงินสดประจำวัน ${formatThaiDate(before.business_date)}`,
+                    details: {
+                        business_date: before.business_date,
+                        opening_cash: recon.opening_cash, cash_sales: recon.cash_sales, cash_in: recon.cash_in, cash_out: recon.cash_out,
+                        expected_cash: recon.expected_cash, actual_cash: recon.actual_cash, variance: recon.variance,
+                    },
+                    businessDate: before.business_date,
+                });
+            }
+            return finalUpdateResult;
         });
 
         if (conflictReason) {
@@ -2309,6 +2667,13 @@ app.post('/api/cashier/sheets/prepare-next-day', requireAuth, requirePermission(
                 for (const [denomination, quantity] of linesCheck.qtyByDenom) {
                     await dbRunAsync("INSERT INTO cash_count_lines (sheet_id, denomination, quantity) VALUES (?, ?, ?)", [id, denomination, quantity]);
                 }
+                const newTotal = computeCashTotals(linesCheck.qtyByDenom).grand_total;
+                await recordAuditEvent({
+                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'cashier.next_day_opening_prepared', category: 'cashier',
+                    entityType: 'cash_sheet', entityId: id, summary: `เตรียมเงินเปิดร้านวันถัดไป ${formatThaiDate(targetDate)}`,
+                    details: { source_business_date: body.reference_business_date, target_business_date: targetDate, sheet_id: id, total: newTotal },
+                    businessDate: targetDate,
+                });
             }
             return id;
         });
@@ -2527,6 +2892,13 @@ app.post('/api/cashier/movements', requireAuth, requirePermission(PERMISSIONS.CA
                 [body.business_date, check.direction, check.category, check.amount, check.note || null, req.authUser.id]
             );
             movementId = result.lastID;
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'cashier.movement_created', category: 'cashier',
+                entityType: 'cash_movement', entityId: movementId,
+                summary: `บันทึก${check.direction === 'cash_in' ? 'เงินเข้า' : 'เงินออก'} ฿${check.amount.toLocaleString('th-TH')}`,
+                details: { movement_id: movementId, business_date: body.business_date, direction: check.direction, category: check.category, amount_baht: check.amount, note: check.note || null },
+                businessDate: body.business_date,
+            });
         });
 
         if (conflictReason === 'day_locked') {
@@ -2561,6 +2933,13 @@ app.post('/api/cashier/movements/:id/void', requireAuth, requirePermission(PERMI
             );
             if (updateResult.changes === 0) { conflictReason = 'already_voided'; return; }
             await bumpDayRevisionForMovement(before.business_date);
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'cashier.movement_voided', category: 'cashier',
+                entityType: 'cash_movement', entityId: movementId,
+                summary: `ยกเลิกรายการ${before.direction === 'cash_in' ? 'เงินเข้า' : 'เงินออก'} ฿${before.amount_baht.toLocaleString('th-TH')}`,
+                details: { movement_id: movementId, amount_baht: before.amount_baht, category: before.category, void_reason: reasonCheck.value },
+                businessDate: before.business_date,
+            });
         });
 
         if (conflictReason === 'day_locked') return res.status(409).json({ error: 'วันนี้ปิดยอดไปแล้ว ไม่สามารถยกเลิกรายการเงินสดได้', conflict_reason: conflictReason });
@@ -2588,12 +2967,21 @@ app.put('/api/cashier/day/:date/cash-sales', requireAuth, requirePermission(PERM
     }
 
     try {
+        const dayStateBefore = await getDayStateRow(date);
+        const previousAmount = dayStateBefore ? dayStateBefore.manual_cash_sales_baht : null;
         let conflictReason = null;
         await withTransaction(async () => {
             const closingRow = await getCashSheetRow(date, 'closing');
             if (closingRow && closingRow.status === 'finalized') { conflictReason = 'day_locked'; return; }
             const result = await setManualCashSalesAtomic(date, expectedRevision, amountCheck.value, req.authUser.id);
             if (!result.ok) { conflictReason = 'stale_revision'; return; }
+            const newDayState = await getDayStateRow(date);
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'cashier.cash_sales_updated', category: 'cashier',
+                entityType: 'cash_sheet', entityId: result.id, summary: `แก้ไขยอดขายเงินสด POS ${formatThaiDate(date)}`,
+                details: { business_date: date, before: previousAmount, after: amountCheck.value, day_revision: newDayState ? newDayState.revision : null },
+                businessDate: date,
+            });
         });
 
         if (conflictReason === 'day_locked') return res.status(409).json({ error: 'วันนี้ปิดยอดไปแล้ว ไม่สามารถแก้ไขยอดขาย POS ได้', conflict_reason: conflictReason });
@@ -2715,15 +3103,28 @@ io.on('connection', (socket) => {
         const sql = status === 'served'
             ? "UPDATE orders SET status = ?, served_at = CURRENT_TIMESTAMP WHERE id = ?"
             : "UPDATE orders SET status = ? WHERE id = ?";
-        db.run(sql, [status, id], () => {
-            db.get("SELECT COUNT(*) as count FROM orders WHERE table_no = ? AND status = 'pending'", [table], (err, row) => {
+        // (Phase 9) อ่านสถานะ "ก่อน" แบบขนานกับ UPDATE เอง (ไม่ nest ให้รอ) — กันไม่ให้การอ่านเพื่อ audit ไปหน่วงคิวจริงของครัว (unlock can_order ต้องไวที่สุดเท่าที่เคยเป็นมา)
+        const beforeOrderPromise = dbGetAsync("SELECT status, table_no FROM orders WHERE id = ?", [id]).catch(() => null);
+        db.run(sql, [status, id], async function (err) {
+            db.get("SELECT COUNT(*) as count FROM orders WHERE table_no = ? AND status = 'pending'", [table], (err2, row) => {
                 if (row && row.count === 0) {
                     db.run("UPDATE tables SET can_order = true WHERE table_no = ?", [table]);
-                    io.emit('table_unlocked', { table: table }); 
+                    io.emit('table_unlocked', { table: table });
                 }
             });
             io.emit('order_removed_from_kitchen', { id: id });
-            io.emit('stats_updated'); 
+            io.emit('stats_updated');
+            // (Phase 9) เฉพาะการเปลี่ยนสถานะที่มีนัยสำคัญ (เสิร์ฟแล้ว/ยกเลิก) และแก้ไขจริงสำเร็จเท่านั้น — ไม่ log ความพยายามที่ไม่มีผล/สถานะอื่นๆ
+            if (!err && this.changes > 0 && (status === 'served' || status === 'cancelled')) {
+                const before = await beforeOrderPromise;
+                await recordAuditEventSafe({
+                    actor: auditActorFromAuthUser(authUser),
+                    eventKey: status === 'served' ? 'order.served' : 'order.cancelled',
+                    category: 'kitchen', entityType: 'order', entityId: id,
+                    summary: status === 'served' ? `เสิร์ฟออเดอร์โต๊ะ ${table || (before && before.table_no) || '-'}` : `ยกเลิกออเดอร์โต๊ะ ${table || (before && before.table_no) || '-'}`,
+                    details: { order_id: Number(id), table_no: table || (before && before.table_no) || null, from_status: before ? before.status : null, to_status: status },
+                });
+            }
         });
     });
 });

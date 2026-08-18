@@ -31,6 +31,8 @@ window.AdminApp = (function () {
     const PANEL_DEFS = [
         { key: 'users', requires: ['users.view'] },
         { key: 'roles', requires: ['roles.view'] },
+        // (Phase 9) ประวัติการใช้งาน — เห็นได้ด้วย audit.view เพียวๆ เหมือน roles-only delegated admin เข้า roles panel ได้ข้างบน
+        { key: 'audit', requires: ['audit.view'] },
     ];
     function hasAny(keys) { return keys.some((k) => hasPermission(k)); }
     function availablePanels() { return PANEL_DEFS.filter((p) => hasAny(p.requires)).map((p) => p.key); }
@@ -46,6 +48,7 @@ window.AdminApp = (function () {
         });
         if (key === 'users' && window.UsersModule) UsersModule.activate();
         if (key === 'roles' && window.RolesModule) RolesModule.activate();
+        if (key === 'audit' && window.AuditModule) AuditModule.activate();
     }
 
     // ===== confirm modal (ใช้ร่วมกันทุกจุด เช่น ปิดใช้งานบัญชี) =====
@@ -115,6 +118,7 @@ window.AdminApp = (function () {
         applyPermissionGates();
         if (hasPermission('users.view') && window.UsersModule) UsersModule.reload();
         if (hasPermission('roles.view') && window.RolesModule) RolesModule.reload();
+        if (hasPermission('audit.view') && window.AuditModule) AuditModule.reload();
         // panel ที่กำลังดูอยู่อาจถูกถอดสิทธิ์ไประหว่างนี้ — สลับไป panel แรกที่ยังมองเห็นได้ ถ้าไม่เหลือเลยก็แสดงสถานะไม่มีสิทธิ์
         if (!currentPanel || !availablePanels().includes(currentPanel)) {
             const next = availablePanels()[0];
@@ -159,7 +163,7 @@ window.AdminApp = (function () {
 
         const panels = availablePanels();
         if (!panels.length) {
-            showNoAccessState('บัญชีนี้ยังไม่ได้รับสิทธิ์ดูข้อมูลใดๆ ในส่วนแอดมิน (users.view หรือ roles.view) กรุณาติดต่อเจ้าของร้าน');
+            showNoAccessState('บัญชีนี้ยังไม่ได้รับสิทธิ์ดูข้อมูลใดๆ ในส่วนแอดมิน (users.view, roles.view หรือ audit.view) กรุณาติดต่อเจ้าของร้าน');
             return;
         }
 

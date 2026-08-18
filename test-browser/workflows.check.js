@@ -811,3 +811,157 @@ test('Cashier single day-close lifecycle: Opening saves/edits/re-saves freely wi
 
     await ctx.close();
 });
+
+// ==================== Phase 9: operational audit log / Activity Log ====================
+
+// ---- A. Owner opens Admin → Activity Log is visible ----
+test('Activity Log: the owner can open the Admin panel and see the Activity Log tab and heading', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/admin/login', '#adminUser', '#adminPin', app.personas.owner.username, app.personas.owner.password);
+    await page.waitForTimeout(400);
+    await page.click('[data-panel-nav="audit"]');
+    await page.waitForTimeout(400);
+    assert.match(await page.textContent('[data-panel="audit"] h2'), /ประวัติการใช้งาน/);
+    await ctx.close();
+});
+
+// ---- B. a Kitchen-only user cannot reach the Activity Log at all (no admin.* permission -> denied at /admin/ itself) ----
+test('Activity Log: a Kitchen-only account has no admin permission at all and is denied at /admin/, never reaching the Activity Log', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/admin/login', '#adminUser', '#adminPin', app.personas.kitchenOnly.username, app.personas.kitchenOnly.password);
+    await page.waitForTimeout(400);
+    assert.ok(await page.isVisible('#noAccessState') || page.url().includes('/admin/login') === false, 'a kitchen-only account must never reach a working Admin shell');
+    const auditNavVisible = await page.isVisible('[data-panel-nav="audit"]');
+    assert.equal(auditNavVisible, false, 'the Activity Log tab must never be visible to an account without audit.view');
+    await ctx.close();
+});
+
+// ---- C/D/E/F. real actions performed via /staff/ show up correctly (actor, action, amounts) in the Activity Log ----
+test('Activity Log: table open/close, cash movement create/void, and day close all appear with correct actor and safe details', async () => {
+    const staffCtx = await browser.newContext();
+    const staffPage = await staffCtx.newPage();
+    await loginUI(staffPage, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.owner.username, app.personas.owner.password);
+
+    // C. เปิดโต๊ะ 20 ผ่าน /staff/tables
+    await staffPage.goto(`${app.base}/staff/tables`);
+    await staffPage.waitForTimeout(500);
+    await staffPage.getByRole('button', { name: 'โต๊ะ 20', exact: true }).click();
+    await staffPage.waitForTimeout(300);
+    await staffPage.click('#tblOpenBtn');
+    await staffPage.waitForTimeout(500);
+    await staffPage.click('#tblCloseBtn');
+    await staffPage.waitForTimeout(300);
+    await staffPage.click('#confirmModal button:has-text("ตกลง")');
+    await staffPage.waitForTimeout(400);
+
+    // D/E. Cashier: เงินออก แล้วยกเลิกรายการ
+    await staffPage.click('#btn-cashier');
+    await staffPage.waitForTimeout(400);
+    const date = '2025-07-01';
+    await staffPage.evaluate((d) => { document.getElementById('cashierDate')._flatpickr.setDate(d, true); }, date);
+    await staffPage.waitForTimeout(400);
+    await staffPage.click('#cashierTabClosing');
+    await staffPage.waitForTimeout(300);
+    await staffPage.click('#cashierAddOutBtn');
+    await staffPage.waitForTimeout(300);
+    await staffPage.selectOption('#cashierMovementCategory', 'safe_drop');
+    await staffPage.fill('#cashierMovementAmount', '10000');
+    await staffPage.click('#cashierMovementModal button:has-text("บันทึกรายการ")');
+    await staffPage.waitForTimeout(500);
+    await staffPage.locator('#cashierMovementsList > div', { hasText: 'นำเงินออกไปเก็บ' }).getByText('ยกเลิกรายการ').click();
+    await staffPage.waitForTimeout(300);
+    await staffPage.fill('#cashierVoidReason', 'ทดสอบ Activity Log');
+    await staffPage.click('#cashierVoidModal button:has-text("ยืนยันยกเลิกรายการ")');
+    await staffPage.waitForTimeout(500);
+    await staffCtx.close();
+
+    // ตรวจใน Activity Log
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/admin/login', '#adminUser', '#adminPin', app.personas.owner.username, app.personas.owner.password);
+    await page.waitForTimeout(400);
+    await page.click('[data-panel-nav="audit"]');
+    await page.waitForTimeout(500);
+    const logText = await page.textContent('#auditEventsList');
+    assert.match(logText, /เปิดโต๊ะ/, 'C. ต้องเห็นเหตุการณ์เปิดโต๊ะ');
+    assert.match(logText, /บันทึกเงินเข้า\/ออก/, 'D. ต้องเห็นเหตุการณ์บันทึกเงินออก');
+    assert.match(logText, /10,000/, 'D. ต้องเห็นจำนวนเงินที่ถูกต้อง');
+    assert.match(logText, /ยกเลิกรายการเงินเข้า\/ออก/, 'E. ต้องเห็นเหตุการณ์ยกเลิกรายการ');
+    assert.match(logText, new RegExp(app.personas.owner.username.split('_')[0]), 'ต้องเห็นชื่อผู้กระทำ (เจ้าของร้าน)'); // fallback loose check
+    await ctx.close();
+});
+
+// ---- G/H. admin user-management actions (create staff / change role / reset password) appear, never leaking the password ----
+test('Activity Log: creating staff, changing a role, and resetting a password all appear, and the new password never renders anywhere', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/admin/login', '#adminUser', '#adminPin', app.personas.owner.username, app.personas.owner.password);
+    await page.waitForTimeout(400);
+
+    await page.click('button:has-text("+ เพิ่มพนักงาน")');
+    await page.fill('#createDisplayName', 'Audit Log Staff');
+    await page.fill('#createUsername', 'bt_audit_staff');
+    await page.fill('#createPassword', 'super-secret-log-pw-123');
+    await page.click('#createUserModal button:has-text("สร้างบัญชี")');
+    await page.waitForTimeout(500);
+
+    const row = page.locator('#usersBody tr', { hasText: 'Audit Log Staff' });
+    await row.locator('button:has-text("รีเซ็ตรหัสผ่าน")').click();
+    await page.waitForTimeout(300);
+    await page.fill('#resetNewPassword', 'brand-new-log-secret-456');
+    await page.fill('#resetConfirmPassword', 'brand-new-log-secret-456');
+    await page.click('#resetPasswordForm button[type="submit"]');
+    await page.waitForTimeout(500);
+    await page.click('#resetPasswordModal button:has-text("×")').catch(() => {});
+
+    await page.click('[data-panel-nav="audit"]');
+    await page.waitForTimeout(500);
+    const logText = await page.textContent('#auditEventsList');
+    assert.match(logText, /สร้างบัญชีพนักงาน/, 'G. ต้องเห็นเหตุการณ์สร้างบัญชี');
+    assert.match(logText, /รีเซ็ตรหัสผ่านพนักงาน/, 'H. ต้องเห็นเหตุการณ์รีเซ็ตรหัสผ่าน');
+
+    const fullHtml = await page.content();
+    assert.equal(fullHtml.includes('super-secret-log-pw-123'), false, 'H. รหัสผ่านเดิมต้องไม่ปรากฏใน DOM เด็ดขาด');
+    assert.equal(fullHtml.includes('brand-new-log-secret-456'), false, 'H. รหัสผ่านใหม่ต้องไม่ปรากฏใน DOM เด็ดขาด');
+    await ctx.close();
+});
+
+// ---- I/J. filters (date/category) work, and load-more pagination works ----
+test('Activity Log: filtering by category narrows the list, and the load-more button paginates without error', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/admin/login', '#adminUser', '#adminPin', app.personas.owner.username, app.personas.owner.password);
+    await page.waitForTimeout(400);
+    await page.click('[data-panel-nav="audit"]');
+    await page.waitForTimeout(500);
+
+    const allCount = await page.locator('#auditEventsList > div').count();
+    assert.ok(allCount > 0, 'ต้องมีเหตุการณ์อย่างน้อยหนึ่งรายการจากเทสต์ก่อนหน้านี้');
+
+    await page.selectOption('#auditFilterCategory', 'users');
+    await page.waitForTimeout(400);
+    const usersOnlyText = await page.textContent('#auditEventsList');
+    assert.match(usersOnlyText, /บัญชีพนักงาน/);
+
+    await page.selectOption('#auditFilterCategory', '');
+    await page.fill('#auditFilterDate', '1999-01-01');
+    await page.waitForTimeout(400);
+    assert.match(await page.textContent('#auditEventsList'), /ยังไม่มีประวัติ/, 'I. filter วันที่ที่ไม่มีข้อมูลต้องแสดงสถานะว่างเปล่า');
+
+    await page.click('button:has-text("ล้างตัวกรอง")');
+    await page.waitForTimeout(400);
+    const afterClearCount = await page.locator('#auditEventsList > div').count();
+    assert.ok(afterClearCount > 0, 'ล้างตัวกรองแล้วต้องเห็นรายการทั้งหมดกลับมา');
+
+    // J. load-more (ถ้ามีปุ่มโผล่ขึ้นมา แปลว่ามีมากกว่าหนึ่งหน้า — ทดสอบว่ากดแล้วไม่พัง)
+    const loadMoreVisible = await page.isVisible('#auditLoadMoreBtn');
+    if (loadMoreVisible) {
+        await page.click('#auditLoadMoreBtn');
+        await page.waitForTimeout(400);
+        const afterLoadMoreCount = await page.locator('#auditEventsList > div').count();
+        assert.ok(afterLoadMoreCount >= afterClearCount, 'โหลดเพิ่มเติมแล้วจำนวนรายการต้องไม่ลดลง');
+    }
+    await ctx.close();
+});

@@ -49,6 +49,7 @@
         <nav class="bg-gray-700 text-white px-2 py-2 flex flex-wrap gap-2 shadow">
             <button data-panel-nav="users" data-requires="users.view" onclick="AdminApp.switchPanel('users')" class="hidden admin-nav-btn px-4 py-2 rounded font-bold text-sm">บัญชีพนักงาน</button>
             <button data-panel-nav="roles" data-requires="roles.view" onclick="AdminApp.switchPanel('roles')" class="hidden admin-nav-btn px-4 py-2 rounded font-bold text-sm">Roles</button>
+            <button data-panel-nav="audit" data-requires="audit.view" onclick="AdminApp.switchPanel('audit')" class="hidden admin-nav-btn px-4 py-2 rounded font-bold text-sm">ประวัติการใช้งาน</button>
         </nav>
 
         <main class="flex-1 p-3 sm:p-6 max-w-6xl mx-auto w-full">
@@ -94,6 +95,45 @@
                         <button data-requires="roles.create" onclick="RolesModule.openCreateModal()" class="hidden bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold px-4 py-2 rounded-lg text-sm shadow transition-transform whitespace-nowrap admin-nav-btn">+ เพิ่ม Role</button>
                     </div>
                     <div id="customRolesList" class="p-4 space-y-3"></div>
+                </div>
+            </div>
+
+            <!-- ================= Panel: ประวัติการใช้งาน / Activity Log (Phase 9) ================= -->
+            <div data-panel="audit" class="hidden space-y-4">
+                <div class="bg-white rounded-lg shadow-md overflow-hidden border-t-4 border-teal-600">
+                    <div class="p-3 sm:p-4 bg-gray-100 border-b">
+                        <h2 class="text-lg sm:text-2xl font-bold text-gray-800">ประวัติการใช้งาน</h2>
+                        <p class="text-xs text-gray-500 mt-0.5">การกระทำที่มีนัยสำคัญทั้งหมดในระบบ เรียงจากล่าสุดไปเก่าสุด</p>
+                    </div>
+                    <div class="p-3 sm:p-4 flex flex-wrap gap-3 items-end border-b bg-gray-50">
+                        <div>
+                            <label class="block text-xs font-bold text-gray-500 mb-1">วันที่</label>
+                            <input type="date" id="auditFilterDate" onchange="AuditModule.applyFilters()" class="border-2 border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-teal-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-500 mb-1">หมวดหมู่</label>
+                            <select id="auditFilterCategory" onchange="AuditModule.applyFilters()" class="border-2 border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-teal-500">
+                                <option value="">ทั้งหมด</option>
+                                <option value="tables">โต๊ะ</option>
+                                <option value="queue">คิว</option>
+                                <option value="kitchen">ครัว</option>
+                                <option value="cashier">แคชเชียร์</option>
+                                <option value="users">บัญชีพนักงาน</option>
+                                <option value="roles">Role</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-500 mb-1">พนักงาน</label>
+                            <select id="auditFilterActor" onchange="AuditModule.applyFilters()" class="border-2 border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-teal-500">
+                                <option value="">ทั้งหมด</option>
+                            </select>
+                        </div>
+                        <button onclick="AuditModule.clearFilters()" class="text-xs text-gray-500 hover:text-gray-800 underline px-1 py-1.5">ล้างตัวกรอง</button>
+                    </div>
+                    <div id="auditEventsList" class="divide-y"></div>
+                    <div class="p-4 text-center border-t">
+                        <button id="auditLoadMoreBtn" onclick="AuditModule.loadMore()" class="hidden bg-teal-600 hover:bg-teal-700 active:scale-95 text-white font-bold px-5 py-2 rounded-lg text-sm shadow transition-transform">โหลดเพิ่มเติม</button>
+                    </div>
                 </div>
             </div>
         </main>
@@ -270,6 +310,7 @@
     <script src="/admin/app.js"></script>
     <script src="/admin/users.js"></script>
     <script src="/admin/roles.js"></script>
+    <script src="/admin/audit.js"></script>
     <script>AdminApp.boot();</script>
 </body>
 </html>
