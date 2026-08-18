@@ -617,13 +617,6 @@ async function recordAuditEvent({ actor, eventKey, category, entityType, entityI
         ]
     );
 }
-// (Phase 9) สำหรับ mutation ที่ "ยังไม่ได้" ใช้ withTransaction อยู่แล้วในสถาปัตยกรรมปัจจุบัน (tables/queue/kitchen — ดูรายงานท้ายเฟสสำหรับเหตุผล) —
-// ล้มเหลวได้โดยไม่ทำให้ mutation หลักที่สำเร็จไปแล้วพัง (แค่ log error ไว้) เพราะไม่มีธุรกรรมร่วมให้ rollback อยู่แล้วตั้งแต่ต้น
-async function recordAuditEventSafe(args) {
-    try { await recordAuditEvent(args); }
-    catch (e) { console.error(`[audit] บันทึกประวัติไม่สำเร็จ (event_key=${args.eventKey}):`, e.message); }
-}
-
 // ---- (Phase 8.2) ย้าย role ระบบเดิม/custom role ที่ผู้ใช้สร้างไว้เองแล้วให้เข้ากับโมเดล role ระบบใหม่ อย่างปลอดภัยและ idempotent ----
 // ต้องเรียกหลัง permissions ถูก seed แล้ว (ไม่จำเป็นต้องใช้ permission id ในนี้เลยจริงๆ แค่ทำงานกับตาราง roles/role_permissions/user_roles) และก่อนขั้นตอน seed role ระบบตามปกติ
 // หลักการ: ไม่ลบ role ที่ยังมีบัญชีผูกอยู่โดยเด็ดขาด, ไม่ mapping role เดิมไปยัง role ใหม่แบบเดา (เช่น kitchen เดิม "ไม่" กลายเป็น manager โดยอัตโนมัติ), โปรโมทเฉพาะ custom role ที่ชื่อ "ตรงกันเป๊ะ" หนึ่งรายการเท่านั้น
@@ -866,51 +859,64 @@ app.post('/api/open-table', requireAuth, requirePermission(PERMISSIONS.TABLES_MA
     const url = `${PUBLIC_BASE_URL}/?table=${table}&token=${token}`;
     try {
         const qrImage = await QRCode.toDataURL(url);
-        db.run("UPDATE tables SET is_open = true, can_order = true, session_token = ?, adults = ?, children = ?, toddlers = ? WHERE table_no = ?", [token, adults, children, toddlers, table], () => {
-            db.run("INSERT INTO session_history (table_no, session_token, opened_at, adults, children, toddlers) VALUES (?, ?, datetime('now', 'localtime'), ?, ?, ?)", [table, token, adults, children, toddlers], async () => {
-                res.json({ success: true, table: table, qr: qrImage, url: url, token: token, adults, children, toddlers });
-                io.emit('table_updated');
-                // (Phase 9) ไม่เก็บ token/QR secret ใดๆ ในประวัติเด็ดขาด — มีแค่จำนวนลูกค้าเท่านั้น
-                await recordAuditEventSafe({
-                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'table.opened', category: 'tables',
-                    entityType: 'table', entityId: table, summary: `เปิดโต๊ะ ${table}`,
-                    details: { table_no: table, adults, children, toddlers },
-                });
+        // (Phase 9.1) เปิดโต๊ะ + บันทึกประวัติต้อง atomic กันเป๊ะ — ถ้า insert ประวัติล้มเหลว ทั้งการเปิดโต๊ะต้อง rollback ไปด้วย
+        // (ห้ามโต๊ะเปิดค้างอยู่แบบไม่มีประวัติกำกับ) ไม่ตอบ success/ไม่ emit table_updated จนกว่า transaction จะ commit จริง
+        await withTransaction(async () => {
+            await dbRunAsync("UPDATE tables SET is_open = true, can_order = true, session_token = ?, adults = ?, children = ?, toddlers = ? WHERE table_no = ?", [token, adults, children, toddlers, table]);
+            await dbRunAsync("INSERT INTO session_history (table_no, session_token, opened_at, adults, children, toddlers) VALUES (?, ?, datetime('now', 'localtime'), ?, ?, ?)", [table, token, adults, children, toddlers]);
+            // (Phase 9) ไม่เก็บ token/QR secret ใดๆ ในประวัติเด็ดขาด — มีแค่จำนวนลูกค้าเท่านั้น
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'table.opened', category: 'tables',
+                entityType: 'table', entityId: table, summary: `เปิดโต๊ะ ${table}`,
+                details: { table_no: table, adults, children, toddlers },
             });
         });
-    } catch (err) { res.status(500).json({ error: 'Failed' }); }
+        res.json({ success: true, table: table, qr: qrImage, url: url, token: token, adults, children, toddlers });
+        io.emit('table_updated');
+    } catch (err) {
+        console.error('[open-table] เปิดโต๊ะไม่สำเร็จ:', err.message);
+        res.status(500).json({ error: 'เปิดโต๊ะไม่สำเร็จ' });
+    }
 });
 
-app.post('/api/close-table', requireAuth, requirePermission(PERMISSIONS.TABLES_MANAGE), (req, res) => {
+app.post('/api/close-table', requireAuth, requirePermission(PERMISSIONS.TABLES_MANAGE), async (req, res) => {
     const { table } = req.body;
-    db.get("SELECT session_token FROM tables WHERE table_no = ?", [table], (err, row) => {
-        if (row && row.session_token) {
+    try {
+        let wasOpen = false;
+        let pendingIds = [];
+        // (Phase 9.1) ปิดโต๊ะ + ยกเลิกออเดอร์ค้าง + บันทึกประวัติ ทั้งหมดต้อง atomic เป็นก้อนเดียว — เช็ค "โต๊ะเปิดอยู่จริงไหม" อยู่ใน
+        // transaction เดียวกันนี้เอง (ไม่ใช่เช็คแยกก่อนหน้า) กันแข่งกันปิดพร้อมกันสองคำขอด้วย เพราะ mutex ระดับแอปการันตีว่าไม่มี
+        // transaction อื่นมาแทรกระหว่างอ่าน token กับเขียนทับได้เลย ถ้า insert ประวัติล้มเหลว ทั้งหมดต้อง rollback (โต๊ะยังเปิดอยู่เหมือนเดิม)
+        await withTransaction(async () => {
+            const row = await dbGetAsync("SELECT session_token FROM tables WHERE table_no = ?", [table]);
+            if (!row || !row.session_token) return; // โต๊ะไม่ได้เปิดอยู่ — ไม่มีอะไรให้เขียน ไม่ต้อง rollback อะไร (ยังไม่ได้แตะ DB เลย)
+            wasOpen = true;
             const token = row.session_token;
-            db.run("UPDATE tables SET is_open = false, session_token = NULL WHERE table_no = ?", [table], () => {
-                db.run("UPDATE session_history SET closed_at = datetime('now', 'localtime') WHERE session_token = ?", [token], async () => {
-                    // ยกเลิกออเดอร์ที่ยังค้าง (pending) ของ session นี้ เพื่อไม่ให้การ์ดค้างบนหน้าครัว
-                    db.all("SELECT id FROM orders WHERE session_token = ? AND status = 'pending'", [token], (err, pendingRows) => {
-                        const pendingIds = (pendingRows || []).map(r => r.id);
-                        db.run("UPDATE orders SET status = 'cancelled' WHERE session_token = ? AND status = 'pending'", [token], () => {
-                            pendingIds.forEach(id => io.emit('order_removed_from_kitchen', { id }));
-                        });
-                    });
-                    res.json({ success: true });
-                    io.emit('table_updated');
-                    io.emit('table_closed', { table: table });
-                    await recordAuditEventSafe({
-                        actor: auditActorFromAuthUser(req.authUser), eventKey: 'table.closed', category: 'tables',
-                        entityType: 'table', entityId: table, summary: `ปิดโต๊ะ ${table}`,
-                        details: { table_no: table },
-                    });
-                });
+            await dbRunAsync("UPDATE tables SET is_open = false, session_token = NULL WHERE table_no = ?", [table]);
+            await dbRunAsync("UPDATE session_history SET closed_at = datetime('now', 'localtime') WHERE session_token = ?", [token]);
+            // ยกเลิกออเดอร์ที่ยังค้าง (pending) ของ session นี้ เพื่อไม่ให้การ์ดค้างบนหน้าครัว
+            const pendingRows = await dbAllAsync("SELECT id FROM orders WHERE session_token = ? AND status = 'pending'", [token]);
+            pendingIds = (pendingRows || []).map(r => r.id);
+            await dbRunAsync("UPDATE orders SET status = 'cancelled' WHERE session_token = ? AND status = 'pending'", [token]);
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'table.closed', category: 'tables',
+                entityType: 'table', entityId: table, summary: `ปิดโต๊ะ ${table}`,
+                details: { table_no: table },
             });
-        } else {
+        });
+        if (!wasOpen) {
             // (Phase 9) เดิม endpoint นี้ไม่ตอบอะไรเลยถ้าโต๊ะไม่ได้เปิดอยู่ (ไม่มี else มาก่อน) — ปล่อยให้ผู้เรียกค้างรอ response ตลอดไปโดยไม่ตั้งใจ
             // แก้เป็นตอบ 400 ชัดเจนแทน ไม่กระทบ flow ปกติเลยเพราะ UI ที่มีอยู่ไม่เคยเสนอปุ่ม "ปิดโต๊ะ" ให้กดสำหรับโต๊ะที่ไม่ได้เปิดอยู่แล้วอยู่แล้ว
-            res.status(400).json({ error: 'โต๊ะนี้ไม่ได้เปิดอยู่' });
+            return res.status(400).json({ error: 'โต๊ะนี้ไม่ได้เปิดอยู่' });
         }
-    });
+        res.json({ success: true });
+        pendingIds.forEach(id => io.emit('order_removed_from_kitchen', { id }));
+        io.emit('table_updated');
+        io.emit('table_closed', { table: table });
+    } catch (err) {
+        console.error('[close-table] ปิดโต๊ะไม่สำเร็จ:', err.message);
+        res.status(500).json({ error: 'ปิดโต๊ะไม่สำเร็จ' });
+    }
 });
 
 // รายการโต๊ะทั้งหมด — สำหรับแอดมิน/แดชบอร์ดเท่านั้น
@@ -966,21 +972,27 @@ app.get('/api/table-session', (req, res) => {
     });
 });
 
-app.post('/api/update-table-pax', requireAuth, requirePermission(PERMISSIONS.TABLES_MANAGE), (req, res) => {
+app.post('/api/update-table-pax', requireAuth, requirePermission(PERMISSIONS.TABLES_MANAGE), async (req, res) => {
     const { table, adults = 0, children = 0, toddlers = 0 } = req.body;
-    db.get("SELECT adults, children, toddlers FROM tables WHERE table_no = ?", [table], (err, before) => {
-        db.run("UPDATE tables SET adults = ?, children = ?, toddlers = ? WHERE table_no = ?",
-            [adults, children, toddlers, table], async function (err) {
-                res.json({ success: true });
-                if (!err && this.changes > 0 && before) {
-                    await recordAuditEventSafe({
-                        actor: auditActorFromAuthUser(req.authUser), eventKey: 'table.pax_updated', category: 'tables',
-                        entityType: 'table', entityId: table, summary: `แก้จำนวนลูกค้าโต๊ะ ${table}`,
-                        details: { table_no: table, before, after: { adults, children, toddlers } },
-                    });
-                }
-            });
-    });
+    try {
+        // (Phase 9.1) แก้จำนวนลูกค้า + บันทึกประวัติ atomic — insert ประวัติล้มเหลว ต้อง rollback จำนวนลูกค้ากลับเป็นค่าเดิม
+        await withTransaction(async () => {
+            const before = await dbGetAsync("SELECT adults, children, toddlers FROM tables WHERE table_no = ?", [table]);
+            if (!before) return; // ไม่มีโต๊ะนี้จริง — ไม่มีอะไรให้เขียน/audit (คงพฤติกรรมเดิมที่ยังตอบ success อยู่ดี)
+            const result = await dbRunAsync("UPDATE tables SET adults = ?, children = ?, toddlers = ? WHERE table_no = ?", [adults, children, toddlers, table]);
+            if (result.changes > 0) {
+                await recordAuditEvent({
+                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'table.pax_updated', category: 'tables',
+                    entityType: 'table', entityId: table, summary: `แก้จำนวนลูกค้าโต๊ะ ${table}`,
+                    details: { table_no: table, before, after: { adults, children, toddlers } },
+                });
+            }
+        });
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[update-table-pax] แก้ไขจำนวนลูกค้าไม่สำเร็จ:', err.message);
+        res.status(500).json({ error: 'แก้ไขจำนวนลูกค้าไม่สำเร็จ' });
+    }
 });
 
 app.get('/api/table-history/:table', requireAuth, requirePermission(PERMISSIONS.TABLES_VIEW), (req, res) => {
@@ -1138,30 +1150,36 @@ app.get('/api/served-recent', requireAuth, requirePermission(PERMISSIONS.KITCHEN
 });
 
 // ================== API ระบบคิว ==================
-app.post('/api/queue', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), (req, res) => {
+app.post('/api/queue', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), async (req, res) => {
     const { pax, pots, adults = 0, children = 0, is_foreign = 0, is_separate_table = 0 } = req.body;
     // (Phase 6C.1) 16 ไบต์ (128 บิต) กันเดา token — ของเก่าที่เคยออกไว้ก่อนหน้านี้ (6 ไบต์/48 บิต) ยังใช้ได้ตามปกติ
     // เพราะการตรวจสอบเป็นการเทียบสตริงตรงๆ ไม่สนใจความยาว ไม่ต้อง migrate ข้อมูลเดิม (เหมือนแนวทางเดียวกับ table session token ใน Phase 1.1)
     const token = crypto.randomBytes(16).toString('hex');
-    db.serialize(() => {
-        // ใช้ MAX ของเลขคิวเดิม ไม่ใช่ COUNT — ถ้าใช้ COUNT แล้วมีการลบคิวทิ้ง เลขจะวนกลับมาซ้ำของเดิม
-        db.get(`SELECT COALESCE(MAX(CAST(SUBSTR(q_number, 2) AS INTEGER)), 0) AS maxNum
-                FROM queues
-                WHERE date(created_at, 'localtime') = date('now', 'localtime') AND q_number LIKE 'Q%'`, [], (err, row) => {
-            const qNum = "Q" + ((row ? row.maxNum : 0) + 1);
-            db.run("INSERT INTO queues (q_number, pax, adults, children, pots, status, token, is_foreign, is_separate_table) VALUES (?, ?, ?, ?, ?, 'waiting', ?, ?, ?)",
-                [qNum, pax, adults, children, JSON.stringify(pots), token, is_foreign ? 1 : 0, is_separate_table ? 1 : 0], async function(err) {
-                res.json({ success: true, q_number: qNum, token: token, created_at: new Date().toISOString() });
-                io.emit('queue_updated');
-                // (Phase 9) ไม่เก็บ cancellation token ใดๆ ในประวัติเด็ดขาด
-                await recordAuditEventSafe({
-                    actor: auditActorFromAuthUser(req.authUser), eventKey: 'queue.created', category: 'queue',
-                    entityType: 'queue', entityId: this.lastID, summary: `สร้างคิว ${qNum}`,
-                    details: { queue_id: this.lastID, q_number: qNum, pax, adults, children },
-                });
+    try {
+        let qNum, queueId;
+        // (Phase 9.1) สร้างคิว + บันทึกประวัติ atomic — ใช้ withTransaction แทน db.serialize() เดิม (ได้ทั้งความเป็นระเบียบเดิมและกันเลขคิวชนกันตอนสร้างพร้อมกันด้วย)
+        await withTransaction(async () => {
+            // ใช้ MAX ของเลขคิวเดิม ไม่ใช่ COUNT — ถ้าใช้ COUNT แล้วมีการลบคิวทิ้ง เลขจะวนกลับมาซ้ำของเดิม
+            const row = await dbGetAsync(`SELECT COALESCE(MAX(CAST(SUBSTR(q_number, 2) AS INTEGER)), 0) AS maxNum
+                    FROM queues
+                    WHERE date(created_at, 'localtime') = date('now', 'localtime') AND q_number LIKE 'Q%'`);
+            qNum = "Q" + ((row ? row.maxNum : 0) + 1);
+            const result = await dbRunAsync("INSERT INTO queues (q_number, pax, adults, children, pots, status, token, is_foreign, is_separate_table) VALUES (?, ?, ?, ?, ?, 'waiting', ?, ?, ?)",
+                [qNum, pax, adults, children, JSON.stringify(pots), token, is_foreign ? 1 : 0, is_separate_table ? 1 : 0]);
+            queueId = result.lastID;
+            // (Phase 9) ไม่เก็บ cancellation token ใดๆ ในประวัติเด็ดขาด
+            await recordAuditEvent({
+                actor: auditActorFromAuthUser(req.authUser), eventKey: 'queue.created', category: 'queue',
+                entityType: 'queue', entityId: queueId, summary: `สร้างคิว ${qNum}`,
+                details: { queue_id: queueId, q_number: qNum, pax, adults, children },
             });
         });
-    });
+        res.json({ success: true, q_number: qNum, token: token, created_at: new Date().toISOString() });
+        io.emit('queue_updated');
+    } catch (err) {
+        console.error('[queue/create] สร้างคิวไม่สำเร็จ:', err.message);
+        res.status(500).json({ error: 'สร้างคิวไม่สำเร็จ' });
+    }
 });
 
 app.get('/api/queue-history', requireAuth, requirePermission(PERMISSIONS.QUEUE_VIEW), (req, res) => {
@@ -1173,7 +1191,7 @@ app.get('/api/queue-history', requireAuth, requirePermission(PERMISSIONS.QUEUE_V
 });
 
 // เฉพาะแอดมินเท่านั้น — ลูกค้าที่จะยกเลิกคิวตัวเองให้ใช้ /api/queue/cancel-by-token ด้านล่าง
-app.post('/api/queue/update', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), (req, res) => {
+app.post('/api/queue/update', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), async (req, res) => {
     const { id, status, table_assigned, is_billed } = req.body || {};
     if (!QUEUE_STATUSES.includes(status)) return res.status(400).json({ error: 'สถานะไม่ถูกต้อง' });
 
@@ -1181,14 +1199,16 @@ app.post('/api/queue/update', requireAuth, requirePermission(PERMISSIONS.QUEUE_M
     const sql = status === 'entered'
         ? `UPDATE queues SET status = ?, table_assigned = ?, is_billed = ?, entered_at = COALESCE(entered_at, CURRENT_TIMESTAMP) WHERE id = ?`
         : `UPDATE queues SET status = ?, table_assigned = ?, is_billed = ?, entered_at = NULL WHERE id = ?`;
-    db.get("SELECT q_number, status, pax FROM queues WHERE id = ?", [id], (getErr, before) => {
-        db.run(sql, [status, table, is_billed ? 1 : 0, id], async function (err) {
-            res.json({ success: true });
-            io.emit('queue_updated');
-            if (!err && this.changes > 0 && before) {
+    try {
+        // (Phase 9.1) เปลี่ยนสถานะคิว/เรียกเข้าโต๊ะ + บันทึกประวัติ atomic — insert ประวัติล้มเหลว ต้อง rollback สถานะคิวกลับเป็นเดิม
+        await withTransaction(async () => {
+            const before = await dbGetAsync("SELECT q_number, status, pax FROM queues WHERE id = ?", [id]);
+            if (!before) return; // ไม่มีคิวนี้จริง — ไม่มีอะไรให้เขียน/audit (คงพฤติกรรมเดิมที่ยังตอบ success อยู่ดี)
+            const result = await dbRunAsync(sql, [status, table, is_billed ? 1 : 0, id]);
+            if (result.changes > 0) {
                 // (Phase 9) การเข้าโต๊ะ (status='entered') คือการเรียก/มอบหมายโต๊ะจริง ให้ event ที่สื่อความหมายตรงกว่า "แก้ไขทั่วไป"
                 const isAssign = status === 'entered';
-                await recordAuditEventSafe({
+                await recordAuditEvent({
                     actor: auditActorFromAuthUser(req.authUser),
                     eventKey: isAssign ? 'queue.assigned_table' : 'queue.updated',
                     category: 'queue', entityType: 'queue', entityId: id,
@@ -1197,7 +1217,12 @@ app.post('/api/queue/update', requireAuth, requirePermission(PERMISSIONS.QUEUE_M
                 });
             }
         });
-    });
+        res.json({ success: true });
+        io.emit('queue_updated');
+    } catch (err) {
+        console.error('[queue/update] อัปเดตคิวไม่สำเร็จ:', err.message);
+        res.status(500).json({ error: 'อัปเดตคิวไม่สำเร็จ' });
+    }
 });
 
 // (Phase 6C) rate limit ของ /api/queue/cancel-by-token — token ควรถูกยกเลิกแค่ 0 หรือ 1 ครั้งต่อคิวจริงๆ (ไม่เหมือน send_order ที่ลูกค้าสั่งหลายรอบได้)
@@ -1212,7 +1237,7 @@ const queueCancelFailedLimiter = new FixedWindowLimiter({ windowMs: QUEUE_CANCEL
 
 // ลูกค้ายกเลิกคิว "ของตัวเอง" ด้วย token จาก QR (ไม่ต้อง login)
 // ผูกกับ token ไม่ใช่ id เพราะ id เป็นเลขรันนิ่งที่เดาได้ และยอมให้เฉพาะคิวที่ยังรออยู่วันนี้เท่านั้น
-app.post('/api/queue/cancel-by-token', (req, res) => {
+app.post('/api/queue/cancel-by-token', async (req, res) => {
     const ip = getHttpClientIp(req);
 
     // 1) เพดานกว้างต่อ IP ก่อนแตะ DB เลย (ถูกทุก request ไม่ว่า token จะถูกหรือผิด)
@@ -1233,63 +1258,87 @@ app.post('/api/queue/cancel-by-token', (req, res) => {
     const { token } = req.body || {};
     if (!token || typeof token !== 'string') return res.status(400).json({ error: 'ไม่พบ token' });
 
-    db.run(`UPDATE queues SET status = 'cancelled', entered_at = NULL
-            WHERE token = ? AND status = 'waiting' AND date(created_at, 'localtime') = date('now', 'localtime')`,
-        [token], function () {
-            if (this.changes === 0) {
-                queueCancelFailedLimiter.hit(ip); // นับเป็นความล้มเหลวจริง (token ผิด/ใช้ไปแล้ว/หมดอายุ) — ข้อความตอบเหมือนเดิมทุกกรณี ไม่บอกใบ้เหตุผล
-                // (Phase 9) ความพยายามที่ล้มเหลว/token ผิด "ไม่" สร้างแถวประวัติ — กันโดนโจมตียิง token มั่วๆ ถล่มตาราง audit
-                return res.status(400).json({ error: 'ยกเลิกคิวนี้ไม่ได้' });
-            }
-            res.json({ success: true });
-            io.emit('queue_updated');
+    // (Phase 9.1) ยกเลิกคิว + บันทึกประวัติ atomic — audit event สร้างเฉพาะตอน token ถูกต้องแล้วเท่านั้น (การพยายามด้วย token ผิด
+    // ไม่แตะ transaction นี้เลย ยังคงถูกนับเป็นความล้มเหลวแบบเดิมทุกประการ) ไม่มีทางที่ผู้โจมตีจะเรียก audit-insert failure เองได้
+    // จากพารามิเตอร์ request — ความล้มเหลวแบบนั้นเกิดได้แค่จาก DB จริงๆ พังเท่านั้น จึงไม่ทำให้เกิดช่องทางขยายผลโจมตีเพิ่มจากเดิม
+    try {
+        let cancelled = false;
+        let queueRow = null;
+        await withTransaction(async () => {
+            const result = await dbRunAsync(`UPDATE queues SET status = 'cancelled', entered_at = NULL
+                    WHERE token = ? AND status = 'waiting' AND date(created_at, 'localtime') = date('now', 'localtime')`, [token]);
+            if (result.changes === 0) return; // token ผิด/ใช้ไปแล้ว/หมดอายุ — ไม่มีอะไรให้เขียน ไม่มีอะไรให้ audit
+            cancelled = true;
+            queueRow = await dbGetAsync("SELECT id, q_number FROM queues WHERE token = ?", [token]);
             // (Phase 9) ลูกค้ายกเลิกคิวเอง — actor เป็นสาธารณะ (ไม่มี login) ไม่เก็บ token ใดๆ ในประวัติเด็ดขาด
-            db.get("SELECT id, q_number FROM queues WHERE token = ?", [token], async (selErr, row) => {
-                if (!selErr && row) {
-                    await recordAuditEventSafe({
-                        actor: AUDIT_ACTOR_PUBLIC, eventKey: 'queue.customer_cancelled', category: 'queue',
-                        entityType: 'queue', entityId: row.id, summary: `ลูกค้ายกเลิกคิว ${row.q_number} เอง`,
-                        details: { queue_id: row.id, q_number: row.q_number },
-                    });
-                }
+            await recordAuditEvent({
+                actor: AUDIT_ACTOR_PUBLIC, eventKey: 'queue.customer_cancelled', category: 'queue',
+                entityType: 'queue', entityId: queueRow ? queueRow.id : null,
+                summary: queueRow ? `ลูกค้ายกเลิกคิว ${queueRow.q_number} เอง` : 'ลูกค้ายกเลิกคิวเอง',
+                details: queueRow ? { queue_id: queueRow.id, q_number: queueRow.q_number } : {},
             });
         });
+        if (!cancelled) {
+            queueCancelFailedLimiter.hit(ip); // นับเป็นความล้มเหลวจริง (token ผิด/ใช้ไปแล้ว/หมดอายุ) — ข้อความตอบเหมือนเดิมทุกกรณี ไม่บอกใบ้เหตุผล
+            // (Phase 9) ความพยายามที่ล้มเหลว/token ผิด "ไม่" สร้างแถวประวัติ — กันโดนโจมตียิง token มั่วๆ ถล่มตาราง audit
+            return res.status(400).json({ error: 'ยกเลิกคิวนี้ไม่ได้' });
+        }
+        res.json({ success: true });
+        io.emit('queue_updated');
+    } catch (err) {
+        console.error('[queue/cancel-by-token] ยกเลิกคิวไม่สำเร็จ:', err.message);
+        res.status(500).json({ error: 'ยกเลิกคิวนี้ไม่ได้' });
+    }
 });
 
 // API สำหรับแก้ไขข้อมูลคิว
-app.delete('/api/queue/:id', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), (req, res) => {
+app.delete('/api/queue/:id', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), async (req, res) => {
     const id = req.params.id;
-    db.get("SELECT q_number, pax FROM queues WHERE id = ?", [id], (getErr, before) => {
-        db.run("DELETE FROM queues WHERE id = ?", [id], async function (err) {
-            res.json({ success: true });
-            io.emit('queue_updated');
-            if (!err && this.changes > 0 && before) {
-                await recordAuditEventSafe({
+    try {
+        // (Phase 9.1) ลบคิว + บันทึกประวัติ atomic — insert ประวัติล้มเหลว ต้อง rollback การลบ (คิวยังอยู่เหมือนเดิม)
+        await withTransaction(async () => {
+            const before = await dbGetAsync("SELECT q_number, pax FROM queues WHERE id = ?", [id]);
+            if (!before) return; // ไม่มีคิวนี้จริง — ไม่มีอะไรให้เขียน/audit (คงพฤติกรรมเดิมที่ยังตอบ success อยู่ดี)
+            const result = await dbRunAsync("DELETE FROM queues WHERE id = ?", [id]);
+            if (result.changes > 0) {
+                await recordAuditEvent({
                     actor: auditActorFromAuthUser(req.authUser), eventKey: 'queue.deleted', category: 'queue',
                     entityType: 'queue', entityId: id, summary: `ลบคิว ${before.q_number}`,
                     details: { queue_id: Number(id), q_number: before.q_number, party_size: before.pax },
                 });
             }
         });
-    });
+        res.json({ success: true });
+        io.emit('queue_updated');
+    } catch (err) {
+        console.error('[queue/delete] ลบคิวไม่สำเร็จ:', err.message);
+        res.status(500).json({ error: 'ลบคิวไม่สำเร็จ' });
+    }
 });
 
-app.post('/api/queue/edit', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), (req, res) => {
+app.post('/api/queue/edit', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE), async (req, res) => {
     const { id, pax, adults, children, pots, is_foreign, is_separate_table } = req.body;
-    db.get("SELECT q_number, pax, adults, children FROM queues WHERE id = ?", [id], (getErr, before) => {
-        db.run("UPDATE queues SET pax = ?, adults = ?, children = ?, pots = ?, is_foreign = ?, is_separate_table = ? WHERE id = ?",
-            [pax, adults || 0, children || 0, JSON.stringify(pots), is_foreign ? 1 : 0, is_separate_table ? 1 : 0, id], async function (err) {
-            res.json({ success: true });
-            io.emit('queue_updated');
-            if (!err && this.changes > 0 && before) {
-                await recordAuditEventSafe({
+    try {
+        // (Phase 9.1) แก้ไขข้อมูลคิว + บันทึกประวัติ atomic — insert ประวัติล้มเหลว ต้อง rollback ข้อมูลคิวกลับเป็นเดิม
+        await withTransaction(async () => {
+            const before = await dbGetAsync("SELECT q_number, pax, adults, children FROM queues WHERE id = ?", [id]);
+            if (!before) return; // ไม่มีคิวนี้จริง — ไม่มีอะไรให้เขียน/audit (คงพฤติกรรมเดิมที่ยังตอบ success อยู่ดี)
+            const result = await dbRunAsync("UPDATE queues SET pax = ?, adults = ?, children = ?, pots = ?, is_foreign = ?, is_separate_table = ? WHERE id = ?",
+                [pax, adults || 0, children || 0, JSON.stringify(pots), is_foreign ? 1 : 0, is_separate_table ? 1 : 0, id]);
+            if (result.changes > 0) {
+                await recordAuditEvent({
                     actor: auditActorFromAuthUser(req.authUser), eventKey: 'queue.updated', category: 'queue',
                     entityType: 'queue', entityId: id, summary: `แก้ไขข้อมูลคิว ${before.q_number}`,
                     details: { queue_id: Number(id), q_number: before.q_number, before: { pax: before.pax, adults: before.adults, children: before.children }, after: { pax, adults: adults || 0, children: children || 0 } },
                 });
             }
         });
-    });
+        res.json({ success: true });
+        io.emit('queue_updated');
+    } catch (err) {
+        console.error('[queue/edit] แก้ไขคิวไม่สำเร็จ:', err.message);
+        res.status(500).json({ error: 'แก้ไขคิวไม่สำเร็จ' });
+    }
 });
 
 // หน้าเช็คคิว
@@ -3103,29 +3152,44 @@ io.on('connection', (socket) => {
         const sql = status === 'served'
             ? "UPDATE orders SET status = ?, served_at = CURRENT_TIMESTAMP WHERE id = ?"
             : "UPDATE orders SET status = ? WHERE id = ?";
-        // (Phase 9) อ่านสถานะ "ก่อน" แบบขนานกับ UPDATE เอง (ไม่ nest ให้รอ) — กันไม่ให้การอ่านเพื่อ audit ไปหน่วงคิวจริงของครัว (unlock can_order ต้องไวที่สุดเท่าที่เคยเป็นมา)
-        const beforeOrderPromise = dbGetAsync("SELECT status, table_no FROM orders WHERE id = ?", [id]).catch(() => null);
-        db.run(sql, [status, id], async function (err) {
-            db.get("SELECT COUNT(*) as count FROM orders WHERE table_no = ? AND status = 'pending'", [table], (err2, row) => {
-                if (row && row.count === 0) {
-                    db.run("UPDATE tables SET can_order = true WHERE table_no = ?", [table]);
-                    io.emit('table_unlocked', { table: table });
-                }
-            });
-            io.emit('order_removed_from_kitchen', { id: id });
-            io.emit('stats_updated');
-            // (Phase 9) เฉพาะการเปลี่ยนสถานะที่มีนัยสำคัญ (เสิร์ฟแล้ว/ยกเลิก) และแก้ไขจริงสำเร็จเท่านั้น — ไม่ log ความพยายามที่ไม่มีผล/สถานะอื่นๆ
-            if (!err && this.changes > 0 && (status === 'served' || status === 'cancelled')) {
-                const before = await beforeOrderPromise;
-                await recordAuditEventSafe({
-                    actor: auditActorFromAuthUser(authUser),
-                    eventKey: status === 'served' ? 'order.served' : 'order.cancelled',
-                    category: 'kitchen', entityType: 'order', entityId: id,
-                    summary: status === 'served' ? `เสิร์ฟออเดอร์โต๊ะ ${table || (before && before.table_no) || '-'}` : `ยกเลิกออเดอร์โต๊ะ ${table || (before && before.table_no) || '-'}`,
-                    details: { order_id: Number(id), table_no: table || (before && before.table_no) || null, from_status: before ? before.status : null, to_status: status },
+        const isAudited = status === 'served' || status === 'cancelled';
+        try {
+            if (isAudited) {
+                // (Phase 9.1) เสิร์ฟ/ยกเลิกออเดอร์ + บันทึกประวัติ ต้อง atomic กันเป๊ะ — อ่านสถานะก่อน (validate) → UPDATE → insert audit → commit
+                // ทั้งหมดในธุรกรรมเดียว ถ้า insert ประวัติล้มเหลว สถานะออเดอร์ต้อง rollback กลับเป็นเดิม ไม่ยอมให้เปลี่ยนสถานะแบบไม่มีประวัติกำกับ
+                // กรณี order id ไม่มีอยู่จริง (before เป็น null) ไม่ throw — ไม่มีอะไรให้ rollback อยู่แล้วเพราะยังไม่ได้เขียนอะไรเลย
+                await withTransaction(async () => {
+                    const before = await dbGetAsync("SELECT status, table_no FROM orders WHERE id = ?", [id]);
+                    if (!before) return;
+                    const result = await dbRunAsync(sql, [status, id]);
+                    if (result.changes > 0) {
+                        await recordAuditEvent({
+                            actor: auditActorFromAuthUser(authUser),
+                            eventKey: status === 'served' ? 'order.served' : 'order.cancelled',
+                            category: 'kitchen', entityType: 'order', entityId: id,
+                            summary: status === 'served' ? `เสิร์ฟออเดอร์โต๊ะ ${table || before.table_no || '-'}` : `ยกเลิกออเดอร์โต๊ะ ${table || before.table_no || '-'}`,
+                            details: { order_id: Number(id), table_no: table || before.table_no || null, from_status: before.status, to_status: status },
+                        });
+                    }
                 });
+            } else {
+                // สถานะอื่นๆ (ไม่เคยถูกส่งจริงจาก UI ปัจจุบัน — kitchen.js ส่งแค่ served/cancelled) ไม่มี audit เกี่ยวข้อง จึงไม่ต้อง atomic
+                await dbRunAsync(sql, [status, id]);
+            }
+        } catch (e) {
+            console.error('[kitchen] update_order ล้มเหลว:', e.message);
+            return socket.emit('order_error', { error: 'อัปเดตสถานะออเดอร์ไม่สำเร็จ' }); // ข้อความทั่วไป ไม่มีรายละเอียด DB ภายในหลุดออกไป — ไม่ emit success ใดๆ เมื่อ rollback
+        }
+        // จุดนี้ถึงได้แปลว่า transaction (ถ้ามี) commit สำเร็จแล้วจริงๆ — ค่อย emit realtime event ทั้งหมด (คงพฤติกรรมเดิมไว้เป๊ะ:
+        // emit เสมอไม่ว่า order id จะมีอยู่จริงหรือไม่ก็ตาม เพื่อไม่ให้ UI ครัวค้าง — การ์ดที่ไม่มีอยู่แล้วแค่ไม่มีผลอะไรฝั่ง client)
+        db.get("SELECT COUNT(*) as count FROM orders WHERE table_no = ? AND status = 'pending'", [table], (err2, row) => {
+            if (row && row.count === 0) {
+                db.run("UPDATE tables SET can_order = true WHERE table_no = ?", [table]);
+                io.emit('table_unlocked', { table: table });
             }
         });
+        io.emit('order_removed_from_kitchen', { id: id });
+        io.emit('stats_updated');
     });
 });
 
