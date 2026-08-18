@@ -496,14 +496,14 @@ test('44. cash-expense example (section 40 of the spec) returns variance 0', asy
 
 // ==================== 5. Finalization rules ====================
 
-test('45. Closing cannot finalize without a finalized Opening for the same date', async () => {
+test('45. Closing cannot finalize without any Opening data for the same date (Phase 8.1: a draft Opening is now sufficient — only a missing Opening blocks close)', async () => {
     const date = '2025-03-01';
     await api(ownerCookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 10000, expected_revision: 0 });
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: date, lines: allNineLines({ 1000: 10 }) });
     const id = (await create.json()).sheet.id;
     const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: 1 });
     assert.equal(res.status, 409);
-    assert.equal((await res.json()).conflict_reason, 'opening_not_finalized');
+    assert.equal((await res.json()).conflict_reason, 'opening_missing');
 });
 
 test('46. Closing cannot finalize with manual POS sales still NULL', async () => {

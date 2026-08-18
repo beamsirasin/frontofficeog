@@ -216,7 +216,7 @@
                         <div id="cashierFormArea" class="hidden p-3 md:p-4 space-y-5">
                             <!-- ================= Phase 8: closing-only reconciliation flow ================= -->
                             <div id="cashierOpeningReminder" class="hidden bg-orange-50 border-2 border-orange-300 rounded-lg p-3 text-orange-800 font-bold text-sm text-center">
-                                กรุณายืนยันเงินเปิดร้านก่อนปิดยอดประจำวัน
+                                กรุณากรอกเงินเปิดร้านก่อนปิดยอดประจำวัน
                             </div>
 
                             <div id="cashierMovementsSection" class="hidden">
@@ -235,7 +235,7 @@
                                 <h3 class="font-bold text-gray-700 mb-1 border-b pb-1">ยอดขายเงินสดตาม POS</h3>
                                 <p class="text-xs text-gray-500 mb-2">(กรอกด้วยตนเอง) กรอกยอดเงินสดสุทธิจากรายงาน POS ภายนอก</p>
                                 <div class="flex items-center gap-2 flex-wrap">
-                                    <input type="number" inputmode="numeric" id="cashierPosSalesInput" class="flex-1 min-w-[10rem] border-2 border-gray-300 rounded-lg text-center py-2 font-bold text-lg" placeholder="ยังไม่ได้กรอก">
+                                    <input type="number" inputmode="none" id="cashierPosSalesInput" onclick="CashierModule.openPosSalesNumpad()" class="flex-1 min-w-[10rem] border-2 border-gray-300 rounded-lg text-center py-2 font-bold text-lg" placeholder="ยังไม่ได้กรอก">
                                     <span class="font-bold text-gray-500">บาท</span>
                                     <button id="cashierPosSalesSaveBtn" onclick="CashierModule.saveCashSales()" class="hidden bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2 rounded-lg">บันทึก</button>
                                 </div>
@@ -308,8 +308,8 @@
                             </div>
                             <!-- ================= end Phase 8 reconciliation summary ================= -->
                             <div class="flex flex-wrap gap-2">
-                                <button id="cashierSaveBtn" onclick="CashierModule.saveDraft()" class="hidden flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow">บันทึกฉบับร่าง</button>
-                                <button id="cashierFinalizeBtn" onclick="CashierModule.confirmFinalize()" class="hidden flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg shadow">ยืนยันรายการ</button>
+                                <button id="cashierSaveBtn" onclick="CashierModule.saveDraft()" class="hidden flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow">บันทึก</button>
+                                <button id="cashierFinalizeBtn" onclick="CashierModule.confirmFinalize()" class="hidden flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg shadow">ปิดยอดประจำวัน</button>
                                 <button id="cashierPrintBtn" onclick="CashierModule.printSheet()" class="hidden flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 rounded-lg shadow">ปริ้นใบตรวจนับ</button>
                             </div>
                             <button id="cashierNextDayBtn" onclick="CashierModule.openNextDayModal()" class="hidden w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-lg shadow">ตั้งเงินเปิดร้านวันถัดไป</button>
@@ -662,7 +662,7 @@
                 </div>
                 <div>
                     <label class="block text-gray-700 font-bold mb-2">จำนวนเงิน (บาท)</label>
-                    <input type="number" inputmode="numeric" pattern="[0-9]*" id="cashierMovementAmount" class="w-full border-2 border-gray-300 rounded-lg py-2.5 px-3 text-center text-xl font-bold">
+                    <input type="number" inputmode="none" id="cashierMovementAmount" onclick="CashierModule.openMovementAmountNumpad()" class="w-full border-2 border-gray-300 rounded-lg py-2.5 px-3 text-center text-xl font-bold">
                 </div>
                 <div>
                     <label class="block text-gray-700 font-bold mb-2">หมายเหตุ</label>
@@ -694,6 +694,35 @@
         </div>
     </div>
 
+    <!-- ================= Shared: numpad modal (Phase 8.1) — ใช้ร่วมกันสำหรับทุกช่องตัวเลขที่ต้องการ numpad แบบ popup (Cashier) ================= -->
+    <div id="staffNumpadModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[70] p-4" onclick="if(event.target===this)StaffNumpad.cancel()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-xs relative flex flex-col">
+            <div class="px-4 py-3 border-b text-center">
+                <p id="staffNumpadTitle" class="font-bold text-gray-700 text-sm"></p>
+            </div>
+            <div class="p-4">
+                <div id="staffNumpadDisplay" class="text-center text-4xl font-black text-blue-700 bg-gray-50 rounded-lg py-3 border-2 border-blue-300 shadow-inner mb-3" data-raw="">0</div>
+                <div class="grid grid-cols-3 gap-2">
+                    <button type="button" aria-label="1" onclick="StaffNumpad.press('1')" class="numpad-btn">1</button>
+                    <button type="button" aria-label="2" onclick="StaffNumpad.press('2')" class="numpad-btn">2</button>
+                    <button type="button" aria-label="3" onclick="StaffNumpad.press('3')" class="numpad-btn">3</button>
+                    <button type="button" aria-label="4" onclick="StaffNumpad.press('4')" class="numpad-btn">4</button>
+                    <button type="button" aria-label="5" onclick="StaffNumpad.press('5')" class="numpad-btn">5</button>
+                    <button type="button" aria-label="6" onclick="StaffNumpad.press('6')" class="numpad-btn">6</button>
+                    <button type="button" aria-label="7" onclick="StaffNumpad.press('7')" class="numpad-btn">7</button>
+                    <button type="button" aria-label="8" onclick="StaffNumpad.press('8')" class="numpad-btn">8</button>
+                    <button type="button" aria-label="9" onclick="StaffNumpad.press('9')" class="numpad-btn">9</button>
+                    <button type="button" aria-label="ล้างตัวเลข" onclick="StaffNumpad.press('clear')" class="numpad-btn" style="background:#fee2e2;color:#dc2626;">C</button>
+                    <button type="button" aria-label="0" onclick="StaffNumpad.press('0')" class="numpad-btn">0</button>
+                    <button type="button" aria-label="ลบตัวเลขล่าสุด" onclick="StaffNumpad.press('back')" class="numpad-btn" style="background:#f3f4f6;">⌫</button>
+                </div>
+            </div>
+            <div class="px-4 pb-4">
+                <button type="button" onclick="StaffNumpad.confirm()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg text-lg shadow">ยืนยัน</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ================= Shared: confirm modal + print area ================= -->
     <div id="confirmModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[200] px-4">
         <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
@@ -710,6 +739,7 @@
     <div id="printArea" class="hidden text-center font-mono bg-white text-black w-[58mm] mx-auto pb-4"></div>
 
     <script src="/staff/app.js"></script>
+    <script src="/staff/numpad.js"></script>
     <script src="/staff/kitchen.js"></script>
     <script src="/staff/queue.js"></script>
     <script src="/staff/tables.js"></script>

@@ -152,7 +152,7 @@ test('Cashier nav: a Cashier-role account sees the Cashier tab; a Kitchen-only a
 });
 
 // ---- D/E/F/G. live calculation, save draft, reload persistence, finalize locking ----
-test('Cashier opening flow: live calculation, save draft, reload persistence, and finalize locks the fields', async () => {
+test('Cashier opening flow: live calculation, save, reload persistence, and Opening stays freely editable (Phase 8.1: no separate finalize step)', async () => {
     const ctx = await browser.newContext();
     const page = await ctx.newPage();
     await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashier.username, app.personas.cashier.password);
@@ -172,7 +172,8 @@ test('Cashier opening flow: live calculation, save draft, reload persistence, an
 
     await page.click('#cashierSaveBtn');
     await page.waitForTimeout(500);
-    assert.match(await page.textContent('#cashierStatusBadge'), /ฉบับร่าง/, 'after saving, the status badge must show draft');
+    assert.match(await page.textContent('#cashierStatusBadge'), /กำลังบันทึก/, 'after an ordinary save, the status badge must use simple "still editable" wording, not a technical draft/finalized term');
+    assert.ok(await page.isHidden('#cashierFinalizeBtn'), 'Opening must never show a separate finalize/lock action — only Closing has the one true end-of-day action');
 
     await page.reload();
     await page.waitForTimeout(600);
@@ -183,14 +184,18 @@ test('Cashier opening flow: live calculation, save draft, reload persistence, an
     const persistedQty = await page.inputValue('.cashier-qty-input[data-denom="10"]');
     assert.equal(persistedQty, '35', 'the saved quantity must persist across a full page reload');
 
-    await page.click('#cashierFinalizeBtn');
-    await page.waitForTimeout(300);
-    await page.click('#confirmModal button:has-text("ตกลง")');
+    // เงินเปิดร้านต้องยังแก้ไขได้อิสระอีก — บันทึกทับด้วยค่าใหม่แล้วต้องเห็นค่าล่าสุดจริงๆ ไม่ใช่ถูกล็อกไปแล้ว
+    await page.fill('.cashier-qty-input[data-denom="10"]', '40');
+    await page.click('#cashierSaveBtn');
     await page.waitForTimeout(500);
-    assert.match(await page.textContent('#cashierStatusBadge'), /ยืนยันแล้ว/, 'after finalizing, the status badge must show finalized');
-    const isReadOnly = await page.getAttribute('.cashier-qty-input[data-denom="10"]', 'readonly');
-    assert.notEqual(isReadOnly, null, 'quantity fields must become read-only after finalization');
-    assert.ok(await page.isHidden('#cashierSaveBtn'), 'the Save button must disappear once finalized');
+    const isReadOnlyAfterSecondSave = await page.getAttribute('.cashier-qty-input[data-denom="10"]', 'readonly');
+    assert.equal(isReadOnlyAfterSecondSave, null, 'an ordinary save must never make the Opening fields read-only');
+    await page.reload();
+    await page.waitForTimeout(600);
+    await gotoCashierDate(page, '2030-01-15');
+    await page.click('#cashierTabOpening');
+    await page.waitForTimeout(400);
+    assert.equal(await page.inputValue('.cashier-qty-input[data-denom="10"]'), '40', 'the latest edit must be what persists — Opening can be revised as many times as needed before the day closes');
     await ctx.close();
 });
 
@@ -246,7 +251,7 @@ test('Cashier view-only account: quantity fields are read-only and Save/Finalize
     await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashierViewOnly.username, app.personas.cashierViewOnly.password);
     await page.click('#btn-cashier');
     await page.waitForTimeout(400);
-    await gotoCashierDate(page, '2030-01-15'); // ใบที่ persona อื่นยืนยันไว้แล้วในเทสก่อนหน้า
+    await gotoCashierDate(page, '2030-01-15'); // วันที่ persona อื่นบันทึกไว้แล้วในเทสก่อนหน้า (ยังเป็น "กำลังบันทึก" อยู่ — Phase 8.1 ไม่ finalize opening แยกต่างหากอีกต่อไป)
     await page.click('#cashierTabOpening');
     await page.waitForTimeout(400);
     assert.ok(await page.isHidden('#cashierSaveBtn'), 'a view-only account must not see the Save button');
@@ -340,20 +345,17 @@ test('Cashier daily reconciliation: full workflow — movements, void, POS sales
     const date = '2025-05-01';
     await gotoCashierDate(page, date);
 
-    // A. เงินเปิดร้าน — ต้อง finalize ก่อนถึงจะมี reconciliation ที่คำนวณได้
+    // A. เงินเปิดร้าน — (Phase 8.1) แค่บันทึกก็พอ ไม่ต้อง finalize แยกต่างหากอีกต่อไปก่อนจะเห็น reconciliation
     await page.click('#cashierTabOpening');
     await page.waitForTimeout(300);
     await page.fill('.cashier-qty-input[data-denom="1000"]', '5');
     await page.click('#cashierSaveBtn');
     await page.waitForTimeout(500);
-    await page.click('#cashierFinalizeBtn');
-    await page.waitForTimeout(300);
-    await page.click('#confirmModal button:has-text("ตกลง")');
-    await page.waitForTimeout(500);
+    assert.ok(await page.isHidden('#cashierFinalizeBtn'), 'Opening tab must never show a finalize action');
 
     await page.click('#cashierTabClosing');
     await page.waitForTimeout(400);
-    assert.ok(await page.isHidden('#cashierOpeningReminder'), 'opening finalized แล้ว ต้องไม่มีคำเตือนให้ยืนยันเงินเปิดร้านอีก');
+    assert.ok(await page.isHidden('#cashierOpeningReminder'), 'เงินเปิดร้านถูกบันทึกไว้แล้ว (แม้จะยังไม่ปิดยอด) ต้องไม่มีคำเตือนให้กรอกเงินเปิดร้านอีก');
 
     // B/C/D. เพิ่มเงินเข้า + เงินออก แล้วต้องปรากฏทันที
     await page.click('#cashierAddInBtn');
@@ -408,7 +410,7 @@ test('Cashier daily reconciliation: full workflow — movements, void, POS sales
     await page.waitForTimeout(300);
     await page.click('#confirmModal button:has-text("ตกลง")');
     await page.waitForTimeout(600);
-    assert.match(await page.textContent('#cashierStatusBadge'), /ยืนยันแล้ว/);
+    assert.match(await page.textContent('#cashierStatusBadge'), /ปิดยอดแล้ว/);
 
     // L/M. หลังปิดยอด: ปุ่มเพิ่มเงินเข้า/ออก และปุ่มบันทึกยอดขาย POS ต้องหายไป, ช่องกรอกยอดขาย POS ต้อง read-only
     assert.ok(await page.isHidden('#cashierAddInBtn'));
@@ -416,6 +418,13 @@ test('Cashier daily reconciliation: full workflow — movements, void, POS sales
     assert.ok(await page.isHidden('#cashierPosSalesSaveBtn'));
     const posReadOnly = await page.getAttribute('#cashierPosSalesInput', 'readonly');
     assert.notEqual(posReadOnly, null);
+
+    // (Phase 8.1) เงินเปิดร้านต้องถูกแช่แข็งไปพร้อมกันแบบ atomic ด้วย — แม้จะไม่เคย "ยืนยัน" แยกต่างหากมาก่อนเลยทั้งวัน
+    await page.click('#cashierTabOpening');
+    await page.waitForTimeout(400);
+    assert.match(await page.textContent('#cashierStatusBadge'), /ปิดยอดแล้ว/, 'Opening must be locked automatically together with Closing once the day closes');
+    const openingReadOnly = await page.getAttribute('.cashier-qty-input[data-denom="1000"]', 'readonly');
+    assert.notEqual(openingReadOnly, null);
 
     await ctx.close();
 });
@@ -436,16 +445,12 @@ test('Cashier stale Closing finalize (day revision): a second session\'s finaliz
         await gotoCashierDate(page, date);
     }
 
-    // เตรียมเงินเปิดร้าน + ยอดขาย POS + ปิดร้านฉบับร่างผ่าน A ก่อน (ให้ทั้งสอง session พร้อม finalize ได้)
+    // เตรียมเงินเปิดร้าน (แค่บันทึก ไม่ต้อง finalize แยก) + ยอดขาย POS + ปิดร้านฉบับร่างผ่าน A ก่อน (ให้ทั้งสอง session พร้อม finalize ได้)
     await pageA.click('#cashierTabOpening');
     await pageA.waitForTimeout(300);
     await pageA.fill('.cashier-qty-input[data-denom="1000"]', '5');
     await pageA.click('#cashierSaveBtn');
     await pageA.waitForTimeout(400);
-    await pageA.click('#cashierFinalizeBtn');
-    await pageA.waitForTimeout(300);
-    await pageA.click('#confirmModal button:has-text("ตกลง")');
-    await pageA.waitForTimeout(500);
 
     await pageA.click('#cashierTabClosing');
     await pageA.waitForTimeout(400);
@@ -505,5 +510,173 @@ test('Cashier view-only: can inspect movements/POS sales/reconciliation for a da
     assert.equal(posValue, '20000');
     assert.ok(await page.isVisible('#cashierReconciliationSection'), 'view-only ต้องยังเห็นแผงสรุปเงินสดได้');
 
+    await ctx.close();
+});
+
+// ==================== Phase 8.1: shared numpad ====================
+
+// ---- 21. Queue numpad still works (real interaction, not just structural) — extraction must not regress Queue's UX ----
+test('Queue numpad regression: digit entry, backspace, and switching between adults/children fields all still work after extraction into the shared module', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.owner.username, app.personas.owner.password);
+    await page.click('#btn-queue');
+    await page.waitForTimeout(400);
+    await page.click('#queueCreateBtnInline');
+    await page.waitForTimeout(300);
+    assert.ok(await page.isVisible('#createQueueModal'), 'the create-queue modal must open');
+
+    // ผู้ใหญ่ (field เริ่มต้น) — กด 1, 2 แล้วลบ 1 ตัว ต้องเหลือ "1"
+    await page.click('#numpadPanel button:has-text("1")');
+    await page.click('#numpadPanel button:has-text("2")');
+    assert.equal(await page.textContent('#qPaxAdultsDisplay'), '12');
+    await page.click('#numpadPanel button[style*="f3f4f6"]'); // backspace (⌫)
+    assert.equal(await page.textContent('#qPaxAdultsDisplay'), '1');
+    assert.equal(await page.inputValue('#qPaxAdults'), '1');
+
+    // สลับไปเด็ก — ต้องเริ่มจากค่าว่าง/0 ใหม่ ไม่รับค่าที่เพิ่งกรอกของผู้ใหญ่มาปน
+    await page.click('#qPaxChildrenDisplay');
+    assert.equal(await page.textContent('#qPaxChildrenDisplay'), '0');
+    await page.click('#numpadPanel button:has-text("3")');
+    assert.equal(await page.textContent('#qPaxChildrenDisplay'), '3');
+    assert.equal(await page.inputValue('#qPaxChildren'), '3');
+    assert.equal(await page.inputValue('#qPax'), '4', 'pax รวมต้องเป็นผู้ใหญ่(1) + เด็ก(3) = 4');
+
+    // ปุ่ม C (clear) ต้องล้างกลับเป็น 0
+    await page.click('#numpadPanel button:has-text("C")');
+    assert.equal(await page.textContent('#qPaxChildrenDisplay'), '0');
+    assert.equal(await page.inputValue('#qPax'), '1', 'หลัง clear เด็ก pax รวมต้องเหลือแค่ผู้ใหญ่(1)');
+
+    await ctx.close();
+});
+
+// ---- 22-28. Cashier denomination numpad: open, digits, backspace, zero, confirm, live subtotal/total updates ----
+test('Cashier denomination numpad: opens on tap, digits/backspace/zero/confirm all work, and totals update live', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashier.username, app.personas.cashier.password);
+    await page.click('#btn-cashier');
+    await page.waitForTimeout(400);
+    await gotoCashierDate(page, '2025-09-01');
+    await page.click('#cashierTabOpening');
+    await page.waitForTimeout(300);
+
+    // 22/23. แตะช่อง 10 บาท ต้องเปิด numpad กลาง
+    await page.click('.cashier-qty-input[data-denom="10"]');
+    await page.waitForTimeout(200);
+    assert.ok(await page.isVisible('#staffNumpadModal'), 'tapping a denomination field must open the shared numpad');
+    await page.click('#staffNumpadModal button:has-text("3")');
+    await page.click('#staffNumpadModal button:has-text("5")');
+    assert.equal(await page.textContent('#staffNumpadDisplay'), '35');
+
+    // 24. backspace
+    await page.click('#staffNumpadModal button:has-text("⌫")');
+    assert.equal(await page.textContent('#staffNumpadDisplay'), '3');
+
+    // 25. ปุ่ม 0
+    await page.click('#staffNumpadModal button:has-text("0")');
+    assert.equal(await page.textContent('#staffNumpadDisplay'), '30');
+
+    // 26. ยืนยัน — modal ต้องปิด และค่าต้องเข้าช่องเดิม พร้อมยอดรวมอัปเดตสด (27/28)
+    await page.click('#staffNumpadModal button:has-text("ยืนยัน")');
+    await page.waitForTimeout(200);
+    assert.ok(await page.isHidden('#staffNumpadModal'), 'confirming must close the numpad');
+    assert.equal(await page.inputValue('.cashier-qty-input[data-denom="10"]'), '30');
+    const subtotal = await page.textContent('[data-subtotal-for="10"]');
+    assert.equal(subtotal.replace(/[^\d]/g, ''), '300', '27. denomination subtotal must update live (10 x 30 = 300)');
+    const grandTotal = await page.textContent('#cashierGrandTotal');
+    assert.equal(grandTotal.replace(/[^\d]/g, ''), '300', '28. grand total must reflect the numpad-entered value immediately');
+
+    // 32. เปิด numpad ของช่องอื่นต่อ — ต้องไม่รับค่าเก่าของช่อง 10 บาทมาปน (เริ่มจาก 0 ของช่องนั้นจริงๆ)
+    await page.click('.cashier-qty-input[data-denom="1000"]');
+    await page.waitForTimeout(200);
+    assert.equal(await page.textContent('#staffNumpadDisplay'), '0', 'switching to a different numeric target must not leak the previous target\'s value');
+    await page.click('#staffNumpadModal button:has-text("2")');
+    await page.click('#staffNumpadModal button:has-text("ยืนยัน")');
+    await page.waitForTimeout(200);
+    assert.equal(await page.inputValue('.cashier-qty-input[data-denom="1000"]'), '2');
+    assert.equal(await page.inputValue('.cashier-qty-input[data-denom="10"]'), '30', 'confirming the second field must not have altered the first field\'s already-committed value');
+
+    // 33. numpad ยังทำงานได้ตามปกติหลังสลับแท็บออกไปแล้วกลับมา
+    await page.click('#cashierTabClosing');
+    await page.waitForTimeout(300);
+    await page.click('#cashierTabOpening');
+    await page.waitForTimeout(300);
+    await page.click('.cashier-qty-input[data-denom="5"]');
+    await page.waitForTimeout(200);
+    assert.ok(await page.isVisible('#staffNumpadModal'), 'the numpad must still open correctly after navigating away and back');
+    await page.click('#staffNumpadModal button:has-text("4")');
+    await page.click('#staffNumpadModal button:has-text("ยืนยัน")');
+    await page.waitForTimeout(200);
+    assert.equal(await page.inputValue('.cashier-qty-input[data-denom="5"]'), '4');
+
+    // บันทึกไว้จริงๆ ให้เทสต์ view-only (34) มีข้อมูลของวันที่นี้ให้เห็นบนหน้าจอ
+    await page.click('#cashierSaveBtn');
+    await page.waitForTimeout(400);
+
+    await ctx.close();
+});
+
+// ---- 29/30/31. POS / Cash In / Cash Out amounts through the shared numpad ----
+test('Cashier POS/movement numpad: the manual POS field and the movement-amount field both work through the shared numpad', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashier.username, app.personas.cashier.password);
+    await page.click('#btn-cashier');
+    await page.waitForTimeout(400);
+    await gotoCashierDate(page, '2025-09-02');
+    await page.click('#cashierTabClosing');
+    await page.waitForTimeout(400);
+
+    // 29. ยอดขายเงินสดตาม POS ผ่าน numpad
+    await page.click('#cashierPosSalesInput');
+    await page.waitForTimeout(200);
+    assert.ok(await page.isVisible('#staffNumpadModal'), 'tapping the POS field must open the shared numpad');
+    await page.click('#staffNumpadModal button:has-text("1")');
+    await page.click('#staffNumpadModal button:has-text("0")');
+    await page.click('#staffNumpadModal button:has-text("0")');
+    await page.click('#staffNumpadModal button:has-text("0")');
+    await page.click('#staffNumpadModal button:has-text("0")');
+    await page.click('#staffNumpadModal button:has-text("ยืนยัน")');
+    await page.waitForTimeout(200);
+    assert.equal(await page.inputValue('#cashierPosSalesInput'), '10000');
+    await page.click('#cashierPosSalesSaveBtn');
+    await page.waitForTimeout(400);
+
+    // 30/31. จำนวนเงินเข้า ผ่าน numpad ใน movement modal (numpad ซ้อนอยู่บน modal ได้โดยไม่พัง)
+    await page.click('#cashierAddInBtn');
+    await page.waitForTimeout(300);
+    await page.click('#cashierMovementAmount');
+    await page.waitForTimeout(200);
+    assert.ok(await page.isVisible('#staffNumpadModal'), 'tapping the movement amount field must open the numpad on top of the movement modal');
+    await page.click('#staffNumpadModal button:has-text("5")');
+    await page.click('#staffNumpadModal button:has-text("0")');
+    await page.click('#staffNumpadModal button:has-text("0")');
+    await page.click('#staffNumpadModal button:has-text("ยืนยัน")');
+    await page.waitForTimeout(200);
+    assert.ok(await page.isHidden('#staffNumpadModal'), 'the numpad must close, leaving the movement modal intact underneath');
+    assert.ok(await page.isVisible('#cashierMovementModal'), 'the movement modal itself must not have been dismissed by the numpad');
+    assert.equal(await page.inputValue('#cashierMovementAmount'), '500');
+    await page.click('#cashierMovementModal button:has-text("บันทึกรายการ")');
+    await page.waitForTimeout(500);
+    const movementsText = await page.textContent('#cashierMovementsList');
+    assert.match(movementsText, /500/);
+
+    await ctx.close();
+});
+
+// ---- 34. view-only Cashier cannot mutate through the numpad ----
+test('Cashier view-only: tapping a denomination field never opens the numpad (no mutation path at all)', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashierViewOnly.username, app.personas.cashierViewOnly.password);
+    await page.click('#btn-cashier');
+    await page.waitForTimeout(400);
+    await gotoCashierDate(page, '2025-09-01'); // วันที่มีข้อมูลจากเทสต์ก่อนหน้า
+    await page.click('#cashierTabOpening');
+    await page.waitForTimeout(400);
+    await page.click('.cashier-qty-input[data-denom="10"]');
+    await page.waitForTimeout(300);
+    assert.ok(await page.isHidden('#staffNumpadModal'), 'a view-only account must never be able to open the numpad on a read-only field');
     await ctx.close();
 });

@@ -69,10 +69,11 @@ window.CashierModule = (function () {
     }
 
     // ===== ฟอร์มหลัก (เปิดร้าน/ปิดร้านของวันที่เลือก) =====
+    // (Phase 8.1) inputmode="none" กัน native on-screen keyboard ของมือถือ/แท็บเล็ตโผล่ทับ numpad กลาง (StaffNumpad) — คีย์บอร์ดจริงยังพิมพ์ได้ตามปกติ (inputmode ไม่มีผลกับคีย์บอร์ดจริงเลย)
     function denomRowHtml(denom) {
         return `<tr data-denom="${denom}">
             <td class="py-1.5 font-semibold text-gray-700">${SCREEN_LABELS[denom]}</td>
-            <td class="text-center py-1.5"><input type="number" inputmode="numeric" pattern="[0-9]*" min="0" step="1" class="cashier-qty-input w-20 md:w-24 border-2 border-gray-300 rounded-lg text-center py-1.5 font-bold" data-denom="${denom}" value="0"></td>
+            <td class="text-center py-1.5"><input type="number" inputmode="none" min="0" step="1" class="cashier-qty-input w-20 md:w-24 border-2 border-gray-300 rounded-lg text-center py-1.5 font-bold" data-denom="${denom}" value="0" onclick="CashierModule.openDenomNumpad(${denom})"></td>
             <td class="text-right py-1.5 font-bold" data-subtotal-for="${denom}">฿0</td>
         </tr>`;
     }
@@ -102,6 +103,23 @@ window.CashierModule = (function () {
         if (currentType === 'closing') renderReconciliationLivePreview(coinTotal + banknoteTotal);
     }
 
+    // (Phase 8.1) numpad กลาง (StaffNumpad) สำหรับจำนวนเหรียญ/แบงก์แต่ละชนิด — แตะช่องไหนก็เปิด popup ของช่องนั้น ยืนยันแล้วอัปเดต preview สดทันทีเหมือนพิมพ์เอง
+    function openDenomNumpad(denom) {
+        if (!formEditable()) return;
+        const inputEl = document.querySelector(`#module-cashier .cashier-qty-input[data-denom="${denom}"]`);
+        window.StaffNumpad.openModal({
+            title: `จำนวน ${SCREEN_LABELS[denom]}`,
+            initialValue: quantities[denom] || 0,
+            maxDigits: 6,
+            sourceInputEl: inputEl,
+            onConfirm: (value) => {
+                quantities[denom] = sanitizeQtyInput(value);
+                if (inputEl) inputEl.value = quantities[denom];
+                renderTotals();
+            },
+        });
+    }
+
     function updateTabStyles() {
         const activeCls = ['bg-blue-600', 'text-white', 'border-blue-600'];
         const inactiveCls = ['bg-white', 'text-gray-600', 'border-gray-300'];
@@ -124,14 +142,15 @@ window.CashierModule = (function () {
         document.getElementById('cashierNoDataState').classList.toggle('hidden', !noData);
         document.getElementById('cashierFormArea').classList.toggle('hidden', noData);
 
+        // (Phase 8.1) คำศัพท์ผู้ใช้ให้เรียบง่าย — ซ่อนคำเชิงเทคนิค (draft/finalized) ไว้ภายในเท่านั้น
         const badge = document.getElementById('cashierStatusBadge');
         if (currentSheet) {
             badge.classList.remove('hidden');
             if (currentSheet.status === 'finalized') {
-                badge.textContent = 'ยืนยันแล้ว';
+                badge.textContent = 'ปิดยอดแล้ว';
                 badge.className = 'inline-block text-xs font-bold px-3 py-1 rounded-full bg-green-100 text-green-800 border border-green-300';
             } else {
-                badge.textContent = 'ฉบับร่าง';
+                badge.textContent = 'กำลังบันทึก';
                 badge.className = 'inline-block text-xs font-bold px-3 py-1 rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300';
             }
         } else {
@@ -159,15 +178,16 @@ window.CashierModule = (function () {
             const parts = [];
             if (currentSheet.created_by) parts.push(`บันทึกโดย ${StaffApp.esc(currentSheet.created_by.display_name)}`);
             if (currentSheet.status === 'finalized' && currentSheet.finalized_by) {
-                parts.push(`ยืนยันโดย ${StaffApp.esc(currentSheet.finalized_by.display_name)}`);
+                parts.push(`ปิดยอดโดย ${StaffApp.esc(currentSheet.finalized_by.display_name)}`);
             }
             meta.textContent = parts.join(' • ');
         } else {
-            meta.textContent = 'ยังไม่มีการบันทึก — กรอกจำนวนแล้วกด "บันทึกฉบับร่าง" เพื่อเริ่มนับ';
+            meta.textContent = 'ยังไม่มีการบันทึก — กรอกจำนวนแล้วกด "บันทึก" เพื่อเริ่มนับ';
         }
 
         document.getElementById('cashierSaveBtn').classList.toggle('hidden', !editable);
-        document.getElementById('cashierFinalizeBtn').classList.toggle('hidden', !(hasManage && currentSheet && currentSheet.status === 'draft'));
+        // (Phase 8.1) ปุ่มปิดยอดประจำวันแสดงเฉพาะแท็บปิดร้านเท่านั้น — เงินเปิดร้านไม่มีปุ่มยืนยัน/ปิดยอดแยกต่างหากอีกต่อไป (แก้ไขได้อิสระผ่าน "บันทึก" จนกว่าจะปิดยอดทั้งวัน)
+        document.getElementById('cashierFinalizeBtn').classList.toggle('hidden', !(hasManage && currentType === 'closing' && currentSheet && currentSheet.status === 'draft'));
         document.getElementById('cashierPrintBtn').classList.toggle('hidden', !currentSheet);
         document.getElementById('cashierNextDayBtn').classList.toggle('hidden', !(currentType === 'closing' && hasManage));
 
@@ -197,8 +217,9 @@ window.CashierModule = (function () {
         }
 
         const hasManage = canManage();
-        const openingFinalized = !!(dayOpeningSummary && dayOpeningSummary.status === 'finalized');
-        document.getElementById('cashierOpeningReminder').classList.toggle('hidden', openingFinalized);
+        // (Phase 8.1) เงินเปิดร้านแค่ต้อง "มีอยู่" (เคย save แล้วอย่างน้อยหนึ่งครั้ง) ไม่ต้อง "ยืนยัน" แยกต่างหากก่อนอีกต่อไป
+        const openingExists = !!dayOpeningSummary;
+        document.getElementById('cashierOpeningReminder').classList.toggle('hidden', openingExists);
 
         const dayLocked = !!(currentSheet && currentSheet.status === 'finalized');
         const canMutateToday = hasManage && !dayLocked;
@@ -404,40 +425,41 @@ window.CashierModule = (function () {
         return v > 0 ? `เงินเกิน ${formatTHB(v)}` : `เงินขาด ${formatTHB(Math.abs(v))}`;
     }
 
+    // (Phase 8.1) "ปิดยอดประจำวัน" เป็นการกระทำที่ย้อนกลับไม่ได้เพียงจุดเดียวของ Cashier — ปุ่มนี้แสดงเฉพาะแท็บปิดร้านเท่านั้น (เงินเปิดร้านไม่มีการ "ยืนยัน" แยกต่างหากอีกต่อไป แก้ไขได้อิสระตลอดวันผ่านปุ่ม "บันทึก" ธรรมดา)
     function confirmFinalize() {
-        if (!currentSheet || currentSheet.status !== 'draft') return;
-        if (currentType === 'closing') {
-            if (!reconciliation || reconciliation.opening_cash === null) {
-                alert('กรุณายืนยันเงินเปิดร้านก่อนปิดยอดประจำวัน');
-                return;
-            }
-            if (reconciliation.cash_sales === null) {
-                alert('กรุณากรอกยอดขายเงินสดตาม POS ก่อนปิดยอด');
-                return;
-            }
-            const liveActual = quantitiesGrandTotalLive();
-            const liveVariance = liveActual - reconciliation.expected_cash;
-            const summary = [
-                `เงินเปิด: ${formatTHB(reconciliation.opening_cash)}`,
-                `ยอดขายเงินสด POS: ${formatTHB(reconciliation.cash_sales)}`,
-                `เงินเข้า: +${formatTHB(reconciliation.cash_in)}`,
-                `เงินออก: -${formatTHB(reconciliation.cash_out)}`,
-                `เงินที่ควรมี: ${formatTHB(reconciliation.expected_cash)}`,
-                `เงินนับจริง: ${formatTHB(liveActual)}`,
-                `ผลต่าง: ${varianceDisplayText(liveVariance)}`,
-                '',
-                'ยืนยันปิดยอดเงินสดประจำวัน?',
-                'หลังยืนยันแล้ว จะไม่สามารถเพิ่ม/ยกเลิกรายการเงินสด หรือแก้ยอด POS และรายการนับเงินของวันนี้ได้',
-            ].join('\n');
-            StaffApp.showConfirm(summary, doFinalize);
+        if (!currentSheet || currentSheet.status !== 'draft' || currentType !== 'closing') return;
+        if (!reconciliation || reconciliation.opening_cash === null) {
+            alert('กรุณากรอกเงินเปิดร้านก่อนปิดยอดประจำวัน');
             return;
         }
-        StaffApp.showConfirm('ยืนยันรายการตรวจนับเงินสด? หลังยืนยันแล้ว รายการนี้จะไม่สามารถแก้ไขได้', doFinalize);
+        if (reconciliation.cash_sales === null) {
+            alert('กรุณากรอกยอดขายเงินสดตาม POS ก่อนปิดยอด');
+            return;
+        }
+        const liveActual = quantitiesGrandTotalLive();
+        const liveVariance = liveActual - reconciliation.expected_cash;
+        const summary = [
+            `เงินเปิดร้าน: ${formatTHB(reconciliation.opening_cash)}`,
+            `ยอดขายเงินสดจาก POS: ${formatTHB(reconciliation.cash_sales)}`,
+            `เงินเข้า: +${formatTHB(reconciliation.cash_in)}`,
+            `เงินออก: -${formatTHB(reconciliation.cash_out)}`,
+            `เงินที่ควรมี: ${formatTHB(reconciliation.expected_cash)}`,
+            `เงินนับจริง: ${formatTHB(liveActual)}`,
+            varianceDisplayText(liveVariance),
+            '',
+            'ยืนยันปิดยอดประจำวัน?',
+            'หลังปิดยอดแล้ว ข้อมูลเงินสดของวันนี้จะไม่สามารถแก้ไขได้',
+        ].join('\n');
+        StaffApp.showConfirm(summary, doFinalize);
     }
     async function doFinalize() {
         if (!currentSheet) return;
         const payload = {};
-        if (currentType === 'closing') payload.expected_day_revision = dayState.revision;
+        if (currentType === 'closing') {
+            payload.expected_day_revision = dayState.revision;
+            // ต้องส่ง version ของเงินเปิดร้านปัจจุบันไปด้วยเสมอถ้ายังเป็น draft อยู่ — เซิร์ฟเวอร์จะแช่แข็งมันไปพร้อมกับปิดยอดแบบ atomic (ไม่ต้องแยก "ยืนยันเงินเปิดร้าน" ก่อนอีกต่อไป)
+            if (dayOpeningSummary && dayOpeningSummary.status === 'draft') payload.expected_opening_version = dayOpeningSummary.version;
+        }
         const res = await StaffApp.apiFetch(`/api/cashier/sheets/${currentSheet.id}/finalize`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -445,9 +467,10 @@ window.CashierModule = (function () {
         });
         if (!res) return;
         if (res.status === 409) { await handleConflict(res); return; }
-        if (!res.ok) { const data = await res.json().catch(() => ({})); alert(data.error || 'ยืนยันไม่สำเร็จ'); return; }
+        if (!res.ok) { const data = await res.json().catch(() => ({})); alert(data.error || 'ปิดยอดไม่สำเร็จ'); return; }
         const data = await res.json();
         currentSheet = data.sheet;
+        if (data.opening) dayOpeningSummary = data.opening; // เงินเปิดร้านถูกแช่แข็งไปพร้อมกันแล้ว — อัปเดตสถานะในหน่วยความจำทันที ไม่ต้องรอ reload
         if (currentType === 'closing') await loadDayData();
         render();
     }
@@ -693,6 +716,17 @@ window.CashierModule = (function () {
         document.getElementById('cashierMovementModal').classList.add('hidden');
         movementModalDirection = null;
     }
+    // (Phase 8.1) numpad กลางสำหรับจำนวนเงินเข้า/ออก — เปิดซ้อนบน movement modal ได้เลย (z-index สูงกว่า) ยืนยันแล้วเติมค่ากลับเข้าช่องเดิม ไม่กระทบ modal ที่เปิดอยู่
+    function openMovementAmountNumpad() {
+        const inputEl = document.getElementById('cashierMovementAmount');
+        window.StaffNumpad.openModal({
+            title: 'จำนวนเงิน (บาท)',
+            initialValue: Number(inputEl.value) || 0,
+            maxDigits: 9,
+            sourceInputEl: inputEl,
+            onConfirm: (value) => { inputEl.value = value; },
+        });
+    }
     async function submitMovement() {
         const errEl = document.getElementById('cashierMovementError');
         errEl.classList.add('hidden');
@@ -756,6 +790,20 @@ window.CashierModule = (function () {
         closeVoidModal();
         await loadDayData();
         renderClosingExtras();
+    }
+
+    // (Phase 8.1) numpad กลางสำหรับยอดขายเงินสด POS — เติมค่ากลับเข้าช่อง ยังต้องกด "บันทึก" แยกต่างหากเพื่อส่งขึ้นเซิร์ฟเวอร์เหมือนเดิม
+    function openPosSalesNumpad() {
+        const dayLocked = !!(currentSheet && currentSheet.status === 'finalized');
+        if (!canManage() || dayLocked) return;
+        const inputEl = document.getElementById('cashierPosSalesInput');
+        window.StaffNumpad.openModal({
+            title: 'ยอดขายเงินสดตาม POS (บาท)',
+            initialValue: Number(inputEl.value) || 0,
+            maxDigits: 9,
+            sourceInputEl: inputEl,
+            onConfirm: (value) => { inputEl.value = value; },
+        });
     }
 
     async function saveCashSales() {
@@ -825,5 +873,8 @@ window.CashierModule = (function () {
         closeVoidModal,
         confirmVoidSubmit,
         saveCashSales,
+        openDenomNumpad,
+        openPosSalesNumpad,
+        openMovementAmountNumpad,
     };
 })();

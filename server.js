@@ -2086,9 +2086,11 @@ app.put('/api/cashier/sheets/:type', requireAuth, requirePermission(PERMISSIONS.
 // ตอนนี้รวมเป็น UPDATE ... WHERE status = 'draft' คำสั่งเดียว แล้วเช็ค affected rows แทน — ผ่าน withTransaction (คิว serialize ระดับแอป
 // เดียวกับ PUT/prepare-next-day) เพื่อไม่ให้ statement เดี่ยวๆ นี้ไปแทรกกลางธุรกรรม BEGIN...COMMIT ของ sheet อื่นบน connection เดียวกันโดยบังเอิญ
 // มีแค่ request เดียวเท่านั้นที่ WHERE จะ match — คนแพ้ affected rows = 0 ไม่แตะ finalized_by/finalized_at ของตัวเองเข้าไปในแถวเลยแม้แต่นิดเดียว
-// (Phase 8) เฉพาะ sheet_type='closing' เท่านั้นที่ต้องผ่านเงื่อนไข reconciliation เพิ่ม (opening วันเดียวกัน finalized แล้ว + กรอกยอดขาย POS แล้ว + day revision ตรงกับที่ client ถืออยู่)
-// — opening finalize ไม่แตะ/ไม่รู้จัก reconciliation เลยแม้แต่น้อย ตรงตามข้อกำหนด "Opening finalization remains independent"
-// ทุกเงื่อนไข (status/version ของ sheet เอง + เงื่อนไข Phase 8 ของ closing) ตรวจภายใน withTransaction เดียวกันทั้งหมด — กัน race ระหว่าง movement/void/แก้ยอด POS กับ finalize (ดู section 18-20 ของข้อกำหนด)
+// (Phase 8.1) ปิดยอดประจำวันคือจุดเดียวที่ล็อกทั้งวัน — ไม่มี "ยืนยันเงินเปิดร้าน" แยกต่างหากอีกต่อไป เงินเปิดร้านแก้ไขได้อิสระตลอดวันผ่าน PUT ปกติ (มี version guard เดิมของ Phase 7.1 อยู่แล้ว)
+// เมื่อ sheet_type='closing' ถูก finalize: เงินเปิดร้านของวันเดียวกัน (ถ้ายังเป็น draft อยู่) จะถูกแช่แข็งไปพร้อมกันแบบ atomic ในธุรกรรมเดียวกันนี้เลย ใช้ค่าปัจจุบันของมัน ณ ขณะนั้น
+// ไม่ต้องมีการ "ยืนยัน" เงินเปิดร้านแยกต่างหากก่อนหน้าอีกต่อไป — แค่ต้อง "มีอยู่จริง" (เคย save อย่างน้อยหนึ่งครั้ง) เท่านั้น (ดูข้อกำหนด Phase 8.1 section 5)
+// ใบเปิดร้านที่ finalized ไปแล้วจากระบบเดิมก่อนหน้านี้ (เช่นจาก Phase 7/8 ที่เคยกด "ยืนยันรายการ" เอง) ยังคงใช้งานได้ปกติ — ข้ามการแช่แข็งซ้ำ ไม่ต้องเช็ค version ของมันอีก (มันนิ่งอยู่แล้ว)
+// ทุกเงื่อนไข (status/version ของ sheet เอง + เงื่อนไข Phase 8 ของ closing) ตรวจภายใน withTransaction เดียวกันทั้งหมด — กัน race ระหว่าง movement/void/แก้ยอด POS/แก้เงินเปิดร้าน กับ finalize (ดู section 18-20 ของข้อกำหนด Phase 8, section 20 ของ Phase 8.1)
 app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
     const sheetId = parseInt(req.params.id, 10);
     if (!Number.isInteger(sheetId)) return res.status(400).json({ error: 'invalid_id' });
@@ -2097,21 +2099,29 @@ app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERM
         if (!before) return res.status(404).json({ error: 'not_found' });
 
         let expectedDayRevision = null;
+        let expectedOpeningVersion = null;
         if (before.sheet_type === 'closing') {
             expectedDayRevision = Number(req.body && req.body.expected_day_revision);
             if (!Number.isInteger(expectedDayRevision) || expectedDayRevision < 0) {
                 return res.status(400).json({ error: 'ต้องระบุ expected_day_revision ให้ถูกต้อง' });
             }
+            // expected_opening_version จำเป็นเฉพาะตอนเงินเปิดร้านยังเป็น draft อยู่ (ต้องแช่แข็งไปพร้อมกันตอนนี้) — ถ้า finalized ไปแล้วจากที่อื่นก่อนหน้า ไม่ต้องส่งมาก็ได้ (เช็คอีกทีในธุรกรรม)
+            if (req.body && req.body.expected_opening_version !== undefined && req.body.expected_opening_version !== null) {
+                expectedOpeningVersion = Number(req.body.expected_opening_version);
+                if (!Number.isInteger(expectedOpeningVersion) || expectedOpeningVersion < 1) {
+                    return res.status(400).json({ error: 'expected_opening_version ไม่ถูกต้อง' });
+                }
+            }
         }
 
         let conflictReason = null;
+        let openingIdToReturn = null;
         const updateResult = await withTransaction(async () => {
             if (before.sheet_type === 'closing') {
                 const openingRow = await getCashSheetRow(before.business_date, 'opening');
-                if (!openingRow || openingRow.status !== 'finalized') {
-                    conflictReason = 'opening_not_finalized';
-                    return null;
-                }
+                if (!openingRow) { conflictReason = 'opening_missing'; return null; }
+                openingIdToReturn = openingRow.id;
+
                 const dayState = await getDayStateRow(before.business_date);
                 if (!dayState || dayState.manual_cash_sales_baht === null) {
                     conflictReason = 'cash_sales_missing';
@@ -2121,6 +2131,16 @@ app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERM
                     conflictReason = 'stale_day_revision';
                     return null;
                 }
+
+                if (openingRow.status === 'draft') {
+                    if (!Number.isInteger(expectedOpeningVersion)) { conflictReason = 'opening_missing_version'; return null; }
+                    const openingUpdateResult = await dbRunAsync(
+                        "UPDATE cash_count_sheets SET status = 'finalized', finalized_by = ?, finalized_at = CURRENT_TIMESTAMP, updated_by = ?, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ? AND status = 'draft' AND version = ?",
+                        [req.authUser.id, req.authUser.id, openingRow.id, expectedOpeningVersion]
+                    );
+                    if (openingUpdateResult.changes === 0) { conflictReason = 'opening_stale_version'; return null; }
+                }
+                // openingRow.status === 'finalized' อยู่แล้ว (เช่นใบเก่าจากระบบก่อนหน้า) — ข้ามไปเฉยๆ ไม่ต้องแตะ ไม่ต้องเช็ค version
             }
             return dbRunAsync(
                 "UPDATE cash_count_sheets SET status = 'finalized', finalized_by = ?, finalized_at = CURRENT_TIMESTAMP, updated_by = ?, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ? AND status = 'draft'",
@@ -2130,7 +2150,9 @@ app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERM
 
         if (conflictReason) {
             const messages = {
-                opening_not_finalized: 'กรุณายืนยันเงินเปิดร้านก่อนปิดยอดประจำวัน',
+                opening_missing: 'กรุณากรอกเงินเปิดร้านก่อนปิดยอดประจำวัน',
+                opening_missing_version: 'ข้อมูลเงินเปิดร้านอาจไม่ใช่ฉบับล่าสุด กรุณาโหลดข้อมูลล่าสุดก่อนปิดยอด',
+                opening_stale_version: 'เงินเปิดร้านถูกแก้ไขจากอุปกรณ์อื่น กรุณาโหลดข้อมูลล่าสุดก่อนปิดยอด',
                 cash_sales_missing: 'กรุณากรอกยอดขายเงินสดตาม POS ก่อนปิดยอด',
                 stale_day_revision: 'ข้อมูลเงินเข้า/ออกหรือยอดขาย POS มีการเปลี่ยนแปลงระหว่างที่กำลังปิดยอด กรุณาโหลดข้อมูลล่าสุด',
             };
@@ -2139,7 +2161,10 @@ app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERM
         if (!updateResult || updateResult.changes === 0) {
             return res.status(409).json({ error: 'ใบตรวจนับนี้ยืนยันไปแล้ว', conflict_reason: 'finalized' });
         }
-        res.json({ sheet: await summarizeCashSheet(await getCashSheetById(sheetId)) });
+
+        const response = { sheet: await summarizeCashSheet(await getCashSheetById(sheetId)) };
+        if (openingIdToReturn) response.opening = await summarizeCashSheet(await getCashSheetById(openingIdToReturn));
+        res.json(response);
     } catch (e) {
         console.error(`[cashier] ยืนยันใบตรวจนับไม่สำเร็จ (id=${sheetId}):`, e.message);
         res.status(500).json({ error: 'internal_error' });
@@ -2344,8 +2369,10 @@ async function summarizeDayState(row) {
 
 // จุดเดียวที่คำนวณ opening_cash/cash_sales/cash_in/cash_out/expected_cash/actual_cash/variance/status ทั้งหมด — ไม่มีทางอื่นในระบบที่คำนวณตัวเลขพวกนี้ซ้ำอีก
 // legacy_incomplete: ปิดยอด(closing finalized)ไปแล้วตั้งแต่ก่อนมี reconciliation ของ Phase 8 (ไม่มี day_state/ยอดขาย POS เลย) — ไม่ใช่ "ยังไม่เสร็จของวันนี้" (incomplete) ต้องแยกกันชัดเจน ห้าม fabricate ยอดขายเป็น 0
+// (Phase 8.1) เงินเปิดร้านใช้ยอดปัจจุบันของ opening sheet เสมอ ไม่ว่าจะเป็น draft หรือ finalized ก็ตาม — Opening ไม่ต้อง "ยืนยัน" แยกต่างหากอีกต่อไปก่อนจะเห็น reconciliation ระหว่างวัน
+// (จะถูกแช่แข็งพร้อมกับ Closing แบบ atomic ตอนกด "ปิดยอดประจำวัน" เท่านั้น — ดู endpoint finalize ด้านล่าง) ค่านี้จึงเป็นแค่ตัวเลข preview ระหว่างวัน ไม่ใช่ค่าสุดท้ายจนกว่าจะปิดยอดจริง
 function computeReconciliation(openingSummary, closingSummary, dayStateRow, movements) {
-    const openingCash = (openingSummary && openingSummary.status === 'finalized') ? openingSummary.grand_total : null;
+    const openingCash = openingSummary ? openingSummary.grand_total : null;
     const cashSales = (dayStateRow && dayStateRow.manual_cash_sales_baht !== null && dayStateRow.manual_cash_sales_baht !== undefined) ? dayStateRow.manual_cash_sales_baht : null;
     const activeMovements = movements.filter((m) => m.status === 'active');
     const cashIn = activeMovements.filter((m) => m.direction === 'cash_in').reduce((s, m) => s + m.amount_baht, 0);

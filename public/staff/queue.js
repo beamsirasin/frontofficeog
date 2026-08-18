@@ -16,6 +16,41 @@ window.QueueModule = (function () {
     let activeNumpadField = 'adults';
     let editActiveNumpadField = 'adults';
     const editPaxValues = { adults: 0, children: 0 };
+    // (Phase 8.1) ตัวสะสมหลักตัวเลขของ numpad สร้าง/แก้ไขคิว — ใช้ตัวช่วยกลาง StaffNumpad.createController ร่วมกับ Cashier แทนโค้ดคำนวณ raw string ที่เคย copy-paste ไว้สองชุด
+    let numpadController = null;
+    let editNumpadController = null;
+    function ensureNumpadController() {
+        if (!numpadController) {
+            numpadController = window.StaffNumpad.createController(document.getElementById('numpadDisplay'), {
+                maxDigits: 3,
+                onChange: (num, raw) => {
+                    const shown = raw === '' ? '0' : String(num);
+                    if (activeNumpadField === 'adults') { document.getElementById('qPaxAdults').value = num; document.getElementById('qPaxAdultsDisplay').innerText = shown; }
+                    else { document.getElementById('qPaxChildren').value = num; document.getElementById('qPaxChildrenDisplay').innerText = shown; }
+                    const a = parseInt(document.getElementById('qPaxAdults').value) || 0;
+                    const c = parseInt(document.getElementById('qPaxChildren').value) || 0;
+                    document.getElementById('qPax').value = a + c;
+                },
+            });
+        }
+        return numpadController;
+    }
+    function ensureEditNumpadController() {
+        if (!editNumpadController) {
+            editNumpadController = window.StaffNumpad.createController(document.getElementById('editNumpadDisplay'), {
+                maxDigits: 3,
+                onChange: (num, raw) => {
+                    const shown = raw === '' ? '0' : String(num);
+                    if (editActiveNumpadField === 'adults') { document.getElementById('editQPaxAdults').value = num; document.getElementById('editQPaxAdultsDisplay').innerText = shown; }
+                    else { document.getElementById('editQPaxChildren').value = num; document.getElementById('editQPaxChildrenDisplay').innerText = shown; }
+                    const a = parseInt(document.getElementById('editQPaxAdults').value) || 0;
+                    const c = parseInt(document.getElementById('editQPaxChildren').value) || 0;
+                    document.getElementById('editQPax').value = a + c;
+                },
+            });
+        }
+        return editNumpadController;
+    }
 
     function canManage() { return StaffApp.hasPermission('queue.manage'); }
 
@@ -38,8 +73,6 @@ window.QueueModule = (function () {
         document.getElementById('qPax').value = 0;
         document.getElementById('qPaxAdultsDisplay').innerText = '0';
         document.getElementById('qPaxChildrenDisplay').innerText = '0';
-        const nd = document.getElementById('numpadDisplay');
-        nd.dataset.raw = ''; nd.innerText = '0';
         activeNumpadField = 'adults';
         setActiveNumpad('adults');
         document.getElementById('qIsForeign').value = '0';
@@ -60,8 +93,7 @@ window.QueueModule = (function () {
 
     function setActiveNumpad(field) {
         activeNumpadField = field;
-        const nd = document.getElementById('numpadDisplay');
-        nd.dataset.raw = ''; nd.innerText = '0';
+        ensureNumpadController().reset();
         const aDisp = document.getElementById('qPaxAdultsDisplay'), cDisp = document.getElementById('qPaxChildrenDisplay');
         if (field === 'adults') {
             aDisp.className = 'w-full border-2 border-blue-400 bg-blue-50 p-3 text-2xl font-bold rounded text-center cursor-pointer select-none';
@@ -71,22 +103,7 @@ window.QueueModule = (function () {
             aDisp.className = 'w-full border-2 border-gray-300 bg-white p-3 text-2xl font-bold rounded text-center cursor-pointer select-none hover:border-blue-300';
         }
     }
-    function numpadPress(val) {
-        const nd = document.getElementById('numpadDisplay');
-        let raw = nd.dataset.raw || '';
-        if (val === 'clear') raw = '';
-        else if (val === 'back') raw = raw.slice(0, -1);
-        else { raw = raw + val; if (raw.length > 3) raw = raw.slice(0, 3); }
-        nd.dataset.raw = raw;
-        const shown = raw === '' ? '0' : String(parseInt(raw));
-        nd.innerText = shown;
-        const num = parseInt(raw) || 0;
-        if (activeNumpadField === 'adults') { document.getElementById('qPaxAdults').value = num; document.getElementById('qPaxAdultsDisplay').innerText = shown; }
-        else { document.getElementById('qPaxChildren').value = num; document.getElementById('qPaxChildrenDisplay').innerText = shown; }
-        const a = parseInt(document.getElementById('qPaxAdults').value) || 0;
-        const c = parseInt(document.getElementById('qPaxChildren').value) || 0;
-        document.getElementById('qPax').value = a + c;
-    }
+    function numpadPress(val) { ensureNumpadController().press(val); }
 
     function updateFlagBtn(btn, btnId, isOn) {
         if (isOn) {
@@ -365,8 +382,7 @@ window.QueueModule = (function () {
     // ================== แก้ไขคิว ==================
     function setEditActiveNumpad(field) {
         editActiveNumpadField = field;
-        const nd = document.getElementById('editNumpadDisplay');
-        nd.dataset.raw = ''; nd.innerText = '0';
+        ensureEditNumpadController().reset();
         const aDisp = document.getElementById('editQPaxAdultsDisplay'), cDisp = document.getElementById('editQPaxChildrenDisplay');
         if (field === 'adults') {
             aDisp.className = 'w-full border-2 border-blue-400 bg-blue-50 p-3 text-2xl font-bold rounded text-center cursor-pointer select-none';
@@ -376,22 +392,7 @@ window.QueueModule = (function () {
             aDisp.className = 'w-full border-2 border-gray-300 bg-white p-3 text-2xl font-bold rounded text-center cursor-pointer select-none hover:border-blue-300';
         }
     }
-    function editNumpadPress(val) {
-        const nd = document.getElementById('editNumpadDisplay');
-        let raw = nd.dataset.raw || '';
-        if (val === 'clear') raw = '';
-        else if (val === 'back') raw = raw.slice(0, -1);
-        else { raw = raw + val; if (raw.length > 3) raw = raw.slice(0, 3); }
-        nd.dataset.raw = raw;
-        const shown = raw === '' ? '0' : String(parseInt(raw));
-        nd.innerText = shown;
-        const num = parseInt(raw) || 0;
-        if (editActiveNumpadField === 'adults') { document.getElementById('editQPaxAdults').value = num; document.getElementById('editQPaxAdultsDisplay').innerText = shown; }
-        else { document.getElementById('editQPaxChildren').value = num; document.getElementById('editQPaxChildrenDisplay').innerText = shown; }
-        const a = parseInt(document.getElementById('editQPaxAdults').value) || 0;
-        const c = parseInt(document.getElementById('editQPaxChildren').value) || 0;
-        document.getElementById('editQPax').value = a + c;
-    }
+    function editNumpadPress(val) { ensureEditNumpadController().press(val); }
 
     function openEditQueueModal(id, qNum, pax, potsStr, adults, children, isForeign, isSeparateTable) {
         if (!canManage()) return;
@@ -405,8 +406,7 @@ window.QueueModule = (function () {
         document.getElementById('editQPaxChildrenDisplay').innerText = children;
         editActiveNumpadField = 'adults';
         setEditActiveNumpad('adults');
-        const nd = document.getElementById('editNumpadDisplay');
-        nd.dataset.raw = String(adults); nd.innerText = String(adults);
+        ensureEditNumpadController().reset(adults); // pre-fill ด้วยจำนวนผู้ใหญ่ปัจจุบัน (setEditActiveNumpad ด้านบนเคลียร์เป็นค่าว่างไปแล้ว ต้องเติมค่าจริงทับอีกที)
         document.getElementById('editIsForeign').value = isForeign ? '1' : '0';
         document.getElementById('editIsSeparateTable').value = isSeparateTable ? '1' : '0';
         updateFlagBtn(document.getElementById('editFlagForeign'), 'editFlagForeign', !!isForeign);
