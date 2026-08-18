@@ -36,14 +36,23 @@ async function bootAppWithPersonas() {
     }
 
     const PASS = 'Passw0rd-bt-123';
-    const kitchenRoleId = (await dbGet(db, "SELECT id FROM roles WHERE key = 'kitchen'")).id;
+    // (Phase 8.2) ไม่มี system role "kitchen" เพียวๆ อีกต่อไป (kitchen_staff ใหม่มี reports.view ติดมาด้วย) — สร้าง custom role ขอบเขตแคบเองแทน เพื่อคงเจตนา "Kitchen-only เห็นแค่แท็บ Kitchen เท่านั้น" ของเทสต์ nav ที่ใช้ persona นี้
+    const kitchenRoleId = (await dbRun(db, "INSERT INTO roles (key, name, description, is_system) VALUES (?, ?, ?, 0)", ['test_bt_kitchen_only', 'Kitchen Only (test)', 'test-only role'])).lastID;
+    const kitchenViewPermId = (await dbGet(db, "SELECT id FROM permissions WHERE key = 'kitchen.view'")).id;
+    const kitchenManagePermId = (await dbGet(db, "SELECT id FROM permissions WHERE key = 'kitchen.manage'")).id;
+    await dbRun(db, 'INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [kitchenRoleId, kitchenViewPermId]);
+    await dbRun(db, 'INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [kitchenRoleId, kitchenManagePermId]);
     const kitchenId = (await dbRun(db, "INSERT INTO users (username, password_hash, display_name, is_active) VALUES (?, ?, ?, 1)", ['bt_kitchen', hashPasswordForSeed(PASS), 'ครัว'])).lastID;
     await dbRun(db, 'INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', [kitchenId, kitchenRoleId]);
 
     const noRoleId = (await dbRun(db, "INSERT INTO users (username, password_hash, display_name, is_active) VALUES (?, ?, ?, 1)", ['bt_norole', hashPasswordForSeed(PASS), 'ไม่มีสิทธิ์'])).lastID;
 
-    // (Phase 7) cashier: cashier ระบบตัวเต็ม (view+manage) และ cashier.view ล้วนๆ (view-only) สำหรับเทส Cashier UI
-    const cashierRoleId = (await dbGet(db, "SELECT id FROM roles WHERE key = 'cashier'")).id;
+    // (Phase 7; Phase 8.2: ไม่มี system role "cashier" แยกต่างหากอีกต่อไป — หน้าที่นี้ยกให้ manager แทน) cashier ตัวเต็ม (view+manage) และ cashier.view ล้วนๆ (view-only) สำหรับเทส Cashier UI — ใช้ custom role ขอบเขตแคบเพื่อแยกจาก permission อื่นๆ ของ manager
+    const cashierRoleId = (await dbRun(db, "INSERT INTO roles (key, name, description, is_system) VALUES (?, ?, ?, 0)", ['test_bt_cashier_full', 'Cashier Full (test)', 'test-only role'])).lastID;
+    const cashierViewFullPermId = (await dbGet(db, "SELECT id FROM permissions WHERE key = 'cashier.view'")).id;
+    const cashierManageFullPermId = (await dbGet(db, "SELECT id FROM permissions WHERE key = 'cashier.manage'")).id;
+    await dbRun(db, 'INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [cashierRoleId, cashierViewFullPermId]);
+    await dbRun(db, 'INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [cashierRoleId, cashierManageFullPermId]);
     const cashierId = (await dbRun(db, "INSERT INTO users (username, password_hash, display_name, is_active) VALUES (?, ?, ?, 1)", ['bt_cashier', hashPasswordForSeed(PASS), 'แคชเชียร์'])).lastID;
     await dbRun(db, 'INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', [cashierId, cashierRoleId]);
 

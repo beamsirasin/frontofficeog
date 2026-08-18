@@ -118,8 +118,8 @@
                     </div>
                     <div>
                         <label class="block text-gray-700 font-bold mb-1 text-sm">รหัสผ่าน</label>
-                        <input type="password" id="createPassword" required minlength="8" maxlength="200" autocomplete="new-password" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
-                        <p class="text-xs text-gray-400 mt-1">อย่างน้อย 8 ตัวอักษร</p>
+                        <input type="password" id="createPassword" required maxlength="200" autocomplete="new-password" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
+                        <p class="text-xs text-gray-400 mt-1">กรอกรหัสผ่าน</p>
                     </div>
                     <div>
                         <label class="block text-gray-700 font-bold mb-2 text-sm">สิทธิ์การใช้งาน (เลือกได้หลาย role)</label>
@@ -179,11 +179,11 @@
                 <p class="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">ไม่สามารถดูรหัสผ่านปัจจุบันได้ — พิมพ์รหัสผ่านใหม่ให้พนักงานโดยตรง เมื่อบันทึกแล้ว session ที่ล็อกอินค้างอยู่ทั้งหมดของบัญชีนี้จะถูกเพิกถอน และต้องล็อกอินใหม่</p>
                 <div>
                     <label class="block text-gray-700 font-bold mb-1 text-sm">รหัสผ่านใหม่</label>
-                    <input type="password" id="resetNewPassword" required minlength="8" maxlength="200" autocomplete="new-password" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
+                    <input type="password" id="resetNewPassword" required maxlength="200" autocomplete="new-password" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
                 </div>
                 <div>
                     <label class="block text-gray-700 font-bold mb-1 text-sm">ยืนยันรหัสผ่านใหม่</label>
-                    <input type="password" id="resetConfirmPassword" required minlength="8" maxlength="200" autocomplete="new-password" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
+                    <input type="password" id="resetConfirmPassword" required maxlength="200" autocomplete="new-password" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500">
                 </div>
                 <p id="resetError" class="hidden text-red-600 font-bold text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2"></p>
                 <p id="resetSuccess" class="hidden text-green-700 font-bold text-sm bg-green-50 border border-green-200 rounded-lg px-3 py-2">ตั้งรหัสผ่านใหม่สำเร็จ — เพิกถอน session เดิมทั้งหมดแล้ว</p>

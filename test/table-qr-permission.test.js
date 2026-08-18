@@ -45,6 +45,20 @@ async function assignRole(userId, roleKey) {
     assert.ok(role, `role "${roleKey}" ควรถูก seed ไว้แล้ว`);
     await dbRun("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)", [userId, role.id]);
 }
+// (Phase 8.2) ไม่มี system role "tables"/"queue" เพียวๆ อีกต่อไป (role ระบบใหม่ทุกตัวมัดสิทธิ์อื่นมาด้วยเสมอ) — สร้าง custom role ขอบเขตแคบเองแทนเพื่อคงเจตนาเดิมของเทสต์ในไฟล์นี้
+async function createCustomRoleWithPermissions(roleKey, permissionKeys) {
+    await dbRun('INSERT OR IGNORE INTO roles (key, name, description, is_system) VALUES (?, ?, ?, 0)', [roleKey, roleKey, 'test-only role']);
+    const role = await dbGet('SELECT id FROM roles WHERE key = ?', [roleKey]);
+    for (const permKey of permissionKeys) {
+        const perm = await dbGet('SELECT id FROM permissions WHERE key = ?', [permKey]);
+        await dbRun('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [role.id, perm.id]);
+    }
+    return role.id;
+}
+async function assignScopedRole(userId, roleKey, permissionKeys) {
+    const roleId = await createCustomRoleWithPermissions(roleKey, permissionKeys);
+    await dbRun('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', [userId, roleId]);
+}
 
 function extractSessionCookie(res) {
     const raw = typeof res.headers.getSetCookie === 'function'
@@ -103,7 +117,7 @@ after(async () => {
 // ---- 2-3: tables.view user gets normal data, never session_token ----
 test('a tables.view-only user retrieves normal table data from /api/tables with no session_token anywhere', async () => {
     const uid = await createTestUser('qr_tables_view', 'tv-pass-123');
-    await assignRole(uid, 'tables'); // tables role มี tables.view + tables.manage + tables.qr — ใช้เพื่อเปิดโต๊ะสำหรับเซ็ตอัพเทสต์นี้เท่านั้น
+    await assignScopedRole(uid, 'test_tables_1', ['tables.view', 'tables.manage', 'tables.qr']); // มี tables.view + tables.manage + tables.qr — ใช้เพื่อเปิดโต๊ะสำหรับเซ็ตอัพเทสต์นี้เท่านั้น
     const cookie = await loginAs('qr_tables_view', 'tv-pass-123');
     await openTable(cookie, '2');
 
@@ -120,7 +134,7 @@ test('a tables.view-only user retrieves normal table data from /api/tables with 
 // ---- 4-5: queue.manage user gets what the table-picker needs, never session_token ----
 test('a queue.manage-only user can retrieve /api/tables (for the table picker), with no session_token anywhere', async () => {
     const uid = await createTestUser('qr_queue_only', 'qo-pass-123');
-    await assignRole(uid, 'queue');
+    await assignScopedRole(uid, 'test_queue_1', ['queue.view', 'queue.manage']);
     const cookie = await loginAs('qr_queue_only', 'qo-pass-123');
 
     const res = await fetch(`${baseURL}/api/tables`, { headers: { Cookie: cookie } });
@@ -135,7 +149,7 @@ test('a queue.manage-only user can retrieve /api/tables (for the table picker), 
 // ---- 6: kitchen-only user cannot access table list at all ----
 test('a kitchen-only user cannot access /api/tables unless separately granted', async () => {
     const uid = await createTestUser('qr_kitchen_only', 'ko-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('qr_kitchen_only', 'ko-pass-123');
 
     const res = await fetch(`${baseURL}/api/tables`, { headers: { Cookie: cookie } });
@@ -150,25 +164,25 @@ test('GET /api/table-qr/:table rejects an anonymous caller (401)', async () => {
 
 test('GET /api/table-qr/:table rejects a queue-only user (403) even though they can list /api/tables', async () => {
     const uid = await createTestUser('qr_queue_denied', 'qd-pass-123');
-    await assignRole(uid, 'queue');
+    await assignScopedRole(uid, 'test_queue_2', ['queue.view', 'queue.manage']);
     const cookie = await loginAs('qr_queue_denied', 'qd-pass-123');
 
     const res = await fetch(`${baseURL}/api/table-qr/1`, { headers: { Cookie: cookie } });
     assert.equal(res.status, 403, 'queue.manage ไม่ควรพ่วงสิทธิ์ tables.qr มาด้วย');
 });
 
-test('GET /api/table-qr/:table rejects a manager (view-only across modules) user (403) — tables.qr is a separate permission', async () => {
+test('GET /api/table-qr/:table rejects a view-only (tables.view, no tables.qr) user (403) — tables.qr is a separate permission (Phase 8.2: the built-in manager role now includes tables.qr, so a scoped custom role exercises this boundary instead)', async () => {
     const uid = await createTestUser('qr_manager_denied', 'md-pass-123');
-    await assignRole(uid, 'manager');
+    await assignScopedRole(uid, 'test_tables_view_only_qr', ['tables.view']);
     const cookie = await loginAs('qr_manager_denied', 'md-pass-123');
 
-    // manager มี tables.view จึงดู /api/tables ได้ปกติ
+    // role นี้มี tables.view จึงดู /api/tables ได้ปกติ
     const listRes = await fetch(`${baseURL}/api/tables`, { headers: { Cookie: cookie } });
     assert.equal(listRes.status, 200);
 
     // แต่ tables.view ไม่ใช่ tables.qr — ต้องถูกปฏิเสธ
     const qrRes = await fetch(`${baseURL}/api/table-qr/1`, { headers: { Cookie: cookie } });
-    assert.equal(qrRes.status, 403, 'manager (tables.view เท่านั้น ไม่มี tables.manage/tables.qr) ต้องดู QR secret ไม่ได้');
+    assert.equal(qrRes.status, 403, 'role นี้ (tables.view เท่านั้น ไม่มี tables.manage/tables.qr) ต้องดู QR secret ไม่ได้');
 });
 
 // ---- 10-11: user with tables.qr gets exactly one table's data, never another table's ----
@@ -178,7 +192,7 @@ test('a user with tables.qr can retrieve only the requested table\'s QR/session 
     const openB = await openTable(ownerCookie, '4');
 
     const uid = await createTestUser('qr_tables_role', 'tr-pass-123');
-    await assignRole(uid, 'tables');
+    await assignScopedRole(uid, 'test_tables_qr_shared', ['tables.view', 'tables.manage', 'tables.qr']);
     const cookie = await loginAs('qr_tables_role', 'tr-pass-123');
 
     const resA = await fetch(`${baseURL}/api/table-qr/3`, { headers: { Cookie: cookie } });
@@ -201,7 +215,7 @@ test('GET /api/table-qr/:table for a table that is not open returns 404, not a s
     const ownerCookie = await loginAs(process.env.ADMIN_USER, process.env.ADMIN_PASS);
     void ownerCookie;
     const uid = await createTestUser('qr_tables_closed', 'tc-pass-123');
-    await assignRole(uid, 'tables');
+    await assignScopedRole(uid, 'test_tables_qr_shared', ['tables.view', 'tables.manage', 'tables.qr']);
     const cookie = await loginAs('qr_tables_closed', 'tc-pass-123');
 
     const res = await fetch(`${baseURL}/api/table-qr/5`, { headers: { Cookie: cookie } }); // โต๊ะ 33 ไม่เคยเปิด
@@ -226,7 +240,7 @@ test('owner retains full QR generation/reprint capability: open-table token matc
 // ---- 13: revoking tables.qr from a role takes effect on the SAME active session immediately ----
 test('revoking tables.qr from a role denies an already-logged-in session on its very next request (no re-login)', async () => {
     const uid = await createTestUser('qr_revoke_live', 'rl-pass-123');
-    await assignRole(uid, 'tables');
+    await assignScopedRole(uid, 'test_tables_qr_shared', ['tables.view', 'tables.manage', 'tables.qr']);
     const cookie = await loginAs('qr_revoke_live', 'rl-pass-123');
 
     const ownerCookie = await loginAs(process.env.ADMIN_USER, process.env.ADMIN_PASS);
@@ -235,7 +249,7 @@ test('revoking tables.qr from a role denies an already-logged-in session on its 
     const before = await fetch(`${baseURL}/api/table-qr/7`, { headers: { Cookie: cookie } });
     assert.equal(before.status, 200);
 
-    const tablesRoleId = (await dbGet("SELECT id FROM roles WHERE key = 'tables'")).id;
+    const tablesRoleId = (await dbGet("SELECT id FROM roles WHERE key = 'test_tables_qr_shared'")).id;
     const qrPermId = (await dbGet("SELECT id FROM permissions WHERE key = 'tables.qr'")).id;
     await dbRun('DELETE FROM role_permissions WHERE role_id = ? AND permission_id = ?', [tablesRoleId, qrPermId]);
 

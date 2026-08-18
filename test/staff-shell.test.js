@@ -114,8 +114,10 @@ test('3b. an already-authenticated user visiting /staff/login is redirected to /
 });
 
 test('4. successful login (POST /api/login) is immediately usable for the /staff/ flow', async () => {
+    // (Phase 8.2) role ระบบ kitchen_staff มี reports.view ติดมาด้วย — ใช้ custom role ขอบเขตแคบเพื่อคงเจตนา exact-match เดิมของเทสต์นี้
+    await createCustomRoleWithPermissions('test_kitchen_4', ['kitchen.view', 'kitchen.manage']);
     const uid = await createTestUser('flow_user', 'flow-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'test_kitchen_4');
     const cookie = await loginAs('flow_user', 'flow-pass-123');
     const pageRes = await fetch(`${baseURL}/staff/`, { headers: { Cookie: cookie } });
     assert.equal(pageRes.status, 200);
@@ -140,9 +142,11 @@ test('5. logout revokes the session — the same cookie can no longer load /staf
 // ==================== 6-7: /api/verify shape ====================
 
 test('6. /api/verify returns effective permissions resolved from the DB', async () => {
+    await createCustomRoleWithPermissions('test_kitchen_6', ['kitchen.view', 'kitchen.manage']);
+    await createCustomRoleWithPermissions('test_queue_6', ['queue.view', 'queue.manage']);
     const uid = await createTestUser('verify_multi', 'vm-pass-123');
-    await assignRole(uid, 'kitchen');
-    await assignRole(uid, 'queue');
+    await assignRole(uid, 'test_kitchen_6');
+    await assignRole(uid, 'test_queue_6');
     const cookie = await loginAs('verify_multi', 'vm-pass-123');
     const res = await fetch(`${baseURL}/api/verify`, { headers: { Cookie: cookie } });
     const data = await res.json();
@@ -171,7 +175,7 @@ test('7. /api/verify response contains no password hash, session token, token ha
 
 test('8. a disabled user cannot load /staff/ even with a previously valid cookie', async () => {
     const uid = await createTestUser('disabled_staff', 'ds-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('disabled_staff', 'ds-pass-123');
 
     const before = await fetch(`${baseURL}/staff/`, { headers: { Cookie: cookie } });
@@ -188,28 +192,32 @@ test('8. a disabled user cannot load /staff/ even with a previously valid cookie
 // nav ที่ /staff/ แสดงจริงเป็นฟังก์ชันล้วนๆ ของ permissions array นี้ (ดู MODULE_DEFS ใน app.js) — เทสต์ข้อมูลตรงนี้
 // เท่ากับพิสูจน์ผลลัพธ์ nav ทางอ้อมโดยไม่ต้องมี headless browser (ดูรายงานท้ายเฟสสำหรับขอบเขตของการยืนยันแบบ static/manual)
 
-test('9-10. kitchen-only user\'s permission set enables Kitchen nav and excludes Reports/Tables', async () => {
+test('9-10. (Phase 8.2) kitchen_staff\'s permission set enables Kitchen and Reports nav (kitchen_staff now includes reports.view by design), but excludes Tables', async () => {
     const uid = await createTestUser('nav_kitchen', 'nk-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('nav_kitchen', 'nk-pass-123');
     const data = await (await fetch(`${baseURL}/api/verify`, { headers: { Cookie: cookie } })).json();
     const perms = new Set(data.permissions);
     assert.ok(perms.has('kitchen.view'), 'ต้องมี kitchen.view -> เมนู Kitchen ต้องแสดง');
-    assert.equal(perms.has('reports.view'), false, 'ไม่มี reports.view -> เมนู Reports ต้องไม่แสดง');
+    assert.ok(perms.has('reports.view'), 'kitchen_staff ต้องมี reports.view -> เมนู Reports ต้องแสดงด้วย (Phase 8.2)');
     assert.equal(perms.has('tables.view') || perms.has('tables.manage') || perms.has('tables.qr'), false, 'ไม่มีสิทธิ์โต๊ะเลย -> เมนู Tables ต้องไม่แสดง');
 });
 
 test('11. queue-only user\'s permission set enables Queue nav', async () => {
+    // (Phase 8.2) ไม่มี system role "queue เพียวๆ" อีกต่อไป — สร้าง custom role ขอบเขตแคบเพื่อคงเจตนาเดิมของเทสต์นี้
+    await createCustomRoleWithPermissions('test_queue_only_11', ['queue.view', 'queue.manage']);
     const uid = await createTestUser('nav_queue', 'nq-pass-123');
-    await assignRole(uid, 'queue');
+    await assignRole(uid, 'test_queue_only_11');
     const cookie = await loginAs('nav_queue', 'nq-pass-123');
     const data = await (await fetch(`${baseURL}/api/verify`, { headers: { Cookie: cookie } })).json();
     assert.ok(data.permissions.includes('queue.manage'));
 });
 
 test('12. tables-only user\'s permission set enables Tables nav', async () => {
+    // (Phase 8.2) ไม่มี system role "tables เพียวๆ" อีกต่อไป — สร้าง custom role ขอบเขตแคบเพื่อคงเจตนาเดิมของเทสต์นี้
+    await createCustomRoleWithPermissions('test_tables_only_12', ['tables.view', 'tables.manage', 'tables.qr']);
     const uid = await createTestUser('nav_tables', 'nt-pass-123');
-    await assignRole(uid, 'tables');
+    await assignRole(uid, 'test_tables_only_12');
     const cookie = await loginAs('nav_tables', 'nt-pass-123');
     const data = await (await fetch(`${baseURL}/api/verify`, { headers: { Cookie: cookie } })).json();
     assert.deepEqual([...data.permissions].sort(), ['tables.manage', 'tables.qr', 'tables.view']);
@@ -226,9 +234,11 @@ test('13. reports-only user\'s permission set enables Reports nav', async () => 
 });
 
 test('14. multi-role user\'s permission set is the union — enables nav for every granted module', async () => {
+    await createCustomRoleWithPermissions('test_kitchen_14', ['kitchen.view', 'kitchen.manage']);
+    await createCustomRoleWithPermissions('test_queue_14', ['queue.view', 'queue.manage']);
     const uid = await createTestUser('nav_multi', 'nm-pass-123');
-    await assignRole(uid, 'kitchen');
-    await assignRole(uid, 'queue');
+    await assignRole(uid, 'test_kitchen_14');
+    await assignRole(uid, 'test_queue_14');
     const cookie = await loginAs('nav_multi', 'nm-pass-123');
     const data = await (await fetch(`${baseURL}/api/verify`, { headers: { Cookie: cookie } })).json();
     const perms = new Set(data.permissions);
@@ -250,13 +260,13 @@ test('15. a no-role user is authenticated (not 401) but has zero permissions —
 
 test('16. removing a user\'s role takes effect on the very next /api/verify call using the SAME session (what a page refresh would see)', async () => {
     const uid = await createTestUser('nav_revoke', 'nrv-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('nav_revoke', 'nrv-pass-123');
 
     const before = await (await fetch(`${baseURL}/api/verify`, { headers: { Cookie: cookie } })).json();
     assert.ok(before.permissions.includes('kitchen.view'));
 
-    const kitchenRoleId = (await dbGet("SELECT id FROM roles WHERE key = 'kitchen'")).id;
+    const kitchenRoleId = (await dbGet("SELECT id FROM roles WHERE key = 'kitchen_staff'")).id;
     await dbRun('DELETE FROM user_roles WHERE user_id = ? AND role_id = ?', [uid, kitchenRoleId]);
 
     const after = await (await fetch(`${baseURL}/api/verify`, { headers: { Cookie: cookie } })).json();
@@ -305,8 +315,10 @@ test('33. 401-equivalent: an unauthenticated request to a protected page is a re
 });
 
 test('34. 403-equivalent: an authenticated request lacking permission is forbidden, and the page route itself is NOT redirected to login', async () => {
+    // (Phase 8.2) kitchen_staff มี reports.view ติดมาด้วยแล้ว — ใช้ custom role ขอบเขตแคบเพื่อคงเจตนา "ไม่มีสิทธิ์เกี่ยวกับ reports เลย" ของเทสต์นี้
+    await createCustomRoleWithPermissions('test_kitchen_34', ['kitchen.view', 'kitchen.manage']);
     const uid = await createTestUser('page_403_user', 'p4-pass-123');
-    await assignRole(uid, 'kitchen'); // ไม่มีสิทธิ์เกี่ยวกับ reports เลย
+    await assignRole(uid, 'test_kitchen_34'); // ไม่มีสิทธิ์เกี่ยวกับ reports เลย
     const cookie = await loginAs('page_403_user', 'p4-pass-123');
 
     // หน้า shell เองโหลดได้เสมอถ้า login อยู่ (ตัว JS/permissions data ต่างหากที่ตัดสินใจว่าจะแสดงโมดูลไหน)

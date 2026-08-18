@@ -399,18 +399,21 @@ test('31. the owner can use every Cashier API without an explicit cashier role',
     assert.equal(res.status, 200);
 });
 
-test('32. the seeded "cashier" system role grants exactly cashier.view + cashier.manage', async () => {
+test('32. (Phase 8.2) there is no dedicated "cashier" system role anymore — the "manager" system role grants cashier.view + cashier.manage among its full permission set', async () => {
     const row = await dbGet("SELECT id FROM roles WHERE key = 'cashier'");
-    assert.ok(row, 'role ระบบ "cashier" ต้องถูก seed ไว้โดย initRbac');
+    assert.equal(row, undefined, 'role ระบบ "cashier" เดิมต้องไม่ถูก seed อีกต่อไป — หน้าที่ตรวจนับเงินสดยกให้ manager แทน');
+    const managerRow = await dbGet("SELECT id FROM roles WHERE key = 'manager'");
+    assert.ok(managerRow, 'role ระบบ "manager" ต้องถูก seed ไว้โดย initRbac');
     const perms = await dbAll(
         `SELECT permissions.key FROM role_permissions JOIN permissions ON permissions.id = role_permissions.permission_id WHERE role_permissions.role_id = ?`,
-        [row.id]
+        [managerRow.id]
     );
-    assert.deepEqual(perms.map((p) => p.key).sort(), ['cashier.manage', 'cashier.view']);
+    const keys = perms.map((p) => p.key);
+    assert.ok(keys.includes('cashier.view') && keys.includes('cashier.manage'), 'manager ต้องมี cashier.view และ cashier.manage');
 });
 
-test('33. kitchen/queue/tables/manager system roles do NOT gain any cashier.* permission', async () => {
-    for (const key of ['kitchen', 'queue', 'tables', 'manager']) {
+test('33. (Phase 8.2) kitchen_staff/service_staff system roles do NOT gain any cashier.* permission — only manager does', async () => {
+    for (const key of ['kitchen_staff', 'service_staff']) {
         const row = await dbGet('SELECT id FROM roles WHERE key = ?', [key]);
         const perms = await dbAll(
             `SELECT permissions.key FROM role_permissions JOIN permissions ON permissions.id = role_permissions.permission_id WHERE role_permissions.role_id = ?`,
@@ -432,21 +435,21 @@ test('35. privilege ceiling blocks a non-owner from granting cashier.manage they
     assert.equal(res.status, 403);
 });
 
-test('35b. privilege ceiling blocks a non-owner from assigning the "cashier" system role beyond their own ceiling', async () => {
+test('35b. (Phase 8.2: no dedicated "cashier" role anymore) privilege ceiling blocks a non-owner from assigning the "manager" system role (which includes cashier.manage) beyond their own ceiling', async () => {
     const actor = await createPersona(['users.roles'], 'ceiling_assign');
-    const cashierRoleId = await roleIdByKey('cashier');
+    const managerRoleId = await roleIdByKey('manager');
     const targetId = await createTestUser('cashier_ceiling_target', 'ceiling-target-pass-123');
-    const res = await api(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [cashierRoleId] });
+    const res = await api(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [managerRoleId] });
     assert.equal(res.status, 403);
 });
 
-test('35c. owner CAN assign the "cashier" system role to a staff account', async () => {
-    const cashierRoleId = await roleIdByKey('cashier');
+test('35c. owner CAN assign the "manager" system role (which includes cashier.view/cashier.manage) to a staff account', async () => {
+    const managerRoleId = await roleIdByKey('manager');
     const targetId = await createTestUser('cashier_owner_assign_target', 'owner-assign-pass-123');
-    const res = await api(ownerCookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [cashierRoleId] });
+    const res = await api(ownerCookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [managerRoleId] });
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.deepEqual(body.roles.map((r) => r.key), ['cashier']);
+    assert.deepEqual(body.roles.map((r) => r.key), ['manager']);
 });
 
 // ==================== 5. Response shape / no secret leakage ====================
@@ -515,11 +518,13 @@ test('36-38. restart preserves cash count sheets, keeps existing users/sessions 
     const lineRows = await new Promise((resolve, reject) => boot2.db.all('SELECT denomination, quantity FROM cash_count_lines WHERE sheet_id = ?', [sheetRow.id], (err, rows) => (err ? reject(err) : resolve(rows))));
     assert.equal(lineRows.find((l) => l.denomination === 10).quantity, 3);
 
-    // permission/role ของ cashier ต้องถูก seed แบบ idempotent (นับแถวไม่ซ้ำ)
+    // permission ของ cashier ต้องถูก seed แบบ idempotent (นับแถวไม่ซ้ำ) — (Phase 8.2) ไม่มี role ระบบ "cashier" แยกต่างหากอีกต่อไป (ยกให้ manager แทน) จึงต้องนับเป็น 0 เสมอ ไม่ใช่ 1
     const permCountRow = await new Promise((resolve, reject) => boot2.db.get("SELECT COUNT(*) AS c FROM permissions WHERE key LIKE 'cashier.%'", [], (err, row) => (err ? reject(err) : resolve(row))));
     assert.equal(permCountRow.c, 2);
     const roleCountRow = await new Promise((resolve, reject) => boot2.db.get("SELECT COUNT(*) AS c FROM roles WHERE key = 'cashier'", [], (err, row) => (err ? reject(err) : resolve(row))));
-    assert.equal(roleCountRow.c, 1);
+    assert.equal(roleCountRow.c, 0);
+    const managerRoleCountRow = await new Promise((resolve, reject) => boot2.db.get("SELECT COUNT(*) AS c FROM roles WHERE key = 'manager'", [], (err, row) => (err ? reject(err) : resolve(row))));
+    assert.equal(managerRoleCountRow.c, 1, 'manager ต้อง seed แบบ idempotent เช่นกัน (นับแถวไม่ซ้ำหลัง restart)');
 
     // owner ต้องได้ cashier.* อัตโนมัติผ่าน '*' เหมือนเดิม
     const ownerVerify = await fetch(`${url2}/api/verify`, { headers: { Cookie: extractSessionCookie(await fetch(`${url2}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: process.env.ADMIN_USER, pin: process.env.ADMIN_PASS }) })) } });

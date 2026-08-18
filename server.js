@@ -287,24 +287,35 @@ const PERMISSION_CATALOGUE = [
     { key: PERMISSIONS.CASHIER_MANAGE, name: 'จัดการใบตรวจนับเงินสด', description: 'สร้าง/แก้ไขฉบับร่าง ยืนยันใบตรวจนับ และเตรียมเงินเปิดร้านวันถัดไป' },
 ];
 
-// role ระบบชุดแรก — ข้อมูล ไม่ใช่เงื่อนไขในโค้ด (ห้าม hardcode if(role==='kitchen') ที่ไหนเลย)
+// role ระบบชุดแรก — ข้อมูล ไม่ใช่เงื่อนไขในโค้ด (ห้าม hardcode if(role==='kitchen_staff') ที่ไหนเลย)
 // owner ได้ทุก permission เสมอ (รวมของใหม่ที่เพิ่มในอนาคต — ดู initRbac); role อื่นให้แบบระมัดระวัง/น้อยที่สุดเท่าที่จำเป็นจริงตามโค้ดที่มีอยู่
-// (Phase 7) role "cashier" ตรวจนับเงินสดเปิด/ปิดร้าน — ไม่ใช่ POS/บิล ไม่ผูกกับยอดขาย จึงไม่ให้ role ระบบเดิมตัวไหนได้ cashier.* เป็นค่าเริ่มต้นเด็ดขาด (รวมถึง manager)
-// "manager" ให้สิทธิ์ดูภาพรวมทุกโมดูล (อ่านอย่างเดียว) เป็นค่าเริ่มต้นที่ปลอดภัยไว้ก่อน เพราะยังไม่มีข้อกำหนดชัดเจนว่าผู้จัดการควรสั่งการอะไรได้บ้าง
-// tables.qr ให้เฉพาะ owner (ผ่าน '*') และ tables role เท่านั้น — เป็น role ที่รับผิดชอบเปิด/ปิดโต๊ะและจัดการ QR อยู่แล้วจริงๆ ตาม tables.manage
-// queue และ kitchen ต้อง "ไม่" ได้ tables.qr โดยเด็ดขาด แม้จะมี queue.manage ซึ่งยังคุม /api/tables (แบบไม่มี session_token) อยู่ก็ตาม
+// (Phase 8.2) แทนที่ role ระบบทั่วไปเดิม (kitchen/queue/tables/manager/cashier) ด้วยโมเดลพนักงานร้านจริงตามที่เจ้าของร้านต้องการ:
+//   kitchen_staff (พนักงานครัว), service_staff (พนักงานเสิร์ฟ), manager (ผู้จัดการ) — ไม่มี role "แคชเชียร์" แยกต่างหากอีกต่อไป
+//   หน้าที่ตรวจนับเงินสด (cashier.*) ยกให้ "ผู้จัดการ" รับผิดชอบแทน ตามโครงสร้างพนักงานจริงของร้าน
+// custom role ยังคงสร้าง/กำหนด permission เองได้ตามปกติทุกประการ — ตรงนี้คุมแค่ role ที่ "โค้ด seed ให้อัตโนมัติ" เท่านั้น (ดู migrateBuiltinRoles สำหรับการย้าย role เดิม/custom role ที่ผู้ใช้สร้างไว้แล้ว)
+// tables.qr ให้เฉพาะ owner (ผ่าน '*') และ manager เท่านั้น — kitchen_staff/service_staff ต้อง "ไม่" ได้ tables.qr โดยเด็ดขาด
 // (Phase 5A) users.* (จัดการบัญชีพนักงานที่ /admin/) "ไม่" ให้ role ระบบไหนนอกจาก owner เลยโดยเด็ดขาด (least privilege) —
-// ตั้งใจไม่เพิ่มลงใน kitchen/queue/tables/manager ด้านล่าง แม้แต่ตัวเดียว ต่อให้ในอนาคตมี custom role เพิ่มก็ต้องได้รับ users.* แบบเจาะจงเท่านั้น
+// ตั้งใจไม่เพิ่มลงใน kitchen_staff/service_staff/manager ด้านล่าง แม้แต่ตัวเดียว ต่อให้ในอนาคตมี custom role เพิ่มก็ต้องได้รับ users.* แบบเจาะจงเท่านั้น
 // (Phase 5B) roles.* (จัดการ custom role เอง) เช่นเดียวกัน — ไม่ให้ role ระบบไหนนอกจาก owner โดยเด็ดขาด
 // การมอบ permission ให้ role ใดๆ (รวมถึง role ระบบพวกนี้) ยังต้องผ่านเพดานสิทธิ์ (permission ceiling) เสมอ ดู permissionCeilingError/roleAssignmentCeilingError ด้านล่าง
 const ROLE_CATALOGUE = {
     owner: { name: 'เจ้าของร้าน', description: 'สิทธิ์เต็มทุกอย่างในระบบ', permissions: '*' },
-    kitchen: { name: 'ครัว', description: 'ดูและจัดการออเดอร์ในครัว', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE] },
-    queue: { name: 'คิว', description: 'ดูและจัดการคิวลูกค้า รวมถึงเรียกเข้าโต๊ะ', permissions: [PERMISSIONS.QUEUE_VIEW, PERMISSIONS.QUEUE_MANAGE] },
-    tables: { name: 'โต๊ะ', description: 'ดูและจัดการสถานะโต๊ะ รวมถึง QR/session secret', permissions: [PERMISSIONS.TABLES_VIEW, PERMISSIONS.TABLES_MANAGE, PERMISSIONS.TABLES_QR] },
-    manager: { name: 'ผู้จัดการ', description: 'ดูภาพรวมทุกส่วนแบบอ่านอย่างเดียว (ยังไม่ให้สิทธิ์สั่งการหรือดู QR secret)', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.QUEUE_VIEW, PERMISSIONS.TABLES_VIEW, PERMISSIONS.REPORTS_VIEW] },
-    cashier: { name: 'แคชเชียร์', description: 'ตรวจนับเงินสดเปิด/ปิดร้านประจำวัน', permissions: [PERMISSIONS.CASHIER_VIEW, PERMISSIONS.CASHIER_MANAGE] },
+    kitchen_staff: { name: 'พนักงานครัว', description: 'ดูแลออเดอร์ในครัวและดูรายงานยอดเสิร์ฟ', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE, PERMISSIONS.REPORTS_VIEW] },
+    service_staff: { name: 'พนักงานเสิร์ฟ', description: 'ดูแลออเดอร์ในครัว ดูคิวลูกค้า และดูรายงานยอดเสิร์ฟ', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE, PERMISSIONS.QUEUE_VIEW, PERMISSIONS.REPORTS_VIEW] },
+    manager: { name: 'ผู้จัดการ', description: 'บริหารจัดการหน้าร้านทุกส่วน ครัว คิว โต๊ะ และเงินสดประจำวัน พร้อมดูรายงาน', permissions: [PERMISSIONS.CASHIER_VIEW, PERMISSIONS.CASHIER_MANAGE, PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE, PERMISSIONS.QUEUE_VIEW, PERMISSIONS.QUEUE_MANAGE, PERMISSIONS.REPORTS_VIEW, PERMISSIONS.TABLES_VIEW, PERMISSIONS.TABLES_MANAGE, PERMISSIONS.TABLES_QR] },
 };
+
+// (Phase 8.2) role ระบบเดิมที่เลิกใช้แล้ว (ไม่อยู่ใน ROLE_CATALOGUE ข้างบนอีกต่อไป) — ใช้ตอน migrateBuiltinRoles() เพื่อเคลียร์ role เดิมที่ "ไม่มีบัญชีผูกอยู่เลย" อย่างปลอดภัย
+// ตั้งใจไม่รวม 'manager' ไว้ในนี้ เพราะ key นี้ยังใช้ต่อ (แค่เปลี่ยน permission set) — ดูการจัดการ key ชนกันแบบเจาะจงใน migrateBuiltinRoles()
+const RETIRED_SYSTEM_ROLE_KEYS = ['kitchen', 'queue', 'tables', 'cashier'];
+
+// (Phase 8.2) จับคู่ role ระบบใหม่กับชื่อ custom role ที่เจ้าของร้านอาจสร้างไว้เองแล้วก่อนหน้านี้ (ผ่าน "+ เพิ่ม Role") — ถ้าชื่อตรงกันเป๊ะ ให้ "โปรโมท" เป็น role ระบบแทนที่จะสร้างซ้ำ
+// เพื่อสงวน id/role_permissions/user_roles เดิมของ custom role นั้นไว้ทั้งหมด (ไม่มีใครเสียสิทธิ์/ต้องมอบ role ใหม่)
+const SYSTEM_ROLE_PROMOTIONS = [
+    { newKey: 'kitchen_staff', matchName: 'พนักงานครัว' },
+    { newKey: 'service_staff', matchName: 'พนักงานเสิร์ฟ' },
+    { newKey: 'manager', matchName: 'ผู้จัดการ' },
+];
 
 app.get('/dashboard', (req, res) => res.sendFile(__dirname + '/public/dashboard.html'));
 
@@ -520,6 +531,58 @@ function dbAllAsync(sql, params = []) {
     });
 }
 
+// ---- (Phase 8.2) ย้าย role ระบบเดิม/custom role ที่ผู้ใช้สร้างไว้เองแล้วให้เข้ากับโมเดล role ระบบใหม่ อย่างปลอดภัยและ idempotent ----
+// ต้องเรียกหลัง permissions ถูก seed แล้ว (ไม่จำเป็นต้องใช้ permission id ในนี้เลยจริงๆ แค่ทำงานกับตาราง roles/role_permissions/user_roles) และก่อนขั้นตอน seed role ระบบตามปกติ
+// หลักการ: ไม่ลบ role ที่ยังมีบัญชีผูกอยู่โดยเด็ดขาด, ไม่ mapping role เดิมไปยัง role ใหม่แบบเดา (เช่น kitchen เดิม "ไม่" กลายเป็น manager โดยอัตโนมัติ), โปรโมทเฉพาะ custom role ที่ชื่อ "ตรงกันเป๊ะ" หนึ่งรายการเท่านั้น
+async function migrateBuiltinRoles() {
+    // 1) เคลียร์ role ระบบเดิมที่เลิกใช้แล้ว (ไม่อยู่ใน ROLE_CATALOGUE อีกต่อไป) เฉพาะกรณี "ไม่มีบัญชีใดผูกอยู่เลย" เท่านั้น — มีบัญชีผูกอยู่ = ไม่แตะ ปล่อยเป็น role ระบบล็อกไว้เฉยๆ (orphaned แต่ข้อมูลปลอดภัย)
+    for (const oldKey of RETIRED_SYSTEM_ROLE_KEYS) {
+        const row = await dbGetAsync("SELECT id FROM roles WHERE key = ? AND is_system = 1", [oldKey]);
+        if (!row) continue; // ไม่มีอยู่แล้ว (DB ใหม่ หรือเคยเคลียร์ไปแล้วรอบก่อน) — idempotent
+        const assigned = await dbGetAsync("SELECT COUNT(*) AS c FROM user_roles WHERE role_id = ?", [row.id]);
+        if (assigned && assigned.c > 0) {
+            console.error(`[rbac] role ระบบเดิม '${oldKey}' (id=${row.id}) ยังมีบัญชีผูกอยู่ ${assigned.c} คน — จะไม่ลบให้อัตโนมัติ กรุณาย้ายบัญชีออกจาก role นี้ก่อนผ่าน Admin แล้วรีสตาร์ทเพื่อให้เคลียร์สำเร็จ`);
+            continue;
+        }
+        await dbRunAsync("DELETE FROM role_permissions WHERE role_id = ?", [row.id]);
+        await dbRunAsync("DELETE FROM roles WHERE id = ?", [row.id]);
+        console.log(`[rbac] เคลียร์ role ระบบเดิมที่เลิกใช้แล้ว '${oldKey}' (id=${row.id}, ไม่มีบัญชีผูกอยู่)`);
+    }
+
+    // 2) โปรโมท custom role ที่เจ้าของร้านสร้างไว้เองแล้วให้กลายเป็น role ระบบถาวร ถ้าชื่อตรงกับ role ระบบใหม่เป๊ะและไม่กำกวม — สงวน id/permission/บัญชีที่ผูกอยู่เดิมทั้งหมด
+    for (const promo of SYSTEM_ROLE_PROMOTIONS) {
+        const systemRow = await dbGetAsync("SELECT id FROM roles WHERE key = ? AND is_system = 1", [promo.newKey]);
+        const customCandidates = await dbAllAsync("SELECT id FROM roles WHERE is_system = 0 AND name = ?", [promo.matchName]);
+
+        if (!systemRow) {
+            // ยังไม่มี role ระบบ key นี้เลย (DB ใหม่ หรือเพิ่งเคลียร์ของเดิมไปในขั้นตอนที่ 1) — โปรโมท custom role ที่ตรงชื่อเป๊ะหนึ่งตัวถ้ามี ไม่งั้นปล่อยให้ขั้นตอน seed ปกติสร้างใหม่
+            if (customCandidates.length === 1) {
+                const def = ROLE_CATALOGUE[promo.newKey];
+                await dbRunAsync("UPDATE roles SET key = ?, name = ?, description = ?, is_system = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [promo.newKey, def.name, def.description, customCandidates[0].id]);
+                console.log(`[rbac] โปรโมท custom role "${promo.matchName}" (id=${customCandidates[0].id}) ให้เป็น role ระบบถาวร key='${promo.newKey}' แล้ว (สงวนบัญชีที่ผูกอยู่เดิมทั้งหมด)`);
+            } else if (customCandidates.length > 1) {
+                console.error(`[rbac] พบ custom role ชื่อ "${promo.matchName}" ซ้ำกัน ${customCandidates.length} รายการ — ไม่โปรโมทอัตโนมัติ (กำกวม ไม่รู้ว่าควรเลือกตัวไหน) จะสร้าง role ระบบใหม่แยกต่างหากแทน กรุณาจัดการ custom role ที่ซ้ำด้วยตนเองผ่าน Admin`);
+            }
+            continue;
+        }
+
+        // มี role ระบบ key นี้อยู่แล้ว (เคสเดียวที่เป็นไปได้ตอนนี้คือ 'manager' เดิม) — ถ้ายังมี custom role ชื่อตรงกันเป๊ะเหลืออยู่ (ยังไม่ถูกโปรโมท) ลองรวมเข้าด้วยกัน เฉพาะกรณี role ระบบเดิม "ไม่มี" บัญชีผูกอยู่เลยเท่านั้น กันการย้ายบัญชีที่มีอยู่จริงแบบไม่ตั้งใจ
+        if (customCandidates.length === 1) {
+            const assigned = await dbGetAsync("SELECT COUNT(*) AS c FROM user_roles WHERE role_id = ?", [systemRow.id]);
+            if (assigned && assigned.c === 0) {
+                await dbRunAsync("DELETE FROM role_permissions WHERE role_id = ?", [systemRow.id]);
+                await dbRunAsync("DELETE FROM roles WHERE id = ?", [systemRow.id]);
+                const def = ROLE_CATALOGUE[promo.newKey];
+                await dbRunAsync("UPDATE roles SET key = ?, name = ?, description = ?, is_system = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [promo.newKey, def.name, def.description, customCandidates[0].id]);
+                console.log(`[rbac] แทนที่ role ระบบเดิม '${promo.newKey}' (id=${systemRow.id}, ไม่มีบัญชีผูกอยู่) ด้วย custom role "${promo.matchName}" (id=${customCandidates[0].id}) ที่เจ้าของร้านตั้งไว้แล้ว`);
+            } else {
+                console.error(`[rbac] role ระบบ '${promo.newKey}' (id=${systemRow.id}) มีบัญชีผูกอยู่ ${assigned.c} คนอยู่แล้ว และยังพบ custom role ชื่อ "${promo.matchName}" (id=${customCandidates[0].id}) แยกต่างหาก — จะไม่รวมกันอัตโนมัติเพื่อกันการเผลอย้ายบัญชีข้าม role กรุณาย้ายบัญชีด้วยตนเองผ่าน Admin แล้วลบ custom role ที่ซ้ำ`);
+            }
+        }
+        // ไม่ว่าจะเข้ากรณีไหน permission ของ role ระบบ key นี้จะถูก sync ให้ตรงตาม ROLE_CATALOGUE เสมอในขั้นตอนถัดไปของ initRbac (full sync เพิ่ม+ลบ)
+    }
+}
+
 // ---- RBAC init: seed permissions/roles/role_permissions แบบ idempotent ทุกครั้งที่บูต + มอบ role เจ้าของร้านให้บัญชีแรกอย่างปลอดภัย ----
 // ต้องถูกเรียกหลังจากขั้นตอน bootstrap user (ใน db.serialize ด้านบน) ตัดสินใจเสร็จแล้วเท่านั้น (ดูจุดเรียกที่ db.get COUNT users)
 // function declaration (hoisted) ตั้งใจ — ตัว bootstrap callback เรียกใช้ก่อนโค้ดนี้จะถูกประมวลผลตามลำดับที่เขียนในไฟล์ แต่ hoisting ทำให้เรียกได้เพราะ callback จะทำงานทีหลังแบบ async เสมอ
@@ -532,6 +595,9 @@ async function initRbac() {
         const permRows = await dbAllAsync("SELECT id, key FROM permissions");
         const permIdByKey = new Map(permRows.map((r) => [r.key, r.id]));
 
+        // (Phase 8.2) ย้าย role ระบบเดิม/โปรโมท custom role ที่ตรงกันก่อนเสมอ ก่อนจะ seed role ระบบชุดใหม่ตามปกติด้านล่าง
+        await migrateBuiltinRoles();
+
         // 2) roles ระบบ
         for (const [roleKey, def] of Object.entries(ROLE_CATALOGUE)) {
             await dbRunAsync("INSERT OR IGNORE INTO roles (key, name, description, is_system) VALUES (?, ?, ?, 1)", [roleKey, def.name, def.description]);
@@ -540,15 +606,22 @@ async function initRbac() {
         const roleIdByKey = new Map(roleRows.map((r) => [r.key, r.id]));
 
         // 3) role_permissions — owner ได้ทุก permission เสมอ แม้จะมีการเพิ่ม permissionใหม่ในโค้ดภายหลัง (self-healing ทุกบูต)
-        // role อื่นได้ตามชุดที่กำหนดไว้ในโค้ด (ROLE_CATALOGUE) — ไม่มีการลบ mapping เดิมออก (ไม่ destructive)
+        // (Phase 8.2) sync แบบเต็ม (เพิ่ม+ลบ) เฉพาะ role ระบบเท่านั้น เพราะ permission ของ role ระบบ "มาจากโค้ดล้วนๆ" (ROLE_CATALOGUE) ห้ามมี mapping ค้างที่ไม่ตรงกันอีกต่อไป —
+        // กัน permission drift ตอน restart ซ้ำๆ และรองรับตอน permission set ของ role ระบบมีการเปลี่ยนแปลงในโค้ดเอง (เช่น manager รอบนี้ที่เปลี่ยนจาก read-only เป็นชุดสิทธิ์เต็ม)
+        // custom role (is_system=0) "ไม่" ถูกแตะเลยเพราะไม่อยู่ใน ROLE_CATALOGUE — permission ของ custom role เป็นสิทธิ์ของแอดมินที่จัดการเองเท่านั้น
         for (const [roleKey, def] of Object.entries(ROLE_CATALOGUE)) {
             const roleId = roleIdByKey.get(roleKey);
             if (!roleId) continue;
-            const keys = def.permissions === '*' ? [...permIdByKey.keys()] : def.permissions;
-            for (const permKey of keys) {
-                const permId = permIdByKey.get(permKey);
-                if (!permId) continue;
+            const desiredKeys = def.permissions === '*' ? [...permIdByKey.keys()] : def.permissions;
+            const desiredIds = new Set(desiredKeys.map((k) => permIdByKey.get(k)).filter((id) => id !== undefined));
+            for (const permId of desiredIds) {
                 await dbRunAsync("INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)", [roleId, permId]);
+            }
+            const currentRows = await dbAllAsync("SELECT permission_id FROM role_permissions WHERE role_id = ?", [roleId]);
+            for (const r of currentRows) {
+                if (!desiredIds.has(r.permission_id)) {
+                    await dbRunAsync("DELETE FROM role_permissions WHERE role_id = ? AND permission_id = ?", [roleId, r.permission_id]);
+                }
             }
         }
 
@@ -1195,13 +1268,13 @@ app.get('/q/:token', (req, res) => {
 // ทุก endpoint ในกลุ่มนี้ต้องผ่าน requireAuth + requirePermission เจาะจงเสมอ ไม่มี endpoint ไหน "authenticated อย่างเดียว" พอ
 // ไม่มี DELETE จริงในระบบ — "ลบ" บัญชีพนักงาน = ปิดใช้งาน (is_active = 0) เท่านั้น เพื่อรักษา id ไว้สำหรับอนาคต (audit/history)
 
-// ---- นโยบายรหัสผ่าน: อย่างน้อย 8 ตัวอักษร (นับตาม Unicode code point ไม่ใช่ UTF-16 code unit กันปัญหาอักษรไทย/อิโมจิ), ไม่เกิน 200 ตัวอักษร (กัน DoS จาก input ยาวเกินจำเป็นเข้า scrypt) ----
-const PASSWORD_MIN_LENGTH = 8;
+// ---- (Phase 8.2) นโยบายรหัสผ่าน: ไม่มี minimum length/ความซับซ้อนอีกต่อไป — เป็นตัวเลือก UX ของเจ้าของร้านที่ต้องการตั้งรหัสผ่านสั้นๆ ให้พนักงานเองได้ ----
+// รับ string ที่ไม่ว่างเปล่าอะไรก็ได้เป็นรหัสผ่านที่ถูกต้อง — "a", "1", "1234" ผ่านหมด (ค่าว่างเปล่าหรือมีแต่ช่องว่างล้วนถือว่าว่างเปล่า ไม่ผ่าน)
+// PASSWORD_MAX_LENGTH ยังคงไว้ "เพื่อกัน DoS/CPU abuse จาก input ยาวเกินจำเป็นเข้า scrypt เท่านั้น" ไม่ใช่นโยบายความแข็งแรงของรหัสผ่าน — ห้ามตีความ/ปรับเป็นเกณฑ์ความปลอดภัยอีก
 const PASSWORD_MAX_LENGTH = 200;
 function passwordPolicyError(password) {
-    if (typeof password !== 'string' || password.length === 0) return 'ต้องระบุรหัสผ่าน';
-    const len = [...password].length;
-    if (len < PASSWORD_MIN_LENGTH) return `รหัสผ่านต้องมีอย่างน้อย ${PASSWORD_MIN_LENGTH} ตัวอักษร`;
+    if (typeof password !== 'string' || password.trim().length === 0) return 'ต้องระบุรหัสผ่าน'; // กันรหัสผ่านว่างเปล่า/มีแต่ช่องว่างล้วน — ไม่ตัด/แก้ไขรหัสผ่านจริงที่จะถูก hash เลย แค่ใช้เช็คว่า "ว่างเปล่าจริงหรือไม่"
+    const len = [...password].length; // นับตาม Unicode code point ไม่ใช่ UTF-16 code unit กันปัญหาอักษรไทย/อิโมจิ
     if (len > PASSWORD_MAX_LENGTH) return `รหัสผ่านยาวเกินไป (ไม่เกิน ${PASSWORD_MAX_LENGTH} ตัวอักษร)`;
     return null;
 }

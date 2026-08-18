@@ -66,6 +66,11 @@ async function createCustomRoleWithPermissions(roleKey, permissionKeys) {
     }
     return role.id;
 }
+// (Phase 8.2) role ระบบใหม่ทุกตัวมี kitchen.manage/reports.view ติดมาด้วยเสมอ — ใช้แทน role แคบๆ แบบเดิม (queue เพียวๆ) ไม่ได้ในเทสต์ที่ตั้งใจตรวจขอบเขตแคบ จึงสร้าง custom role ขอบเขตแคบเองแทน
+async function assignScopedRole(userId, roleKey, permissionKeys) {
+    const roleId = await createCustomRoleWithPermissions(roleKey, permissionKeys);
+    await dbRun('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', [userId, roleId]);
+}
 
 // สร้าง staff account ที่ "ไม่ใช่" owner แต่ถือ permission users.* ตามที่ระบุเป๊ะๆ (ผ่าน custom role) — ใช้ทดสอบขอบเขต delegated admin (Phase 5A.1)
 let delegatedAdminCounter = 0;
@@ -150,7 +155,7 @@ test('A2. owner (admin-capable) GET /admin/ succeeds (200)', async () => {
 
 test('A3. kitchen-only user GET /admin/ is denied (403), not redirected to login', async () => {
     const uid = await createTestUser('admin_deny_kitchen', 'kd-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('admin_deny_kitchen', 'kd-pass-123');
     const res = await fetch(`${baseURL}/admin/`, { headers: { Cookie: cookie }, redirect: 'manual' });
     assert.equal(res.status, 403);
@@ -158,7 +163,7 @@ test('A3. kitchen-only user GET /admin/ is denied (403), not redirected to login
 
 test('A4. queue-only user GET /admin/ is denied (403)', async () => {
     const uid = await createTestUser('admin_deny_queue', 'qd-pass-123');
-    await assignRole(uid, 'queue');
+    await assignScopedRole(uid, 'test_queue_only_a4', ['queue.view', 'queue.manage']);
     const cookie = await loginAs('admin_deny_queue', 'qd-pass-123');
     const res = await fetch(`${baseURL}/admin/`, { headers: { Cookie: cookie } });
     assert.equal(res.status, 403);
@@ -192,7 +197,7 @@ test('B1. anonymous GET /api/admin/users returns 401', async () => {
 
 test('B2. a non-admin (kitchen) authenticated user gets 403 from /api/admin/users', async () => {
     const uid = await createTestUser('admin_api_kitchen', 'ak-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('admin_api_kitchen', 'ak-pass-123');
     const res = await adminApi(cookie, 'GET', '/api/admin/users');
     assert.equal(res.status, 403);
@@ -254,13 +259,22 @@ test('C4. invalid fields (missing display_name/username/password) are rejected (
     assert.equal(res3.status, 400);
 });
 
-test('C5. a weak (too short) password is rejected (400)', async () => {
+test('C5. (Phase 8.2) an empty password is rejected (400) — there is no minimum length anymore, only "not empty"', async () => {
     const res = await adminApi(ownerCookie, 'POST', '/api/admin/users', {
-        display_name: 'x', username: 'create_weak_pw', password: 'short1', role_ids: [],
+        display_name: 'x', username: 'create_weak_pw', password: '', role_ids: [],
     });
     assert.equal(res.status, 400);
     const row = await dbGet('SELECT id FROM users WHERE username = ?', ['create_weak_pw']);
-    assert.equal(row, undefined, 'ไม่ควรมีการสร้างบัญชีเลยถ้ารหัสผ่านไม่ผ่านนโยบาย');
+    assert.equal(row, undefined, 'ไม่ควรมีการสร้างบัญชีเลยถ้ารหัสผ่านว่างเปล่า');
+});
+
+test('C5b. (Phase 8.2) a short one-character password IS accepted on create — no minimum length policy anymore', async () => {
+    const res = await adminApi(ownerCookie, 'POST', '/api/admin/users', {
+        display_name: 'x', username: 'create_short_pw', password: '1', role_ids: [],
+    });
+    assert.equal(res.status, 201);
+    const cookie = await loginAs('create_short_pw', '1');
+    assert.ok(cookie, 'ต้อง login เข้าได้จริงด้วยรหัสผ่านตัวเดียว');
 });
 
 test('C6. newly created staff can log in with the password set at creation', async () => {
@@ -271,20 +285,20 @@ test('C6. newly created staff can log in with the password set at creation', asy
     assert.ok(cookie);
 });
 
-test('C7. new staff created with the kitchen role receives kitchen permissions via /api/verify', async () => {
-    const kitchenRoleId = await roleIdByKey('kitchen');
+test('C7. new staff created with the kitchen_staff role receives its exact permissions via /api/verify', async () => {
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     await adminApi(ownerCookie, 'POST', '/api/admin/users', {
         display_name: 'x', username: 'create_role_kitchen', password: 'create-role-pass-123', role_ids: [kitchenRoleId],
     });
     const cookie = await loginAs('create_role_kitchen', 'create-role-pass-123');
     const res = await fetch(`${baseURL}/api/verify`, { headers: { Cookie: cookie } });
     const data = await res.json();
-    assert.deepEqual([...data.permissions].sort(), ['kitchen.manage', 'kitchen.view']);
+    assert.deepEqual([...data.permissions].sort(), ['kitchen.manage', 'kitchen.view', 'reports.view']);
 });
 
 test('C8. assigning multiple roles at creation grants the union of their permissions', async () => {
-    const kitchenRoleId = await roleIdByKey('kitchen');
-    const queueRoleId = await roleIdByKey('queue');
+    const kitchenRoleId = await createCustomRoleWithPermissions('test_kitchen_c8', ['kitchen.view', 'kitchen.manage']);
+    const queueRoleId = await createCustomRoleWithPermissions('test_queue_c8', ['queue.view', 'queue.manage']);
     await adminApi(ownerCookie, 'POST', '/api/admin/users', {
         display_name: 'x', username: 'create_role_multi', password: 'create-multi-pass-123', role_ids: [kitchenRoleId, queueRoleId],
     });
@@ -336,17 +350,17 @@ test('D2. username can be edited', async () => {
 
 test('D3. role assignment can be changed via PATCH', async () => {
     const uid = await createTestUser('edit_role_user', 'edit-pass-123');
-    await assignRole(uid, 'kitchen');
-    const queueRoleId = await roleIdByKey('queue');
-    const res = await adminApi(ownerCookie, 'PATCH', `/api/admin/users/${uid}`, { role_ids: [queueRoleId] });
+    await assignRole(uid, 'kitchen_staff');
+    const managerRoleId = await roleIdByKey('manager');
+    const res = await adminApi(ownerCookie, 'PATCH', `/api/admin/users/${uid}`, { role_ids: [managerRoleId] });
     assert.equal(res.status, 200);
     const rows = await dbAll('SELECT roles.key FROM user_roles JOIN roles ON roles.id = user_roles.role_id WHERE user_roles.user_id = ?', [uid]);
-    assert.deepEqual(rows.map((r) => r.key), ['queue']);
+    assert.deepEqual(rows.map((r) => r.key), ['manager']);
 });
 
 test('D4. removing a role via PATCH revokes the corresponding access on the SAME already-logged-in session, next request, no re-login', async () => {
     const uid = await createTestUser('edit_role_revoke', 'edit-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('edit_role_revoke', 'edit-pass-123');
     const before = await fetch(`${baseURL}/api/orders`, { headers: { Cookie: cookie } });
     assert.equal(before.status, 200);
@@ -363,7 +377,7 @@ test('D5. adding a role via PATCH grants the corresponding access on the SAME al
     const before = await fetch(`${baseURL}/api/orders`, { headers: { Cookie: cookie } });
     assert.equal(before.status, 403);
 
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     await adminApi(ownerCookie, 'PATCH', `/api/admin/users/${uid}`, { role_ids: [kitchenRoleId] });
 
     const after = await fetch(`${baseURL}/api/orders`, { headers: { Cookie: cookie } });
@@ -382,7 +396,7 @@ test('D7. the owner role cannot be added to another account via PATCH (400), and
     const res1 = await adminApi(ownerCookie, 'PATCH', `/api/admin/users/${uid}`, { role_ids: [ownerRoleId] });
     assert.equal(res1.status, 400);
 
-    const queueRoleId = await roleIdByKey('queue');
+    const queueRoleId = await roleIdByKey('kitchen_staff');
     const res2 = await adminApi(ownerCookie, 'PATCH', `/api/admin/users/${ownerUserId}`, { role_ids: [queueRoleId] });
     assert.equal(res2.status, 400, 'ห้ามแก้ role ของบัญชี owner เองผ่าน endpoint นี้ (แม้จะไม่ใช่การเติม owner role ใหม่ก็ตาม)');
     const stillOwner = await dbGet(
@@ -404,7 +418,7 @@ test('E1. owner can disable a staff account', async () => {
 
 test('E2. an already-logged-in session for a just-disabled user fails on its very next request', async () => {
     const uid = await createTestUser('disable_session_user', 'disable-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('disable_session_user', 'disable-pass-123');
     const before = await fetch(`${baseURL}/api/orders`, { headers: { Cookie: cookie } });
     assert.equal(before.status, 200);
@@ -445,7 +459,7 @@ test('E5. re-enabling a disabled account allows it to log in again', async () =>
 
 test('E6. re-enabling does NOT restore the old (revoked) session cookie — it stays invalid', async () => {
     const uid = await createTestUser('enable_oldcookie_user', 'enable-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const oldCookie = await loginAs('enable_oldcookie_user', 'enable-pass-123');
     await adminApi(ownerCookie, 'POST', `/api/admin/users/${uid}/disable`);
     await adminApi(ownerCookie, 'POST', `/api/admin/users/${uid}/enable`);
@@ -491,7 +505,7 @@ test('F4. the old password fails to log in after reset', async () => {
 
 test('F5. resetting a password revokes all existing sessions for that user', async () => {
     const uid = await createTestUser('reset_revoke_user', 'old-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('reset_revoke_user', 'old-pass-123');
     await adminApi(ownerCookie, 'POST', `/api/admin/users/${uid}/reset-password`, { new_password: 'new-pass-456' });
     const res = await fetch(`${baseURL}/api/orders`, { headers: { Cookie: cookie } });
@@ -516,7 +530,7 @@ test('G1. the sole owner cannot disable their own account (400)', async () => {
 });
 
 test('G2. the owner cannot remove their own owner role via PATCH role_ids (400)', async () => {
-    const queueRoleId = await roleIdByKey('queue');
+    const queueRoleId = await roleIdByKey('kitchen_staff');
     const res = await adminApi(ownerCookie, 'PATCH', `/api/admin/users/${ownerUserId}`, { role_ids: [queueRoleId] });
     assert.equal(res.status, 400);
 });
@@ -572,7 +586,7 @@ test('L1. a users.create-only actor can create a no-role account', async () => {
 
 test('L2. a users.create-only actor cannot create an account WITH role_ids (403)', async () => {
     const actor = await createDelegatedAdmin(['users.create'], 'create_only_l2');
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     const res = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
         display_name: 'x', username: 'l2_withroles', password: 'l2-withroles-pass-123', role_ids: [kitchenRoleId],
     });
@@ -581,7 +595,7 @@ test('L2. a users.create-only actor cannot create an account WITH role_ids (403)
 
 test('L3. a rejected role-bearing create (actor lacks users.roles) leaves no new user row at all', async () => {
     const actor = await createDelegatedAdmin(['users.create'], 'create_only_l3');
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     const res = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
         display_name: 'x', username: 'l3_should_not_exist', password: 'l3-pass-123', role_ids: [kitchenRoleId],
     });
@@ -591,15 +605,15 @@ test('L3. a rejected role-bearing create (actor lacks users.roles) leaves no new
 });
 
 test('L4. an actor with BOTH users.create and users.roles can create an account with allowed roles (within their own permission ceiling)', async () => {
-    // (Phase 5B) ต้องมี kitchen.view/kitchen.manage เองด้วย ไม่งั้นเพดานสิทธิ์ (roleAssignmentCeilingError) จะบล็อกการมอบ role kitchen ให้คนอื่น
-    const actor = await createDelegatedAdmin(['users.create', 'users.roles', 'kitchen.view', 'kitchen.manage'], 'create_and_roles_l4');
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    // (Phase 5B; Phase 8.2: kitchen_staff ต้องการ reports.view ด้วย) ต้องมีสิทธิ์เท่ากับ role kitchen_staff เองด้วย ไม่งั้นเพดานสิทธิ์ (roleAssignmentCeilingError) จะบล็อกการมอบ role นี้ให้คนอื่น
+    const actor = await createDelegatedAdmin(['users.create', 'users.roles', 'kitchen.view', 'kitchen.manage', 'reports.view'], 'create_and_roles_l4');
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     const res = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
         display_name: 'x', username: 'l4_withroles', password: 'l4-withroles-pass-123', role_ids: [kitchenRoleId],
     });
     assert.equal(res.status, 201);
     const body = await res.json();
-    assert.deepEqual(body.roles.map((r) => r.key), ['kitchen']);
+    assert.deepEqual(body.roles.map((r) => r.key), ['kitchen_staff']);
 });
 
 test('L5. the owner role remains unassignable at creation regardless of the actor\'s permissions (even users.create + users.roles)', async () => {
@@ -624,8 +638,8 @@ test('L6. a fake/nonexistent role id in a create request fails, even for an acto
 });
 
 test('L7. duplicate username and invalid-field create requests continue to behave safely for a create+roles actor', async () => {
-    const actor = await createDelegatedAdmin(['users.create', 'users.roles', 'kitchen.view', 'kitchen.manage'], 'create_and_roles_l7');
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    const actor = await createDelegatedAdmin(['users.create', 'users.roles', 'kitchen.view', 'kitchen.manage', 'reports.view'], 'create_and_roles_l7');
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     const ok = await adminApi(actor.cookie, 'POST', '/api/admin/users', {
         display_name: 'x', username: 'l7_dupe', password: 'l7-pass-123', role_ids: [kitchenRoleId],
     });
@@ -682,7 +696,7 @@ test('M3 (item 12). a non-owner actor with users.edit cannot alter the owner\'s 
 
 test('M4 (item 13). a non-owner actor with users.roles cannot alter the owner\'s roles', async () => {
     const actor = await createDelegatedAdmin(['users.roles'], 'roles_m4');
-    const queueRoleId = await roleIdByKey('queue');
+    const queueRoleId = await roleIdByKey('kitchen_staff');
     const res = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${ownerUserId}`, { role_ids: [queueRoleId] });
     assert.notEqual(res.status, 200);
     const stillOwner = await dbGet(
@@ -788,16 +802,16 @@ test('N3 (item 22). a users.edit-only account cannot modify roles', async () => 
     const targetId = await createTestUser('n3_target', 'n3-pass-123');
     const okProfile = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { display_name: 'edited by n3' });
     assert.equal(okProfile.status, 200);
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     const roleAttempt = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [kitchenRoleId] });
     assert.equal(roleAttempt.status, 403);
 });
 
 test('N4 (item 23). a users.roles-only account cannot modify username/display_name', async () => {
-    // (Phase 5B) actor ต้องมี kitchen.view/kitchen.manage เองด้วย ไม่งั้นเพดานสิทธิ์จะบล็อกการมอบ role kitchen ให้เป้าหมาย
-    const actor = await createDelegatedAdmin(['users.roles', 'kitchen.view', 'kitchen.manage'], 'roles_meta_n4');
+    // (Phase 5B; Phase 8.2: kitchen_staff ต้องการ reports.view ด้วย) actor ต้องมีสิทธิ์เท่ากับ role kitchen_staff เองด้วย ไม่งั้นเพดานสิทธิ์จะบล็อกการมอบ role นี้ให้เป้าหมาย
+    const actor = await createDelegatedAdmin(['users.roles', 'kitchen.view', 'kitchen.manage', 'reports.view'], 'roles_meta_n4');
     const targetId = await createTestUser('n4_target', 'n4-pass-123');
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     const okRoles = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [kitchenRoleId] });
     assert.equal(okRoles.status, 200);
     const profileAttempt = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { display_name: 'nope' });
@@ -841,7 +855,7 @@ test('N7 (item 26). the admin frontend source encodes the same permission-to-act
 
 test('H1. the user list response shape safely represents status and roles for rendering (no raw secrets)', async () => {
     const uid = await createTestUser('shape_check_user', 'shape-pass-123', 'ชื่อพนักงาน <script>');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const res = await adminApi(ownerCookie, 'GET', '/api/admin/users');
     const users = await res.json();
     const u = users.find((x) => x.id === uid);
@@ -854,12 +868,12 @@ test('H1. the user list response shape safely represents status and roles for re
 
 test('H2. a user assigned two roles has both represented in the roles array', async () => {
     const uid = await createTestUser('multi_role_shape_user', 'mr-pass-123');
-    await assignRole(uid, 'kitchen');
-    await assignRole(uid, 'queue');
+    await assignRole(uid, 'kitchen_staff');
+    await assignRole(uid, 'manager');
     const res = await adminApi(ownerCookie, 'GET', '/api/admin/users');
     const users = await res.json();
     const u = users.find((x) => x.id === uid);
-    assert.deepEqual(u.roles.map((r) => r.key).sort(), ['kitchen', 'queue']);
+    assert.deepEqual(u.roles.map((r) => r.key).sort(), ['kitchen_staff', 'manager']);
 });
 
 test('H3 (Phase 5B). GET /api/admin/roles now includes the owner role (for the Role Management page to show it as a locked system role), flagged is_system — but it remains impossible to actually ASSIGN via any staff-account mutation (see C9/L5/M5)', async () => {
@@ -868,7 +882,7 @@ test('H3 (Phase 5B). GET /api/admin/roles now includes the owner role (for the R
     const owner = roles.find((r) => r.key === 'owner');
     assert.ok(owner, 'Role Management ต้องเห็น owner เป็น locked role ได้ — endpoint นี้จึงคืน owner มาด้วยตั้งแต่ Phase 5B');
     assert.equal(owner.is_system, true);
-    assert.ok(roles.some((r) => r.key === 'kitchen'), 'role ระบบปกติอื่นๆ ต้องยังอยู่ครบ');
+    assert.ok(roles.some((r) => r.key === 'kitchen_staff'), 'role ระบบปกติอื่นๆ ต้องยังอยู่ครบ');
 });
 
 test('H4. a disabled account still appears in the list with its disabled status represented, not removed', async () => {
@@ -901,7 +915,8 @@ test('I1. /staff/ behavior for an anonymous user is unaffected by Phase 5A (stil
 });
 
 test('I2. a new Kitchen-only staff account created through /admin/ sees exactly Kitchen permissions in /staff/, nothing else', async () => {
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    // (Phase 8.2) role ระบบ kitchen_staff มี reports.view ติดมาด้วยเสมอ — ใช้ custom role ขอบเขตแคบเพื่อคงเจตนา "nothing else" เดิมของเทสต์นี้
+    const kitchenRoleId = await createCustomRoleWithPermissions('test_kitchen_i2', ['kitchen.view', 'kitchen.manage']);
     await adminApi(ownerCookie, 'POST', '/api/admin/users', {
         display_name: 'x', username: 'staff_regress_kitchen', password: 'staff-regress-pass-123', role_ids: [kitchenRoleId],
     });
@@ -914,8 +929,8 @@ test('I2. a new Kitchen-only staff account created through /admin/ sees exactly 
 });
 
 test('I3. a Kitchen+Queue staff account created through /admin/ sees both modules\' permissions', async () => {
-    const kitchenRoleId = await roleIdByKey('kitchen');
-    const queueRoleId = await roleIdByKey('queue');
+    const kitchenRoleId = await createCustomRoleWithPermissions('test_kitchen_i3', ['kitchen.view', 'kitchen.manage']);
+    const queueRoleId = await createCustomRoleWithPermissions('test_queue_i3', ['queue.view', 'queue.manage']);
     await adminApi(ownerCookie, 'POST', '/api/admin/users', {
         display_name: 'x', username: 'staff_regress_both', password: 'staff-regress-pass-123', role_ids: [kitchenRoleId, queueRoleId],
     });
@@ -927,7 +942,7 @@ test('I3. a Kitchen+Queue staff account created through /admin/ sees both module
 
 test('I4. a disabled user is rejected from /staff/ just like before Phase 5A', async () => {
     const uid = await createTestUser('staff_regress_disabled', 'staff-regress-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('staff_regress_disabled', 'staff-regress-pass-123');
     await adminApi(ownerCookie, 'POST', `/api/admin/users/${uid}/disable`);
     const res = await fetch(`${baseURL}/staff/`, { headers: { Cookie: cookie }, redirect: 'manual' });

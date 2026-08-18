@@ -59,6 +59,22 @@ async function assignRole(userId, roleKey) {
     await dbRun("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)", [userId, rid]);
 }
 
+// (Phase 8.2) role ระบบใหม่ (kitchen_staff/service_staff/manager) ทุกตัวมี kitchen.manage และ/หรือ reports.view ติดมาด้วยเสมอ
+// จึงใช้แทน role แคบๆ แบบเดิม (kitchen/queue/tables เพียวๆ) ไม่ได้ในเทสต์ที่ตั้งใจตรวจ "ไม่มี permission ตัวใดตัวหนึ่งเจาะจง" — สร้าง custom role ขอบเขตแคบเองแทน เพื่อคงเจตนาเดิมของเทสต์ไว้ครบ
+async function ensureScopedRole(roleKey, permissionKeys) {
+    await dbRun('INSERT OR IGNORE INTO roles (key, name, description, is_system) VALUES (?, ?, ?, 0)', [roleKey, roleKey, 'test-only scoped role']);
+    const role = await dbGet('SELECT id FROM roles WHERE key = ?', [roleKey]);
+    for (const permKey of permissionKeys) {
+        const perm = await dbGet('SELECT id FROM permissions WHERE key = ?', [permKey]);
+        await dbRun('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [role.id, perm.id]);
+    }
+    return role.id;
+}
+async function assignScopedRole(userId, roleKey, permissionKeys) {
+    const roleId = await ensureScopedRole(roleKey, permissionKeys);
+    await dbRun('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', [userId, roleId]);
+}
+
 function extractSessionCookie(res) {
     const raw = typeof res.headers.getSetCookie === 'function'
         ? res.headers.getSetCookie()
@@ -150,8 +166,8 @@ test('the owner role holds every permission in the catalogue', async () => {
 
 test('a user can be assigned multiple roles, and effective permissions are the union of both', async () => {
     const uid = await createTestUser('rbac_multi', 'multi-pass-123');
-    await assignRole(uid, 'kitchen');
-    await assignRole(uid, 'queue');
+    await assignScopedRole(uid, 'test_kitchen_only', ['kitchen.view', 'kitchen.manage']);
+    await assignScopedRole(uid, 'test_queue_only', ['queue.view', 'queue.manage']);
 
     const roleCount = await dbGet('SELECT COUNT(*) AS c FROM user_roles WHERE user_id = ?', [uid]);
     assert.equal(roleCount.c, 2, 'ต้องมี mapping 2 แถวสำหรับ user คนนี้ (kitchen + queue)');
@@ -176,7 +192,7 @@ test('anonymous request to a permission-gated route returns 401, not 403', async
 
 test('authenticated user WITH the required permission succeeds (200)', async () => {
     const uid = await createTestUser('rbac_kitchen_only', 'kitchen-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('rbac_kitchen_only', 'kitchen-pass-123');
 
     const res = await fetch(`${baseURL}/api/orders`, { headers: { Cookie: cookie } });
@@ -185,27 +201,26 @@ test('authenticated user WITH the required permission succeeds (200)', async () 
 
 test('authenticated user WITHOUT the required permission gets 403, not 401', async () => {
     const uid = await createTestUser('rbac_kitchen_only_2', 'kitchen-pass-456');
-    await assignRole(uid, 'kitchen');
+    // (Phase 8.2) ทุก role ระบบใหม่ (kitchen_staff/service_staff/manager) มี reports.view ติดมาด้วยหมดแล้ว — ใช้ custom role ขอบเขตแคบแทนเพื่อคงเจตนาเดิมของเทสต์นี้ (ไม่มี reports.view)
+    await assignScopedRole(uid, 'test_kitchen_only_2', ['kitchen.view', 'kitchen.manage']);
     const cookie = await loginAs('rbac_kitchen_only_2', 'kitchen-pass-456');
 
-    // kitchen role ไม่มี reports.view
     const res = await fetch(`${baseURL}/api/stats?date=2026-01-01`, { headers: { Cookie: cookie } });
     assert.equal(res.status, 403);
 });
 
-// ==================== 10: view-only role (manager) ไม่สามารถเรียก mutate endpoint ====================
+// ==================== 10: view-only custom role ไม่สามารถเรียก mutate endpoint ====================
 
-test('a view-only role (manager: *.view only, no *.manage) cannot call the corresponding mutate endpoint', async () => {
+test('a view-only custom role (tables.view only, no tables.manage) cannot call the corresponding mutate endpoint (Phase 8.2: the built-in manager role is no longer view-only, so a scoped custom role exercises the same view/manage boundary)', async () => {
     const uid = await createTestUser('rbac_manager', 'manager-pass-123');
-    await assignRole(uid, 'manager');
+    await assignScopedRole(uid, 'test_tables_view_only', ['tables.view']);
     const cookie = await loginAs('rbac_manager', 'manager-pass-123');
 
-    // manager มี tables.view แต่ไม่มี tables.manage
     const viewRes = await fetch(`${baseURL}/api/tables`, { headers: { Cookie: cookie } });
-    assert.equal(viewRes.status, 200, 'manager ควรดู /api/tables ได้ (มี tables.view)');
+    assert.equal(viewRes.status, 200, 'role นี้ควรดู /api/tables ได้ (มี tables.view)');
 
     const mutateRes = await openTable(cookie, '20');
-    assert.equal(mutateRes.status, 403, 'manager ไม่มี tables.manage ต้องเปิดโต๊ะไม่ได้');
+    assert.equal(mutateRes.status, 403, 'role นี้ไม่มี tables.manage ต้องเปิดโต๊ะไม่ได้');
 });
 
 // ==================== 11: authenticated แต่ไม่มี role เลย ====================
@@ -327,25 +342,26 @@ test('owner regression: Statistics/Reports — can view stats', async () => {
 
 test('a limited Kitchen account cannot access Reports', async () => {
     const uid = await createTestUser('rbac_kitchen_reports', 'kr-pass-123');
-    await assignRole(uid, 'kitchen');
+    // (Phase 8.2) kitchen_staff ตอนนี้มี reports.view ติดมาด้วยตามข้อกำหนดใหม่ — ใช้ custom role ขอบเขตแคบเพื่อคงเจตนาเดิมของเทสต์นี้
+    await assignScopedRole(uid, 'test_kitchen_reports', ['kitchen.view', 'kitchen.manage']);
     const cookie = await loginAs('rbac_kitchen_reports', 'kr-pass-123');
 
     const res = await fetch(`${baseURL}/api/stats?date=2026-01-01`, { headers: { Cookie: cookie } });
     assert.equal(res.status, 403);
 });
 
-test('a limited Kitchen account cannot manage Tables unless separately granted the tables role', async () => {
+test('a limited Kitchen account cannot manage Tables unless separately granted a role with tables.manage', async () => {
     const uid = await createTestUser('rbac_kitchen_tables', 'kt-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignScopedRole(uid, 'test_kitchen_tables', ['kitchen.view', 'kitchen.manage']);
     let cookie = await loginAs('rbac_kitchen_tables', 'kt-pass-123');
 
     const deniedRes = await openTable(cookie, '23');
     assert.equal(deniedRes.status, 403, 'kitchen เพียวๆ ต้องเปิดโต๊ะไม่ได้');
 
-    // แจก role tables เพิ่มให้ user คนเดิม (multi-role) — session เดิมต้องเห็นสิทธิ์ใหม่ทันทีโดยไม่ต้อง login ใหม่
-    await assignRole(uid, 'tables');
+    // แจก role ที่มี tables.manage เพิ่มให้ user คนเดิม (multi-role) — session เดิมต้องเห็นสิทธิ์ใหม่ทันทีโดยไม่ต้อง login ใหม่
+    await assignScopedRole(uid, 'test_tables_only', ['tables.view', 'tables.manage', 'tables.qr']);
     const grantedRes = await openTable(cookie, '23');
-    assert.equal(grantedRes.status, 200, 'หลังได้ role tables เพิ่ม (cookie เดิม ไม่ login ใหม่) ต้องเปิดโต๊ะได้แล้ว');
+    assert.equal(grantedRes.status, 200, 'หลังได้ role ที่มี tables.manage เพิ่ม (cookie เดิม ไม่ login ใหม่) ต้องเปิดโต๊ะได้แล้ว');
     await closeTable(cookie, '23');
 });
 
@@ -353,13 +369,13 @@ test('a limited Kitchen account cannot manage Tables unless separately granted t
 
 test('removing a user\'s role affects the NEXT request on the SAME already-active session', async () => {
     const uid = await createTestUser('rbac_revoke_role', 'revoke-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('rbac_revoke_role', 'revoke-pass-123');
 
     const before = await fetch(`${baseURL}/api/orders`, { headers: { Cookie: cookie } });
     assert.equal(before.status, 200);
 
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     await dbRun('DELETE FROM user_roles WHERE user_id = ? AND role_id = ?', [uid, kitchenRoleId]);
 
     const after = await fetch(`${baseURL}/api/orders`, { headers: { Cookie: cookie } });
@@ -368,13 +384,13 @@ test('removing a user\'s role affects the NEXT request on the SAME already-activ
 
 test('removing a permission from a role affects the NEXT request on the SAME already-active session', async () => {
     const uid = await createTestUser('rbac_revoke_perm', 'revokeperm-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('rbac_revoke_perm', 'revokeperm-pass-123');
 
     const before = await fetch(`${baseURL}/api/orders`, { headers: { Cookie: cookie } });
     assert.equal(before.status, 200);
 
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     const kitchenViewPermId = (await dbGet('SELECT id FROM permissions WHERE key = ?', ['kitchen.view'])).id;
     await dbRun('DELETE FROM role_permissions WHERE role_id = ? AND permission_id = ?', [kitchenRoleId, kitchenViewPermId]);
 
@@ -389,7 +405,7 @@ test('removing a permission from a role affects the NEXT request on the SAME alr
 
 test('an inactive user is rejected on permission-gated routes even with a role assigned', async () => {
     const uid = await createTestUser('rbac_inactive', 'inactive-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('rbac_inactive', 'inactive-pass-123');
 
     const before = await fetch(`${baseURL}/api/orders`, { headers: { Cookie: cookie } });
@@ -435,7 +451,7 @@ test('customer flows require zero permissions and zero staff login: table-sessio
 
 test('a staff user WITH kitchen.manage can perform update_order over the socket', async () => {
     const uid = await createTestUser('rbac_socket_ok', 'socketok-pass-123');
-    await assignRole(uid, 'kitchen');
+    await assignRole(uid, 'kitchen_staff');
     const cookie = await loginAs('rbac_socket_ok', 'socketok-pass-123');
     const ownerCookie = await loginAs(process.env.ADMIN_USER, process.env.ADMIN_PASS);
 
@@ -463,7 +479,8 @@ test('a staff user WITH kitchen.manage can perform update_order over the socket'
 
 test('an authenticated staff user WITHOUT kitchen.manage is denied update_order with a distinct forbidden_error (not auth_error)', async () => {
     const uid = await createTestUser('rbac_socket_forbidden', 'socketforbidden-pass-123');
-    await assignRole(uid, 'queue'); // มี session ถูกต้อง แต่ไม่มี kitchen.manage
+    // (Phase 8.2) ทุก role ระบบใหม่ที่มี queue.* ก็มี kitchen.manage ติดมาด้วยเสมอ — ใช้ custom role ขอบเขตแคบเพื่อคงเจตนาเดิม (มี session ถูกต้อง แต่ไม่มี kitchen.manage)
+    await assignScopedRole(uid, 'test_queue_only_2', ['queue.view', 'queue.manage']);
     const cookie = await loginAs('rbac_socket_forbidden', 'socketforbidden-pass-123');
 
     const staffClient = await connectAndWait({ Cookie: cookie });

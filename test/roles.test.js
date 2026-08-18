@@ -149,7 +149,7 @@ test('2. owner sees both system and custom roles in the same list', async () => 
 test('3. a system role reports is_system=true with the correct key', async () => {
     const res = await adminApi(ownerCookie, 'GET', '/api/admin/roles');
     const roles = await res.json();
-    const kitchen = roles.find((r) => r.key === 'kitchen');
+    const kitchen = roles.find((r) => r.key === 'kitchen_staff');
     assert.ok(kitchen);
     assert.equal(kitchen.is_system, true);
 });
@@ -215,7 +215,7 @@ test('9. custom role permissions can be edited (atomic replace)', async () => {
 });
 
 test('10. renaming a system role is rejected', async () => {
-    const kitchenId = await roleIdByKey('kitchen');
+    const kitchenId = await roleIdByKey('kitchen_staff');
     const res = await adminApi(ownerCookie, 'PATCH', `/api/admin/roles/${kitchenId}`, { name: 'Hacked Kitchen' });
     assert.equal(res.status, 400);
     const row = await dbGet('SELECT name FROM roles WHERE id = ?', [kitchenId]);
@@ -223,7 +223,7 @@ test('10. renaming a system role is rejected', async () => {
 });
 
 test('11. editing a system role\'s permissions is rejected', async () => {
-    const kitchenId = await roleIdByKey('kitchen');
+    const kitchenId = await roleIdByKey('kitchen_staff');
     const before = await dbAll('SELECT permission_id FROM role_permissions WHERE role_id = ?', [kitchenId]);
     const res = await adminApi(ownerCookie, 'PATCH', `/api/admin/roles/${kitchenId}`, { permission_keys: ['reports.view'] });
     assert.equal(res.status, 400);
@@ -232,7 +232,7 @@ test('11. editing a system role\'s permissions is rejected', async () => {
 });
 
 test('12. deleting a system role is rejected', async () => {
-    const kitchenId = await roleIdByKey('kitchen');
+    const kitchenId = await roleIdByKey('kitchen_staff');
     const res = await adminApi(ownerCookie, 'DELETE', `/api/admin/roles/${kitchenId}`);
     assert.equal(res.status, 400);
     const row = await dbGet('SELECT id FROM roles WHERE id = ?', [kitchenId]);
@@ -344,8 +344,9 @@ test('23. an unknown/fabricated permission key is rejected', async () => {
 // ==================== Role assignment ceiling ====================
 
 test('24. a non-owner with users.roles CAN assign a role within their own permission ceiling', async () => {
-    const actor = await createDelegatedAdmin(['users.roles', 'kitchen.view', 'kitchen.manage'], 'assign_ok');
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    // (Phase 8.2) kitchen_staff ต้องการ reports.view ด้วย (ไม่ใช่แค่ kitchen.view/manage เหมือน role "kitchen" เดิม) ต้องให้ actor มีครบตามนั้นถึงจะอยู่ในเพดานสิทธิ์ของตัวเอง
+    const actor = await createDelegatedAdmin(['users.roles', 'kitchen.view', 'kitchen.manage', 'reports.view'], 'assign_ok');
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     const targetId = await createTestUser('assign_ok_target', 'assign-ok-pass-123');
     const res = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [kitchenRoleId] });
     assert.equal(res.status, 200);
@@ -362,11 +363,14 @@ test('25. a non-owner CANNOT assign a custom role whose permissions exceed their
 });
 
 test('26. a non-owner CANNOT assign a SYSTEM role whose permissions exceed their own ceiling (not just custom roles)', async () => {
-    // role ระบบ "tables" มี tables.view + tables.manage + tables.qr — actor นี้ขาด tables.qr ไปตัวเดียว
-    const actor = await createDelegatedAdmin(['users.roles', 'tables.view', 'tables.manage'], 'assign_system_fail');
-    const tablesRoleId = await roleIdByKey('tables');
+    // (Phase 8.2) role ระบบ "manager" มี cashier.*/kitchen.*/queue.*/reports.view/tables.* ครบชุด — ให้ actor นี้มีครบทุกตัวยกเว้น tables.qr ไปตัวเดียว เพื่อคงเจตนาเดิมของเทสต์ (ขาดไปนิดเดียวก็ต้องโดนบล็อก)
+    const actor = await createDelegatedAdmin(
+        ['users.roles', 'cashier.view', 'cashier.manage', 'kitchen.view', 'kitchen.manage', 'queue.view', 'queue.manage', 'reports.view', 'tables.view', 'tables.manage'],
+        'assign_system_fail'
+    );
+    const managerRoleId = await roleIdByKey('manager');
     const targetId = await createTestUser('assign_system_fail_target', 'assign-sys-fail-pass-123');
-    const res = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [tablesRoleId] });
+    const res = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [managerRoleId] });
     assert.equal(res.status, 403);
 });
 
@@ -407,7 +411,7 @@ test('30. a rejected role assignment on ANOTHER user leaves that target\'s user_
     const powerfulRoleId = await createCustomRoleWithPermissions('custom_test_powerful_30', ['users.disable']);
     const actor = await createDelegatedAdmin(['users.roles'], 'assign_other_unchanged');
     const targetId = await createTestUser('assign_other_unchanged_target', 'assign-other-pass-123');
-    const kitchenRoleId = await roleIdByKey('kitchen');
+    const kitchenRoleId = await roleIdByKey('kitchen_staff');
     await dbRun('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)', [targetId, kitchenRoleId]);
 
     const res = await adminApi(actor.cookie, 'PATCH', `/api/admin/users/${targetId}`, { role_ids: [powerfulRoleId] });
@@ -626,14 +630,16 @@ test('48. the shipped users.js source filters the owner role out of the staff-as
 
 // ==================== Regression: Phase 5B must not disturb existing system-role behavior ====================
 
-test('49. the kitchen/queue/tables/manager system roles\' permission sets are unchanged after custom roles exist', async () => {
+test('49. (Phase 8.2) the kitchen_staff/service_staff/manager system roles\' permission sets are unchanged after custom roles exist', async () => {
     const res = await adminApi(ownerCookie, 'GET', '/api/admin/roles');
     const roles = await res.json();
     const byKey = Object.fromEntries(roles.map((r) => [r.key, r]));
-    assert.deepEqual(byKey.kitchen.permissions.sort(), ['kitchen.manage', 'kitchen.view']);
-    assert.deepEqual(byKey.queue.permissions.sort(), ['queue.manage', 'queue.view']);
-    assert.deepEqual(byKey.tables.permissions.sort(), ['tables.manage', 'tables.qr', 'tables.view']);
-    assert.deepEqual(byKey.manager.permissions.sort(), ['kitchen.view', 'queue.view', 'reports.view', 'tables.view']);
+    assert.deepEqual(byKey.kitchen_staff.permissions.sort(), ['kitchen.manage', 'kitchen.view', 'reports.view']);
+    assert.deepEqual(byKey.service_staff.permissions.sort(), ['kitchen.manage', 'kitchen.view', 'queue.view', 'reports.view']);
+    assert.deepEqual(byKey.manager.permissions.sort(), [
+        'cashier.manage', 'cashier.view', 'kitchen.manage', 'kitchen.view',
+        'queue.manage', 'queue.view', 'reports.view', 'tables.manage', 'tables.qr', 'tables.view',
+    ]);
 });
 
 test('50. the owner role still holds every permission in the catalogue, including the five new roles.* permissions', async () => {

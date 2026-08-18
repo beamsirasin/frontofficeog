@@ -680,3 +680,76 @@ test('Cashier view-only: tapping a denomination field never opens the numpad (no
     assert.ok(await page.isHidden('#staffNumpadModal'), 'a view-only account must never be able to open the numpad on a read-only field');
     await ctx.close();
 });
+
+// ==================== Phase 8.2: default restaurant roles + simple password policy ====================
+
+// ---- 35. Admin Roles UI shows exactly the four built-in system roles, locked, with a separate Custom Role section ----
+test('Admin Roles UI: shows exactly the four built-in system roles (เจ้าของร้าน/พนักงานครัว/พนักงานเสิร์ฟ/ผู้จัดการ) as locked System, with a separate Custom Role section and no duplicates', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/admin/login', '#adminUser', '#adminPin', app.personas.owner.username, app.personas.owner.password);
+    await page.waitForTimeout(400);
+    await page.click('[data-panel-nav="roles"]');
+    await page.waitForTimeout(400);
+
+    const systemNames = await page.$$eval('#systemRolesList .role-card .font-bold.text-gray-800', (els) => els.map((e) => e.textContent.trim()));
+    assert.deepEqual(systemNames.sort(), ['พนักงานครัว', 'พนักงานเสิร์ฟ', 'เจ้าของร้าน', 'ผู้จัดการ'].sort(), `system role section must show exactly the four built-in roles, got: ${systemNames.join(', ')}`);
+
+    const lockedBadgeCount = await page.locator('#systemRolesList .role-locked-badge:has-text("System")').count();
+    assert.equal(lockedBadgeCount, 4, 'all four system roles must display the locked 🔒 System badge');
+
+    // ไม่มีสำเนา custom role ตัวไหนซ้ำกับชื่อ role ระบบ (ที่ถูกโปรโมทไปแล้วต้องไม่เหลือค้างในโซน custom)
+    const customNames = await page.$$eval('#customRolesList .role-card .font-bold.text-gray-800', (els) => els.map((e) => e.textContent.trim()));
+    for (const builtin of ['เจ้าของร้าน', 'พนักงานครัว', 'พนักงานเสิร์ฟ', 'ผู้จัดการ']) {
+        assert.ok(!customNames.includes(builtin), `"${builtin}" must not also appear as a duplicate Custom Role card`);
+    }
+
+    // Staff Account role picker ต้องมี role ใหม่ครบ (owner ไม่รวมอยู่ในนั้น)
+    await page.click('[data-panel-nav="users"]');
+    await page.waitForTimeout(300);
+    await page.click('button:has-text("+ เพิ่มพนักงาน")');
+    await page.waitForTimeout(300);
+    const pickerText = await page.textContent('#createRoleChecklist');
+    assert.ok(pickerText.includes('พนักงานครัว'), 'staff role picker must offer พนักงานครัว');
+    assert.ok(pickerText.includes('พนักงานเสิร์ฟ'), 'staff role picker must offer พนักงานเสิร์ฟ');
+    assert.ok(pickerText.includes('ผู้จัดการ'), 'staff role picker must offer ผู้จัดการ');
+    assert.ok(!pickerText.includes('เจ้าของร้าน'), 'staff role picker must NOT offer the owner role');
+
+    await ctx.close();
+});
+
+// ---- 36. Password policy E2E: create a staff account with password "1", log in successfully, and confirm empty passwords are still rejected ----
+test('Password policy: creating a staff account with password "1" succeeds, that account can log in with "1", and an empty password is still rejected by the create form', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/admin/login', '#adminUser', '#adminPin', app.personas.owner.username, app.personas.owner.password);
+    await page.waitForTimeout(400);
+    await page.click('button:has-text("+ เพิ่มพนักงาน")');
+    await page.waitForTimeout(200);
+    await page.fill('#createDisplayName', 'One Char Password Staff');
+    await page.fill('#createUsername', 'bt_onechar_pw');
+    await page.fill('#createPassword', '1');
+    await page.click('#createUserModal button:has-text("สร้างบัญชี")');
+    await page.waitForTimeout(500);
+    const row = page.locator('#usersBody tr', { hasText: 'One Char Password Staff' });
+    assert.ok(await row.first().isVisible(), 'a staff account created with a one-character password must succeed and appear in the list');
+    await ctx.close();
+
+    // ล็อกอินจริงด้วยรหัสผ่าน "1" ผ่าน /staff/login
+    const ctx2 = await browser.newContext();
+    const page2 = await ctx2.newPage();
+    await loginUI(page2, app.base, '/staff/login', '#staffUser', '#staffPin', 'bt_onechar_pw', '1');
+    assert.ok(page2.url().startsWith(`${app.base}/staff/`), `login with a one-character password must succeed and land under /staff/, got ${page2.url()}`);
+    await ctx2.close();
+
+    // รหัสผ่านว่างเปล่ายังต้องถูกปฏิเสธ (HTML5 required กันไว้ชั้นแรก — ยืนยันว่า attribute required ยังอยู่ ไม่ได้ถูกถอดออกไปพร้อม minlength)
+    const ctx3 = await browser.newContext();
+    const page3 = await ctx3.newPage();
+    await loginUI(page3, app.base, '/admin/login', '#adminUser', '#adminPin', app.personas.owner.username, app.personas.owner.password);
+    await page3.waitForTimeout(400);
+    await page3.click('button:has-text("+ เพิ่มพนักงาน")');
+    await page3.waitForTimeout(200);
+    const isRequired = await page3.getAttribute('#createPassword', 'required');
+    assert.equal(isRequired, '', 'the password field must still be required (empty submission blocked) even though minlength is gone');
+    await ctx3.close();
+});
