@@ -263,18 +263,29 @@ test('16. a closing draft is created independently of the opening sheet for the 
     assert.equal(body.sheet.grand_total, 1500);
 });
 
+// (Phase 8) ปิดยอดได้ก็ต่อเมื่อ opening วันเดียวกัน finalized แล้ว + กรอกยอดขายเงินสด POS แล้วเท่านั้น — ตัวช่วยนี้ทำสองอย่างนั้นให้ก่อนเทสต์ finalize closing แบบเดิม (Phase 7)
+async function finalizeOpeningAndSetCashSales(cookie, date) {
+    const openingCreate = await api(cookie, 'PUT', '/api/cashier/sheets/opening', { business_date: date, lines: allNineLines({ 10: 1 }) });
+    const openingId = (await openingCreate.json()).sheet.id;
+    await api(cookie, 'POST', `/api/cashier/sheets/${openingId}/finalize`, {});
+    const salesRes = await api(cookie, 'PUT', `/api/cashier/day/${date}/cash-sales`, { amount_baht: 1000, expected_revision: 0 });
+    return (await salesRes.json()).day_state.revision;
+}
+
 test('17. finalize a closing sheet', async () => {
+    const dayRevision = await finalizeOpeningAndSetCashSales(ownerCookie, '2026-08-17');
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: '2026-08-17', lines: allNineLines({ 500: 1 }) });
     const id = (await create.json()).sheet.id;
-    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, {});
+    const res = await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: dayRevision });
     assert.equal(res.status, 200);
     assert.equal((await res.json()).sheet.status, 'finalized');
 });
 
 test('18. a finalized closing sheet cannot be edited', async () => {
+    const dayRevision = await finalizeOpeningAndSetCashSales(ownerCookie, '2026-08-18');
     const create = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: '2026-08-18', lines: allNineLines({ 500: 1 }) });
     const id = (await create.json()).sheet.id;
-    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, {});
+    await api(ownerCookie, 'POST', `/api/cashier/sheets/${id}/finalize`, { expected_day_revision: dayRevision });
     const res = await api(ownerCookie, 'PUT', '/api/cashier/sheets/closing', { business_date: '2026-08-18', lines: allNineLines({ 500: 999 }) });
     assert.equal(res.status, 409);
 });

@@ -328,3 +328,182 @@ test('Cashier stale-write conflict: a second tab\'s stale save is rejected with 
     await ctxA.close();
     await ctxB.close();
 });
+
+// ==================== Phase 8: cash movements & daily reconciliation ====================
+
+test('Cashier daily reconciliation: full workflow — movements, void, POS sales, live variance, and finalize locks everything', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashier.username, app.personas.cashier.password);
+    await page.click('#btn-cashier');
+    await page.waitForTimeout(400);
+    const date = '2025-05-01';
+    await gotoCashierDate(page, date);
+
+    // A. เงินเปิดร้าน — ต้อง finalize ก่อนถึงจะมี reconciliation ที่คำนวณได้
+    await page.click('#cashierTabOpening');
+    await page.waitForTimeout(300);
+    await page.fill('.cashier-qty-input[data-denom="1000"]', '5');
+    await page.click('#cashierSaveBtn');
+    await page.waitForTimeout(500);
+    await page.click('#cashierFinalizeBtn');
+    await page.waitForTimeout(300);
+    await page.click('#confirmModal button:has-text("ตกลง")');
+    await page.waitForTimeout(500);
+
+    await page.click('#cashierTabClosing');
+    await page.waitForTimeout(400);
+    assert.ok(await page.isHidden('#cashierOpeningReminder'), 'opening finalized แล้ว ต้องไม่มีคำเตือนให้ยืนยันเงินเปิดร้านอีก');
+
+    // B/C/D. เพิ่มเงินเข้า + เงินออก แล้วต้องปรากฏทันที
+    await page.click('#cashierAddInBtn');
+    await page.waitForTimeout(300);
+    await page.fill('#cashierMovementAmount', '1000');
+    await page.click('#cashierMovementModal button:has-text("บันทึกรายการ")');
+    await page.waitForTimeout(500);
+    let movementsText = await page.textContent('#cashierMovementsList');
+    assert.match(movementsText, /เติมเงินทอน/);
+    assert.match(movementsText, /1,000/);
+
+    await page.click('#cashierAddOutBtn');
+    await page.waitForTimeout(300);
+    await page.selectOption('#cashierMovementCategory', 'safe_drop');
+    await page.fill('#cashierMovementAmount', '500');
+    await page.click('#cashierMovementModal button:has-text("บันทึกรายการ")');
+    await page.waitForTimeout(500);
+    movementsText = await page.textContent('#cashierMovementsList');
+    assert.match(movementsText, /นำเงินออกไปเก็บ/);
+
+    // E/F. ยกเลิกรายการเงินออก พร้อมเหตุผล — แถวต้องยังอยู่ แต่ถูกทำเครื่องหมายว่ายกเลิกแล้ว
+    // มีปุ่ม "ยกเลิกรายการ" สองปุ่มตอนนี้ (ทั้งเงินเข้า/เงินออกยัง active อยู่) — เจาะจงแถวที่มี "นำเงินออกไปเก็บ" เท่านั้น
+    await page.locator('#cashierMovementsList > div', { hasText: 'นำเงินออกไปเก็บ' }).getByText('ยกเลิกรายการ').click();
+    await page.waitForTimeout(300);
+    await page.fill('#cashierVoidReason', 'ทดสอบยกเลิก');
+    await page.click('#cashierVoidModal button:has-text("ยืนยันยกเลิกรายการ")');
+    await page.waitForTimeout(500);
+    movementsText = await page.textContent('#cashierMovementsList');
+    assert.match(movementsText, /นำเงินออกไปเก็บ/, 'แถวที่ยกเลิกแล้วต้องยังปรากฏอยู่ในประวัติ ไม่หายไป');
+    assert.match(movementsText, /ยกเลิกแล้ว/);
+
+    // G/H. กรอกยอดขายเงินสด POS แล้ว reconciliation ต้องอัปเดต (opening 5000 + pos 20000 + cash_in 1000 - cash_out 0(voided) = 26000)
+    await page.fill('#cashierPosSalesInput', '20000');
+    await page.click('#cashierPosSalesSaveBtn');
+    await page.waitForTimeout(500);
+    const expectedText = await page.textContent('#reconExpected');
+    assert.match(expectedText.replace(/[^\d]/g, ''), /^26000$/);
+
+    // I/J. กรอกเงินนับจริงตอนปิดร้าน — Actual/ผลต่างต้องอัปเดตแบบสด (26000 = ตรงพอดี)
+    await page.fill('.cashier-qty-input[data-denom="1000"]', '26');
+    await page.waitForTimeout(200);
+    const actualText = await page.textContent('#reconActual');
+    assert.match(actualText.replace(/[^\d]/g, ''), /^26000$/);
+    const varianceText = await page.textContent('#reconVarianceBadge');
+    assert.match(varianceText, /เงินสดตรง/);
+
+    await page.click('#cashierSaveBtn');
+    await page.waitForTimeout(500);
+
+    // K. ปิดยอดประจำวัน
+    await page.click('#cashierFinalizeBtn');
+    await page.waitForTimeout(300);
+    await page.click('#confirmModal button:has-text("ตกลง")');
+    await page.waitForTimeout(600);
+    assert.match(await page.textContent('#cashierStatusBadge'), /ยืนยันแล้ว/);
+
+    // L/M. หลังปิดยอด: ปุ่มเพิ่มเงินเข้า/ออก และปุ่มบันทึกยอดขาย POS ต้องหายไป, ช่องกรอกยอดขาย POS ต้อง read-only
+    assert.ok(await page.isHidden('#cashierAddInBtn'));
+    assert.ok(await page.isHidden('#cashierAddOutBtn'));
+    assert.ok(await page.isHidden('#cashierPosSalesSaveBtn'));
+    const posReadOnly = await page.getAttribute('#cashierPosSalesInput', 'readonly');
+    assert.notEqual(posReadOnly, null);
+
+    await ctx.close();
+});
+
+// ---- N. stale-finalize (day revision) conflict from a second session ----
+test('Cashier stale Closing finalize (day revision): a second session\'s finalize attempt is rejected after a movement changes the day revision', async () => {
+    const ctxA = await browser.newContext();
+    const ctxB = await browser.newContext();
+    const pageA = await ctxA.newPage();
+    const pageB = await ctxB.newPage();
+    await loginUI(pageA, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashier.username, app.personas.cashier.password);
+    await loginUI(pageB, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashier.username, app.personas.cashier.password);
+
+    const date = '2025-05-02';
+    for (const page of [pageA, pageB]) {
+        await page.click('#btn-cashier');
+        await page.waitForTimeout(400);
+        await gotoCashierDate(page, date);
+    }
+
+    // เตรียมเงินเปิดร้าน + ยอดขาย POS + ปิดร้านฉบับร่างผ่าน A ก่อน (ให้ทั้งสอง session พร้อม finalize ได้)
+    await pageA.click('#cashierTabOpening');
+    await pageA.waitForTimeout(300);
+    await pageA.fill('.cashier-qty-input[data-denom="1000"]', '5');
+    await pageA.click('#cashierSaveBtn');
+    await pageA.waitForTimeout(400);
+    await pageA.click('#cashierFinalizeBtn');
+    await pageA.waitForTimeout(300);
+    await pageA.click('#confirmModal button:has-text("ตกลง")');
+    await pageA.waitForTimeout(500);
+
+    await pageA.click('#cashierTabClosing');
+    await pageA.waitForTimeout(400);
+    await pageA.fill('#cashierPosSalesInput', '10000');
+    await pageA.click('#cashierPosSalesSaveBtn');
+    await pageA.waitForTimeout(400);
+    await pageA.fill('.cashier-qty-input[data-denom="1000"]', '15');
+    await pageA.click('#cashierSaveBtn');
+    await pageA.waitForTimeout(400);
+
+    // B โหลดหน้าเดิม ณ ตอนนี้ (ถือ day revision ปัจจุบันไว้ในหน่วยความจำของหน้า)
+    await pageB.click('#cashierTabClosing');
+    await pageB.waitForTimeout(500);
+
+    // A เพิ่มเงินเข้าอีกรายการ — day revision ขยับไปแล้วจากมุมมองของ B โดยที่ B ไม่รู้ตัว
+    await pageA.click('#cashierAddInBtn');
+    await pageA.waitForTimeout(300);
+    await pageA.fill('#cashierMovementAmount', '500');
+    await pageA.click('#cashierMovementModal button:has-text("บันทึกรายการ")');
+    await pageA.waitForTimeout(500);
+
+    // B พยายามปิดยอดด้วยข้อมูล reconciliation เก่าที่ยังไม่เห็นรายการที่ A เพิ่งเพิ่ม
+    let dialogMessage = null;
+    pageB.on('dialog', async (dialog) => { dialogMessage = dialog.message(); await dialog.accept(); });
+    await pageB.click('#cashierFinalizeBtn');
+    await pageB.waitForTimeout(300);
+    const confirmVisible = await pageB.isVisible('#confirmModal');
+    if (confirmVisible) await pageB.click('#confirmModal button:has-text("ตกลง")');
+    await pageB.waitForTimeout(700);
+
+    assert.ok(dialogMessage, 'B ต้องได้รับคำเตือนความขัดแย้ง ไม่ใช่ปิดยอดสำเร็จแบบเงียบๆ ด้วยข้อมูลเก่า');
+    assert.match(dialogMessage, /แก้ไขจากอุปกรณ์อื่น|ยืนยันแล้ว|มีการเปลี่ยนแปลง/);
+
+    await ctxA.close();
+    await ctxB.close();
+});
+
+// ---- O. cashier.view can inspect the daily reconciliation but not mutate any part of it ----
+test('Cashier view-only: can inspect movements/POS sales/reconciliation for a date but has no mutation controls', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashierViewOnly.username, app.personas.cashierViewOnly.password);
+    await page.click('#btn-cashier');
+    await page.waitForTimeout(400);
+    await gotoCashierDate(page, '2025-05-01'); // วันที่จากเทสต์ workflow ก่อนหน้า ซึ่งมี movements/POS sales/reconciliation ที่ปิดยอดไปแล้วจริง
+    await page.click('#cashierTabClosing');
+    await page.waitForTimeout(500);
+
+    assert.ok(await page.isHidden('#cashierAddInBtn'), 'view-only ต้องไม่เห็นปุ่มเพิ่มเงินเข้า');
+    assert.ok(await page.isHidden('#cashierAddOutBtn'), 'view-only ต้องไม่เห็นปุ่มเพิ่มเงินออก');
+    assert.ok(await page.isHidden('#cashierPosSalesSaveBtn'), 'view-only ต้องไม่เห็นปุ่มบันทึกยอดขาย POS');
+    assert.equal(await page.locator('#cashierMovementsList button:has-text("ยกเลิกรายการ")').count(), 0, 'view-only ต้องไม่มีปุ่มยกเลิกรายการเลยสักปุ่ม');
+
+    const movementsText = await page.textContent('#cashierMovementsList');
+    assert.match(movementsText, /เติมเงินทอน/, 'view-only ต้องยังเห็นประวัติ movements ได้ตามปกติ');
+    const posValue = await page.inputValue('#cashierPosSalesInput');
+    assert.equal(posValue, '20000');
+    assert.ok(await page.isVisible('#cashierReconciliationSection'), 'view-only ต้องยังเห็นแผงสรุปเงินสดได้');
+
+    await ctx.close();
+});

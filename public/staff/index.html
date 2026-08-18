@@ -214,6 +214,35 @@
                         </div>
 
                         <div id="cashierFormArea" class="hidden p-3 md:p-4 space-y-5">
+                            <!-- ================= Phase 8: closing-only reconciliation flow ================= -->
+                            <div id="cashierOpeningReminder" class="hidden bg-orange-50 border-2 border-orange-300 rounded-lg p-3 text-orange-800 font-bold text-sm text-center">
+                                กรุณายืนยันเงินเปิดร้านก่อนปิดยอดประจำวัน
+                            </div>
+
+                            <div id="cashierMovementsSection" class="hidden">
+                                <div class="flex items-center justify-between mb-2 border-b pb-1 flex-wrap gap-2">
+                                    <h3 class="font-bold text-gray-700">เงินเข้า/ออกระหว่างวัน</h3>
+                                    <div class="flex gap-2">
+                                        <button id="cashierAddInBtn" onclick="CashierModule.openMovementModal('cash_in')" class="hidden bg-green-600 hover:bg-green-700 text-white font-bold text-xs px-3 py-2 rounded">+ เงินเข้า</button>
+                                        <button id="cashierAddOutBtn" onclick="CashierModule.openMovementModal('cash_out')" class="hidden bg-red-600 hover:bg-red-700 text-white font-bold text-xs px-3 py-2 rounded">− เงินออก</button>
+                                    </div>
+                                </div>
+                                <div id="cashierMovementsList" class="space-y-2 max-h-72 overflow-y-auto"></div>
+                                <p id="cashierMovementsEmpty" class="hidden text-center text-gray-400 text-sm py-4">ยังไม่มีรายการเงินเข้า/ออก</p>
+                            </div>
+
+                            <div id="cashierPosSalesSection" class="hidden">
+                                <h3 class="font-bold text-gray-700 mb-1 border-b pb-1">ยอดขายเงินสดตาม POS</h3>
+                                <p class="text-xs text-gray-500 mb-2">(กรอกด้วยตนเอง) กรอกยอดเงินสดสุทธิจากรายงาน POS ภายนอก</p>
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <input type="number" inputmode="numeric" id="cashierPosSalesInput" class="flex-1 min-w-[10rem] border-2 border-gray-300 rounded-lg text-center py-2 font-bold text-lg" placeholder="ยังไม่ได้กรอก">
+                                    <span class="font-bold text-gray-500">บาท</span>
+                                    <button id="cashierPosSalesSaveBtn" onclick="CashierModule.saveCashSales()" class="hidden bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2 rounded-lg">บันทึก</button>
+                                </div>
+                                <p id="cashierPosSalesMeta" class="text-xs text-gray-500 mt-1"></p>
+                            </div>
+                            <!-- ================= end Phase 8 pre-count sections ================= -->
+
                             <div>
                                 <h3 class="font-bold text-gray-700 mb-2 border-b pb-1">เหรียญ</h3>
                                 <table class="w-full text-sm md:text-base">
@@ -259,6 +288,25 @@
                                 <span id="cashierGrandTotal" class="font-black text-blue-900 text-2xl md:text-3xl">฿0</span>
                             </div>
                             <p id="cashierMetaInfo" class="text-xs text-gray-500"></p>
+
+                            <!-- ================= Phase 8: reconciliation summary (closing only) ================= -->
+                            <div id="cashierReconciliationSection" class="hidden bg-gray-50 border-2 border-gray-300 rounded-lg p-4">
+                                <h3 class="font-bold text-gray-700 border-b pb-1 mb-2">สรุปเงินสด</h3>
+                                <p id="cashierReconIncomplete" class="hidden text-center text-gray-500 text-sm py-2"></p>
+                                <div id="cashierReconRows" class="hidden space-y-1.5 text-sm">
+                                    <div class="flex justify-between"><span class="text-gray-600">เงินเปิดร้าน</span><span id="reconOpening" class="font-bold">-</span></div>
+                                    <div class="flex justify-between"><span class="text-gray-600">ยอดขายเงินสดตาม POS</span><span id="reconSales" class="font-bold">-</span></div>
+                                    <div class="flex justify-between"><span class="text-gray-600">เงินเข้าระหว่างวัน</span><span id="reconIn" class="font-bold text-green-700">-</span></div>
+                                    <div class="flex justify-between"><span class="text-gray-600">เงินออกระหว่างวัน</span><span id="reconOut" class="font-bold text-red-700">-</span></div>
+                                    <div class="border-t pt-1.5 flex justify-between font-bold text-gray-800"><span>เงินที่ควรมี</span><span id="reconExpected">-</span></div>
+                                    <div class="flex justify-between font-bold text-gray-800"><span>เงินนับจริง</span><span id="reconActual">-</span></div>
+                                    <div class="border-t pt-2 flex justify-between items-center">
+                                        <span class="font-bold text-gray-800">ผลต่าง</span>
+                                        <span id="reconVarianceBadge" class="font-black text-base px-3 py-1 rounded-full">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- ================= end Phase 8 reconciliation summary ================= -->
                             <div class="flex flex-wrap gap-2">
                                 <button id="cashierSaveBtn" onclick="CashierModule.saveDraft()" class="hidden flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow">บันทึกฉบับร่าง</button>
                                 <button id="cashierFinalizeBtn" onclick="CashierModule.confirmFinalize()" class="hidden flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg shadow">ยืนยันรายการ</button>
@@ -596,6 +644,52 @@
             </div>
             <div class="px-4 md:px-6 py-3 md:py-4 border-t flex-shrink-0">
                 <button onclick="CashierModule.saveNextDay()" class="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-lg text-lg shadow-lg">บันทึกเป็นฉบับร่างวันถัดไป</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= Modal: Cashier add cash movement (Phase 8) ================= -->
+    <div id="cashierMovementModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-2 md:p-4" onclick="if(event.target===this)CashierModule.closeMovementModal()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-md relative flex flex-col">
+            <div class="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 border-b flex-shrink-0">
+                <h2 id="cashierMovementModalTitle" class="text-lg md:text-xl font-bold text-gray-800">เงินเข้า</h2>
+                <button onclick="CashierModule.closeMovementModal()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+            </div>
+            <div class="p-4 md:p-6 space-y-4">
+                <div>
+                    <label class="block text-gray-700 font-bold mb-2">ประเภท</label>
+                    <select id="cashierMovementCategory" class="w-full border-2 border-gray-300 rounded-lg py-2.5 px-3 font-bold text-base"></select>
+                </div>
+                <div>
+                    <label class="block text-gray-700 font-bold mb-2">จำนวนเงิน (บาท)</label>
+                    <input type="number" inputmode="numeric" pattern="[0-9]*" id="cashierMovementAmount" class="w-full border-2 border-gray-300 rounded-lg py-2.5 px-3 text-center text-xl font-bold">
+                </div>
+                <div>
+                    <label class="block text-gray-700 font-bold mb-2">หมายเหตุ</label>
+                    <input type="text" id="cashierMovementNote" maxlength="200" class="w-full border-2 border-gray-300 rounded-lg py-2.5 px-3">
+                </div>
+                <p id="cashierMovementError" class="hidden text-sm text-red-600 font-bold"></p>
+            </div>
+            <div class="px-4 md:px-6 py-3 md:py-4 border-t flex-shrink-0">
+                <button onclick="CashierModule.submitMovement()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg text-lg shadow-lg">บันทึกรายการ</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= Modal: Cashier void cash movement (Phase 8) ================= -->
+    <div id="cashierVoidModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4" onclick="if(event.target===this)CashierModule.closeVoidModal()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm relative flex flex-col">
+            <div class="px-4 md:px-6 py-4 border-b">
+                <h2 class="text-lg font-bold text-gray-800">ยกเลิกรายการ</h2>
+            </div>
+            <div class="p-4 md:p-6 space-y-3">
+                <label class="block text-gray-700 font-bold">เหตุผลที่ยกเลิก</label>
+                <input type="text" id="cashierVoidReason" maxlength="200" placeholder="เช่น กรอกจำนวนผิด" class="w-full border-2 border-gray-300 rounded-lg py-2.5 px-3">
+                <p id="cashierVoidError" class="hidden text-sm text-red-600 font-bold"></p>
+            </div>
+            <div class="flex border-t">
+                <button onclick="CashierModule.closeVoidModal()" class="flex-1 py-3.5 text-gray-500 font-bold hover:bg-gray-50 transition border-r border-gray-100">ยกเลิก</button>
+                <button onclick="CashierModule.confirmVoidSubmit()" class="flex-1 py-3.5 text-red-600 font-bold hover:bg-red-50 transition">ยืนยันยกเลิกรายการ</button>
             </div>
         </div>
     </div>

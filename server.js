@@ -397,6 +397,38 @@ db.serialize(() => {
     // (Phase 7.1) optimistic-concurrency version สำหรับใบตรวจนับเงินสด — DB เดิม (Phase 7) ยังไม่มีคอลัมน์นี้ ต้อง ALTER เพิ่ม, DEFAULT 1 ให้แถวเก่าที่มีอยู่แล้วได้ค่าเริ่มต้นที่ปลอดภัย (ไม่ destructive)
     db.run("ALTER TABLE cash_count_sheets ADD COLUMN version INTEGER NOT NULL DEFAULT 1", () => {});
 
+    // (Phase 8) เงินเข้า/ออกระหว่างวัน นอกเหนือยอดขายเงินสดจาก POS ภายนอก — amount เก็บเป็นจำนวนเต็มบาทเสมอ (ไม่มี floating-point เงิน) เป็นค่า "บวก" เสมอ ทิศทางตัดสินโดย direction
+    // ไม่มี hard delete — รายการที่ผิดต้อง "ยกเลิก" (status='voided') เท่านั้น เก็บ original ไว้ครบเพื่อความโปร่งใสทางการเงิน (ดู section 9 ของข้อกำหนด)
+    db.run(`CREATE TABLE IF NOT EXISTS cash_movements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_date TEXT NOT NULL,
+        direction TEXT NOT NULL CHECK (direction IN ('cash_in', 'cash_out')),
+        category TEXT NOT NULL CHECK (category IN ('float_add', 'other_in', 'safe_drop', 'cash_expense', 'other_out')),
+        amount_baht INTEGER NOT NULL CHECK (amount_baht > 0),
+        note TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'voided')),
+        created_by INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        voided_by INTEGER,
+        voided_at DATETIME,
+        void_reason TEXT,
+        FOREIGN KEY (created_by) REFERENCES users(id),
+        FOREIGN KEY (voided_by) REFERENCES users(id)
+    )`);
+    // (Phase 8) สถานะ reconciliation ต่อวัน — เก็บแค่ยอดขายเงินสดที่กรอกเอง (จาก POS ภายนอก) + revision เดียว ใช้กัน lost-update ข้าม
+    // มือถือ/แท็บที่ต่างกันสำหรับ "การเปลี่ยนแปลงใดๆ ที่กระทบ reconciliation" (แก้ยอด POS, สร้าง/ยกเลิก cash movement) — ไม่เก็บ opening/closing/expected/actual/variance ที่นี่เลย (คำนวณสดฝั่งเซิร์ฟเวอร์เสมอ)
+    db.run(`CREATE TABLE IF NOT EXISTS cash_day_states (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_date TEXT NOT NULL UNIQUE,
+        manual_cash_sales_baht INTEGER,
+        revision INTEGER NOT NULL DEFAULT 0,
+        sales_updated_by INTEGER,
+        sales_updated_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (sales_updated_by) REFERENCES users(id)
+    )`);
+
     // Index เร่งการค้นหา (กัน full table scan เมื่อข้อมูลสะสมเยอะ)
     db.run("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)", () => {});
     db.run("CREATE INDEX IF NOT EXISTS idx_orders_session_token ON orders(session_token)", () => {});
@@ -408,6 +440,7 @@ db.serialize(() => {
     db.run("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)", () => {});
     db.run("CREATE INDEX IF NOT EXISTS idx_cash_count_sheets_business_date ON cash_count_sheets(business_date)", () => {});
     db.run("CREATE INDEX IF NOT EXISTS idx_cash_count_lines_sheet_id ON cash_count_lines(sheet_id)", () => {});
+    db.run("CREATE INDEX IF NOT EXISTS idx_cash_movements_business_date ON cash_movements(business_date)", () => {});
 
     for(let i=1; i<=27; i++) {
         db.run("INSERT OR IGNORE INTO tables (table_no, is_open, can_order) VALUES (?, false, true)", [i.toString()]);
@@ -2053,6 +2086,9 @@ app.put('/api/cashier/sheets/:type', requireAuth, requirePermission(PERMISSIONS.
 // ตอนนี้รวมเป็น UPDATE ... WHERE status = 'draft' คำสั่งเดียว แล้วเช็ค affected rows แทน — ผ่าน withTransaction (คิว serialize ระดับแอป
 // เดียวกับ PUT/prepare-next-day) เพื่อไม่ให้ statement เดี่ยวๆ นี้ไปแทรกกลางธุรกรรม BEGIN...COMMIT ของ sheet อื่นบน connection เดียวกันโดยบังเอิญ
 // มีแค่ request เดียวเท่านั้นที่ WHERE จะ match — คนแพ้ affected rows = 0 ไม่แตะ finalized_by/finalized_at ของตัวเองเข้าไปในแถวเลยแม้แต่นิดเดียว
+// (Phase 8) เฉพาะ sheet_type='closing' เท่านั้นที่ต้องผ่านเงื่อนไข reconciliation เพิ่ม (opening วันเดียวกัน finalized แล้ว + กรอกยอดขาย POS แล้ว + day revision ตรงกับที่ client ถืออยู่)
+// — opening finalize ไม่แตะ/ไม่รู้จัก reconciliation เลยแม้แต่น้อย ตรงตามข้อกำหนด "Opening finalization remains independent"
+// ทุกเงื่อนไข (status/version ของ sheet เอง + เงื่อนไข Phase 8 ของ closing) ตรวจภายใน withTransaction เดียวกันทั้งหมด — กัน race ระหว่าง movement/void/แก้ยอด POS กับ finalize (ดู section 18-20 ของข้อกำหนด)
 app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
     const sheetId = parseInt(req.params.id, 10);
     if (!Number.isInteger(sheetId)) return res.status(400).json({ error: 'invalid_id' });
@@ -2060,11 +2096,47 @@ app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERM
         const before = await getCashSheetById(sheetId);
         if (!before) return res.status(404).json({ error: 'not_found' });
 
-        const updateResult = await withTransaction(() => dbRunAsync(
-            "UPDATE cash_count_sheets SET status = 'finalized', finalized_by = ?, finalized_at = CURRENT_TIMESTAMP, updated_by = ?, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ? AND status = 'draft'",
-            [req.authUser.id, req.authUser.id, sheetId]
-        ));
-        if (updateResult.changes === 0) {
+        let expectedDayRevision = null;
+        if (before.sheet_type === 'closing') {
+            expectedDayRevision = Number(req.body && req.body.expected_day_revision);
+            if (!Number.isInteger(expectedDayRevision) || expectedDayRevision < 0) {
+                return res.status(400).json({ error: 'ต้องระบุ expected_day_revision ให้ถูกต้อง' });
+            }
+        }
+
+        let conflictReason = null;
+        const updateResult = await withTransaction(async () => {
+            if (before.sheet_type === 'closing') {
+                const openingRow = await getCashSheetRow(before.business_date, 'opening');
+                if (!openingRow || openingRow.status !== 'finalized') {
+                    conflictReason = 'opening_not_finalized';
+                    return null;
+                }
+                const dayState = await getDayStateRow(before.business_date);
+                if (!dayState || dayState.manual_cash_sales_baht === null) {
+                    conflictReason = 'cash_sales_missing';
+                    return null;
+                }
+                if (dayState.revision !== expectedDayRevision) {
+                    conflictReason = 'stale_day_revision';
+                    return null;
+                }
+            }
+            return dbRunAsync(
+                "UPDATE cash_count_sheets SET status = 'finalized', finalized_by = ?, finalized_at = CURRENT_TIMESTAMP, updated_by = ?, updated_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ? AND status = 'draft'",
+                [req.authUser.id, req.authUser.id, sheetId]
+            );
+        });
+
+        if (conflictReason) {
+            const messages = {
+                opening_not_finalized: 'กรุณายืนยันเงินเปิดร้านก่อนปิดยอดประจำวัน',
+                cash_sales_missing: 'กรุณากรอกยอดขายเงินสดตาม POS ก่อนปิดยอด',
+                stale_day_revision: 'ข้อมูลเงินเข้า/ออกหรือยอดขาย POS มีการเปลี่ยนแปลงระหว่างที่กำลังปิดยอด กรุณาโหลดข้อมูลล่าสุด',
+            };
+            return res.status(409).json({ error: messages[conflictReason], conflict_reason: conflictReason });
+        }
+        if (!updateResult || updateResult.changes === 0) {
             return res.status(409).json({ error: 'ใบตรวจนับนี้ยืนยันไปแล้ว', conflict_reason: 'finalized' });
         }
         res.json({ sheet: await summarizeCashSheet(await getCashSheetById(sheetId)) });
@@ -2142,6 +2214,285 @@ app.post('/api/cashier/sheets/prepare-next-day', requireAuth, requirePermission(
     } catch (e) {
         if (e && e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'มีใบตรวจนับของวันถัดไปถูกสร้างไปแล้ว กรุณาโหลดใหม่', conflict_reason: 'duplicate' });
         console.error('[cashier] เตรียมเงินเปิดร้านวันถัดไปไม่สำเร็จ:', e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// ================== Cashier: เงินเข้า/ออกระหว่างวัน + สรุปเงินสดประจำวัน (Phase 8) ==================
+// ยังไม่ใช่ POS — ร้านนี้ใช้ POS ภายนอกแยกต่างหาก ระบบนี้ไม่เชื่อมต่อ ไม่ดึงข้อมูล ไม่คำนวณยอดขายจาก order ใดๆ ทั้งสิ้น
+// พนักงานพิมพ์ "ยอดขายเงินสดสุทธิจากรายงาน POS ภายนอก" เข้ามาเองตอนปิดยอด — ระบบเก็บค่านั้นตรงๆ ไม่ตรวจสอบความถูกต้องของตัวเลขนั้นเลย
+// สมการ: Expected Cash = เงินเปิดร้าน(finalized) + ยอดขายเงินสด POS(กรอกเอง) + เงินเข้า(active) - เงินออก(active); Variance = เงินนับจริงตอนปิด - Expected Cash
+// ทุกอย่างคำนวณฝั่งเซิร์ฟเวอร์เสมอจาก opening/closing sheet ที่มีอยู่แล้ว + cash_movements + cash_day_states เท่านั้น — ไม่เชื่อ expected/actual/variance ที่ browser ส่งมาเด็ดขาด
+
+const CASH_MOVEMENT_CATEGORY_DIRECTIONS = {
+    float_add: 'cash_in',
+    other_in: 'cash_in',
+    safe_drop: 'cash_out',
+    cash_expense: 'cash_out',
+    other_out: 'cash_out',
+};
+const CASH_MOVEMENT_AMOUNT_MAX = 10000000; // 10 ล้านบาทต่อรายการ — เพดานกว้างพอสำหรับการดำเนินงานจริงของร้าน กันค่าที่ผิดปกติชัดเจน/overflow ไม่ใช่เพดานเชิงธุรกิจ
+const CASH_MOVEMENT_NOTE_MAX_LENGTH = 200;
+const MANUAL_CASH_SALES_MAX = 100000000; // ยอดขายทั้งวัน (ไม่ใช่เงินสดในลิ้นชักเดี่ยวๆ) อาจสูงกว่า movement เดี่ยวมาก จึงตั้งเพดานกว้างกว่า
+
+function validateCashMovementInput(body) {
+    const direction = body.direction;
+    if (direction !== 'cash_in' && direction !== 'cash_out') return { error: 'ทิศทางไม่ถูกต้อง (ต้องเป็น cash_in หรือ cash_out)' };
+    const category = body.category;
+    if (!Object.prototype.hasOwnProperty.call(CASH_MOVEMENT_CATEGORY_DIRECTIONS, category)) return { error: `ประเภทไม่ถูกต้อง: ${category}` };
+    if (CASH_MOVEMENT_CATEGORY_DIRECTIONS[category] !== direction) return { error: 'ประเภทนี้ใช้กับทิศทางที่เลือกไม่ได้' };
+    const amount = body.amount_baht;
+    if (typeof amount !== 'number' || !Number.isInteger(amount) || !Number.isSafeInteger(amount) || amount <= 0 || amount > CASH_MOVEMENT_AMOUNT_MAX) {
+        return { error: `จำนวนเงินไม่ถูกต้อง (ต้องเป็นจำนวนเต็มบวก ไม่เกิน ${CASH_MOVEMENT_AMOUNT_MAX.toLocaleString('en-US')} บาท)` };
+    }
+    let note = body.note;
+    if (note === undefined || note === null) note = '';
+    if (typeof note !== 'string') return { error: 'หมายเหตุไม่ถูกต้อง' };
+    note = note.trim();
+    if (note.length > CASH_MOVEMENT_NOTE_MAX_LENGTH) return { error: `หมายเหตุยาวเกินไป (ไม่เกิน ${CASH_MOVEMENT_NOTE_MAX_LENGTH} ตัวอักษร)` };
+    if ((category === 'other_in' || category === 'other_out') && !note) {
+        return { error: 'กรุณากรอกหมายเหตุสำหรับรายการประเภทอื่นๆ (ช่วยให้ตรวจสอบย้อนหลังได้ง่ายขึ้น)' };
+    }
+    return { direction, category, amount, note };
+}
+
+function validateVoidReason(raw) {
+    if (typeof raw !== 'string') return { error: 'ต้องระบุเหตุผลที่ยกเลิก' };
+    const trimmed = raw.trim();
+    if (!trimmed) return { error: 'ต้องระบุเหตุผลที่ยกเลิก' };
+    if (trimmed.length > CASH_MOVEMENT_NOTE_MAX_LENGTH) return { error: `เหตุผลยาวเกินไป (ไม่เกิน ${CASH_MOVEMENT_NOTE_MAX_LENGTH} ตัวอักษร)` };
+    return { value: trimmed };
+}
+
+function validateManualCashSalesAmount(raw) {
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || !Number.isSafeInteger(raw) || raw < 0 || raw > MANUAL_CASH_SALES_MAX) {
+        return { error: `ยอดขายเงินสดไม่ถูกต้อง (ต้องเป็นจำนวนเต็ม 0-${MANUAL_CASH_SALES_MAX.toLocaleString('en-US')} บาท)` };
+    }
+    return { value: raw };
+}
+
+// business_date ในอนาคตตามปฏิทินกรุงเทพฯ — เทียบสตริง YYYY-MM-DD ตรงๆ ได้เพราะเรียงตามตัวอักษรตรงกับเรียงตามวันที่พอดี
+// ใช้ปฏิเสธ cash movement/ยอดขาย POS ของวันที่ยังไม่ถึงเท่านั้น — opening draft ล่วงหน้า (Phase 7 next-day) ยังทำได้ตามปกติ ไม่เกี่ยวกัน
+function isFutureBangkokDate(dateStr) {
+    return dateStr > bangkokBusinessDateStr(new Date());
+}
+
+async function getDayStateRow(businessDate) {
+    return dbGetAsync("SELECT * FROM cash_day_states WHERE business_date = ?", [businessDate]);
+}
+
+// ขยับ revision ของวันแบบ atomic เฉยๆ (ไม่แตะ manual_cash_sales_baht) — ใช้ตอนสร้าง/ยกเลิก cash movement เท่านั้น
+// ต้องเรียกภายใน withTransaction เสมอ (พึ่ง mutex ของ withTransaction กันแข่งกันระหว่าง SELECT กับ INSERT/UPDATE ตรงนี้ — ดูคอมเมนต์ withTransaction ด้านบน)
+// ไม่รับ expected revision จาก client เลย — สร้าง/ยกเลิก movement คือ "เพิ่ม" เหตุการณ์ใหม่ ไม่ใช่เขียนทับค่าเดิม จึงไม่มี lost-update ให้ป้องกัน (ต่างจากยอดขาย POS ที่เป็นการ "ตั้งค่า" ทับ)
+async function bumpDayRevisionForMovement(businessDate) {
+    const existing = await getDayStateRow(businessDate);
+    if (!existing) {
+        const result = await dbRunAsync("INSERT INTO cash_day_states (business_date, revision) VALUES (?, 1)", [businessDate]);
+        return result.lastID;
+    }
+    await dbRunAsync("UPDATE cash_day_states SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE business_date = ?", [businessDate]);
+    return existing.id;
+}
+
+// ตั้งยอดขายเงินสดจาก POS ภายนอก (กรอกเอง) + ขยับ revision แบบ atomic ในคำสั่งเดียว — ต้องเรียกภายใน withTransaction เสมอ
+// ถ้ายังไม่มีแถวของวันนี้เลย ถือว่า revision เสมือนคือ 0 — สร้างแถวใหม่ได้ก็ต่อเมื่อ expectedRevision===0 เท่านั้น (เหมือนกรณีมีแถวอยู่แล้วแต่ revision ไม่ตรง คือแพ้การแข่ง)
+async function setManualCashSalesAtomic(businessDate, expectedRevision, amountBaht, actorId) {
+    const existing = await getDayStateRow(businessDate);
+    if (!existing) {
+        if (expectedRevision !== 0) return { ok: false };
+        const result = await dbRunAsync(
+            "INSERT INTO cash_day_states (business_date, manual_cash_sales_baht, revision, sales_updated_by, sales_updated_at) VALUES (?, ?, 1, ?, CURRENT_TIMESTAMP)",
+            [businessDate, amountBaht, actorId]
+        );
+        return { ok: true, id: result.lastID };
+    }
+    if (existing.revision !== expectedRevision) return { ok: false };
+    const result = await dbRunAsync(
+        "UPDATE cash_day_states SET manual_cash_sales_baht = ?, revision = revision + 1, sales_updated_by = ?, sales_updated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE business_date = ? AND revision = ?",
+        [amountBaht, actorId, businessDate, expectedRevision]
+    );
+    if (result.changes === 0) return { ok: false };
+    return { ok: true, id: existing.id };
+}
+
+async function summarizeCashMovement(row) {
+    return {
+        id: row.id,
+        business_date: row.business_date,
+        direction: row.direction,
+        category: row.category,
+        amount_baht: row.amount_baht,
+        note: row.note,
+        status: row.status,
+        created_by: await summarizeCashActor(row.created_by),
+        created_at: row.created_at,
+        voided_by: await summarizeCashActor(row.voided_by),
+        voided_at: row.voided_at,
+        void_reason: row.void_reason,
+    };
+}
+
+async function summarizeDayState(row) {
+    if (!row) return { manual_cash_sales_baht: null, revision: 0, sales_updated_by: null, sales_updated_at: null };
+    return {
+        manual_cash_sales_baht: row.manual_cash_sales_baht,
+        revision: row.revision,
+        sales_updated_by: await summarizeCashActor(row.sales_updated_by),
+        sales_updated_at: row.sales_updated_at,
+    };
+}
+
+// จุดเดียวที่คำนวณ opening_cash/cash_sales/cash_in/cash_out/expected_cash/actual_cash/variance/status ทั้งหมด — ไม่มีทางอื่นในระบบที่คำนวณตัวเลขพวกนี้ซ้ำอีก
+// legacy_incomplete: ปิดยอด(closing finalized)ไปแล้วตั้งแต่ก่อนมี reconciliation ของ Phase 8 (ไม่มี day_state/ยอดขาย POS เลย) — ไม่ใช่ "ยังไม่เสร็จของวันนี้" (incomplete) ต้องแยกกันชัดเจน ห้าม fabricate ยอดขายเป็น 0
+function computeReconciliation(openingSummary, closingSummary, dayStateRow, movements) {
+    const openingCash = (openingSummary && openingSummary.status === 'finalized') ? openingSummary.grand_total : null;
+    const cashSales = (dayStateRow && dayStateRow.manual_cash_sales_baht !== null && dayStateRow.manual_cash_sales_baht !== undefined) ? dayStateRow.manual_cash_sales_baht : null;
+    const activeMovements = movements.filter((m) => m.status === 'active');
+    const cashIn = activeMovements.filter((m) => m.direction === 'cash_in').reduce((s, m) => s + m.amount_baht, 0);
+    const cashOut = activeMovements.filter((m) => m.direction === 'cash_out').reduce((s, m) => s + m.amount_baht, 0);
+    const expectedCash = (openingCash !== null && cashSales !== null) ? openingCash + cashSales + cashIn - cashOut : null;
+    const actualCash = closingSummary ? closingSummary.grand_total : null;
+    const variance = (expectedCash !== null && actualCash !== null) ? actualCash - expectedCash : null;
+
+    let status;
+    if (variance !== null) {
+        status = variance === 0 ? 'balanced' : (variance > 0 ? 'over' : 'short');
+    } else if (closingSummary && closingSummary.status === 'finalized') {
+        status = 'legacy_incomplete';
+    } else {
+        status = 'incomplete';
+    }
+
+    return { opening_cash: openingCash, cash_sales: cashSales, cash_in: cashIn, cash_out: cashOut, expected_cash: expectedCash, actual_cash: actualCash, variance, status };
+}
+
+// GET /api/cashier/day?date=YYYY-MM-DD — สรุปข้อมูลเงินสดทั้งวัน: opening/closing sheet, movements ทั้งหมด (รวม voided), day_state, reconciliation ที่คำนวณสดฝั่งเซิร์ฟเวอร์
+app.get('/api/cashier/day', requireAuth, requirePermission(PERMISSIONS.CASHIER_VIEW, PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
+    const date = req.query.date;
+    if (!isValidBusinessDate(date)) return res.status(400).json({ error: 'ต้องระบุ business date ให้ถูกต้อง (YYYY-MM-DD)' });
+    try {
+        const [openingSummary, closingSummary] = await Promise.all([
+            getCashSheetRow(date, 'opening').then(summarizeCashSheet),
+            getCashSheetRow(date, 'closing').then(summarizeCashSheet),
+        ]);
+        const movementRows = await dbAllAsync("SELECT * FROM cash_movements WHERE business_date = ? ORDER BY created_at ASC, id ASC", [date]);
+        const movements = await Promise.all(movementRows.map(summarizeCashMovement));
+        const dayStateRow = await getDayStateRow(date);
+        const dayState = await summarizeDayState(dayStateRow);
+        const reconciliation = computeReconciliation(openingSummary, closingSummary, dayStateRow, movements);
+
+        res.json({
+            business_date: date,
+            business_date_display: formatThaiDate(date),
+            is_future: isFutureBangkokDate(date),
+            opening: openingSummary,
+            closing: closingSummary,
+            movements,
+            day_state: dayState,
+            reconciliation,
+        });
+    } catch (e) {
+        console.error('[cashier] ดึงสรุปวันไม่สำเร็จ:', e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// POST /api/cashier/movements — บันทึกเงินเข้า/ออกระหว่างวัน (ไม่ใช่ยอดขาย — ยอดขายเงินสดกรอกแยกผ่าน PUT /api/cashier/day/:date/cash-sales)
+app.post('/api/cashier/movements', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
+    const body = req.body || {};
+    if (!isValidBusinessDate(body.business_date)) return res.status(400).json({ error: 'ต้องระบุ business date ให้ถูกต้อง (YYYY-MM-DD)' });
+    if (isFutureBangkokDate(body.business_date)) return res.status(400).json({ error: 'ไม่สามารถบันทึกเงินเข้า/ออกล่วงหน้าสำหรับวันที่ยังไม่ถึงได้' });
+    const check = validateCashMovementInput(body);
+    if (check.error) return res.status(400).json({ error: check.error });
+
+    try {
+        let conflictReason = null;
+        let movementId = null;
+        await withTransaction(async () => {
+            const closingRow = await getCashSheetRow(body.business_date, 'closing');
+            if (closingRow && closingRow.status === 'finalized') { conflictReason = 'day_locked'; return; }
+            await bumpDayRevisionForMovement(body.business_date);
+            const result = await dbRunAsync(
+                "INSERT INTO cash_movements (business_date, direction, category, amount_baht, note, status, created_by) VALUES (?, ?, ?, ?, ?, 'active', ?)",
+                [body.business_date, check.direction, check.category, check.amount, check.note || null, req.authUser.id]
+            );
+            movementId = result.lastID;
+        });
+
+        if (conflictReason === 'day_locked') {
+            return res.status(409).json({ error: 'วันนี้ปิดยอดไปแล้ว ไม่สามารถเพิ่มรายการเงินสดได้', conflict_reason: conflictReason });
+        }
+        const row = await dbGetAsync("SELECT * FROM cash_movements WHERE id = ?", [movementId]);
+        res.status(201).json({ movement: await summarizeCashMovement(row) });
+    } catch (e) {
+        console.error('[cashier] บันทึกรายการเงินเข้า/ออกไม่สำเร็จ:', e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// POST /api/cashier/movements/:id/void — ยกเลิกรายการที่บันทึกผิด (ไม่มี hard delete เด็ดขาด — ดูคอมเมนต์ตาราง cash_movements)
+app.post('/api/cashier/movements/:id/void', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
+    const movementId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(movementId)) return res.status(400).json({ error: 'invalid_id' });
+    const reasonCheck = validateVoidReason((req.body || {}).reason);
+    if (reasonCheck.error) return res.status(400).json({ error: reasonCheck.error });
+
+    try {
+        const before = await dbGetAsync("SELECT * FROM cash_movements WHERE id = ?", [movementId]);
+        if (!before) return res.status(404).json({ error: 'not_found' });
+
+        let conflictReason = null;
+        await withTransaction(async () => {
+            const closingRow = await getCashSheetRow(before.business_date, 'closing');
+            if (closingRow && closingRow.status === 'finalized') { conflictReason = 'day_locked'; return; }
+            const updateResult = await dbRunAsync(
+                "UPDATE cash_movements SET status = 'voided', voided_by = ?, voided_at = CURRENT_TIMESTAMP, void_reason = ? WHERE id = ? AND status = 'active'",
+                [req.authUser.id, reasonCheck.value, movementId]
+            );
+            if (updateResult.changes === 0) { conflictReason = 'already_voided'; return; }
+            await bumpDayRevisionForMovement(before.business_date);
+        });
+
+        if (conflictReason === 'day_locked') return res.status(409).json({ error: 'วันนี้ปิดยอดไปแล้ว ไม่สามารถยกเลิกรายการเงินสดได้', conflict_reason: conflictReason });
+        if (conflictReason === 'already_voided') return res.status(409).json({ error: 'รายการนี้ถูกยกเลิกไปแล้ว', conflict_reason: conflictReason });
+
+        const row = await dbGetAsync("SELECT * FROM cash_movements WHERE id = ?", [movementId]);
+        res.json({ movement: await summarizeCashMovement(row) });
+    } catch (e) {
+        console.error(`[cashier] ยกเลิกรายการเงินสดไม่สำเร็จ (id=${movementId}):`, e.message);
+        res.status(500).json({ error: 'internal_error' });
+    }
+});
+
+// PUT /api/cashier/day/:date/cash-sales — กรอก/แก้ยอดขายเงินสดสุทธิจากรายงาน POS ภายนอก (ด้วยตนเอง — ไม่มีการดึง/คำนวณจากที่ไหนเลย)
+app.put('/api/cashier/day/:date/cash-sales', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
+    const date = req.params.date;
+    if (!isValidBusinessDate(date)) return res.status(400).json({ error: 'business date ไม่ถูกต้อง' });
+    if (isFutureBangkokDate(date)) return res.status(400).json({ error: 'ไม่สามารถกรอกยอดขายเงินสดล่วงหน้าสำหรับวันที่ยังไม่ถึงได้' });
+    const body = req.body || {};
+    const amountCheck = validateManualCashSalesAmount(body.amount_baht);
+    if (amountCheck.error) return res.status(400).json({ error: amountCheck.error });
+    const expectedRevision = Number(body.expected_revision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+        return res.status(400).json({ error: 'ต้องระบุ expected_revision ให้ถูกต้อง' });
+    }
+
+    try {
+        let conflictReason = null;
+        await withTransaction(async () => {
+            const closingRow = await getCashSheetRow(date, 'closing');
+            if (closingRow && closingRow.status === 'finalized') { conflictReason = 'day_locked'; return; }
+            const result = await setManualCashSalesAtomic(date, expectedRevision, amountCheck.value, req.authUser.id);
+            if (!result.ok) { conflictReason = 'stale_revision'; return; }
+        });
+
+        if (conflictReason === 'day_locked') return res.status(409).json({ error: 'วันนี้ปิดยอดไปแล้ว ไม่สามารถแก้ไขยอดขาย POS ได้', conflict_reason: conflictReason });
+        if (conflictReason === 'stale_revision') return res.status(409).json({ error: 'ข้อมูลมีการเปลี่ยนแปลงจากอุปกรณ์อื่น กรุณาโหลดข้อมูลล่าสุด', conflict_reason: conflictReason });
+
+        const row = await getDayStateRow(date);
+        res.json({ day_state: await summarizeDayState(row) });
+    } catch (e) {
+        console.error(`[cashier] บันทึกยอดขายเงินสด POS ไม่สำเร็จ (date=${date}):`, e.message);
         res.status(500).json({ error: 'internal_error' });
     }
 });
