@@ -1209,8 +1209,11 @@ app.get('/api/queue-history', requireAuth, requirePermission(PERMISSIONS.QUEUE_V
 // ไม่ได้ต้องพิสูจน์ความเป็นเจ้าของแบบ bearer token เหมือน /q/:token หรือ /api/queue/cancel-by-token (สอง endpoint นั้นยังใช้ token เป๊ะเหมือนเดิมทุกประการ)
 // เซิร์ฟเวอร์ดึง token ภายในเองจาก id แล้วค่อยประกอบ URL ลูกค้า (/q/:token) เหมือนเดิมทุกประการ — ไม่มีการเปลี่ยนรูปแบบ URL ลูกค้า/การสร้าง token/พฤติกรรมยกเลิกคิวเลย
 app.get('/api/queue-qr/:id', requireAuth, requirePermission(PERMISSIONS.QUEUE_VIEW, PERMISSIONS.QUEUE_MANAGE), (req, res) => {
-    const queueId = parseInt(req.params.id, 10);
-    if (!Number.isInteger(queueId)) return res.status(400).json({ error: 'invalid_id' });
+    // (Phase 10A.3) parseInt() เดิมยอมรับ "42abc" แล้วตัดทิ้งเหลือ 42 เงียบๆ — ไม่ผิดด้านความปลอดภัย (parameterized query อยู่แล้ว)
+    // แต่ยอมรับ input ที่ผิดรูปแบบโดยไม่ควร ตรงนี้เข้มกว่านั้น: ต้องเป็นเลขจำนวนเต็มบวกล้วนๆ ไม่มีเศษ/เครื่องหมาย/เลขศูนย์นำหน้า/สัญกรณ์วิทยาศาสตร์ใดๆ เท่านั้น
+    if (!/^[1-9]\d*$/.test(req.params.id)) return res.status(400).json({ error: 'invalid_id' });
+    const queueId = Number(req.params.id);
+    if (!Number.isSafeInteger(queueId)) return res.status(400).json({ error: 'invalid_id' });
     db.get("SELECT q_number, token FROM queues WHERE id = ?", [queueId], async (err, row) => {
         if (!row) return res.status(404).json({ error: 'ไม่พบคิวนี้' });
         const url = `${PUBLIC_BASE_URL}/q/${row.token}`;

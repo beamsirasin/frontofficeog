@@ -183,21 +183,40 @@ test('5. a nonexistent queue id returns 404, not a QR for arbitrary content (thi
     assert.equal(res.status, 404);
 });
 
-test('6. a malformed (non-numeric) queue id is safely rejected with 400, never reaching the DB layer', async () => {
-    // เฉพาะสตริงที่ parseInt ดึงเลขนำหน้าไม่ได้เลย (ไม่ใช่กรณี "1;DROP..." ที่ parseInt('1;DROP...', 10) === 1 ซึ่งตรงกับ
-    // convention เดียวกันที่ endpoint :id ทุกตัวในระบบนี้ใช้อยู่แล้ว — ปลอดภัยเสมอเพราะผ่าน parameterized query ทุกจุด ไม่ใช่ปัญหา)
-    for (const bad of ['abc', 'null', 'NaN', '-', ' ']) {
-        const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${encodeURIComponent(bad)}`);
-        assert.ok([400, 404].includes(res.status), `id แปลกๆ "${bad}" ต้องไม่ทำให้ endpoint พังหรือคืน 200 — ได้ ${res.status}`);
+// (Phase 10A.3) การ validate เข้มขึ้น: เดิม parseInt('42abc', 10) === 42 ถูกยอมรับเงียบๆ (ไม่ผิดด้านความปลอดภัยเพราะ parameterized query
+// อยู่แล้ว แต่ยอมรับ input ผิดรูปแบบโดยไม่ควร) ตอนนี้ต้องเป็นเลขจำนวนเต็มบวกล้วนๆ ตรงตาม /^[1-9]\d*$/ เท่านั้นถึงจะผ่าน
+test('6. a strictly malformed queue id (letters mixed with digits, decimals, sign, leading zero, exponent, hex, empty/whitespace) is rejected with 400', async () => {
+    const bad = ['42abc', 'abc42', '1.5', '-1', '0', '1e2', '0x10', 'abc', 'null', 'NaN', '-', ' ', '', '007', '+1', ' 42', '42 '];
+    for (const b of bad) {
+        const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${encodeURIComponent(b)}`);
+        assert.ok([400, 404].includes(res.status), `id ผิดรูปแบบ "${b}" ต้องไม่คืน 200 — ได้ ${res.status}`);
+        if (res.status !== 404) assert.equal(res.status, 400, `id ผิดรูปแบบ "${b}" ควรเป็น 400 ไม่ใช่ ${res.status}`);
     }
 });
 
-test('a queue id string with SQL-metacharacter suffix after a valid leading integer resolves safely via parameterized query (no injection possible), matching the same parseInt convention used by every other :id endpoint in this app', async () => {
+test('6b. a canonical positive integer queue id (e.g. 42) is accepted when the row exists', async () => {
     const created = await (await api(queueViewPersona.cookie, 'POST', '/api/queue', { pax: 2, pots: [] })).json();
-    const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${created.id}%3BDROP%20TABLE%20queues`);
-    assert.equal(res.status, 200, 'parseInt ดึงเลขนำหน้าได้ปกติ ส่วนที่เหลือถูกตัดทิ้งไปเลย ไม่มีทางไปถึง SQL');
+    assert.match(String(created.id), /^[1-9]\d*$/, 'id ที่สร้างจริงต้องเป็นเลขจำนวนเต็มบวกตามรูปแบบที่คาดไว้อยู่แล้ว');
+    const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${created.id}`);
+    assert.equal(res.status, 200);
+});
+
+test('6c. an unsafe (beyond Number.MAX_SAFE_INTEGER) all-digit queue id is rejected with 400, not silently truncated/rounded', async () => {
+    const unsafe = '99999999999999999999999999';
+    const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${unsafe}`);
+    assert.equal(res.status, 400);
+});
+
+test('6d. a nonexistent but well-formed positive integer id returns 404, not 400', async () => {
+    const res = await api(queueViewPersona.cookie, 'GET', '/api/queue-qr/999999999');
+    assert.equal(res.status, 404);
+});
+
+test('malformed queue id requests never reach the DB layer with attacker-influenced content beyond the parameterized value — table stays intact', async () => {
+    const created = await (await api(queueViewPersona.cookie, 'POST', '/api/queue', { pax: 2, pots: [] })).json();
+    await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${created.id}%3BDROP%20TABLE%20queues`); // now rejected outright (400) — no longer silently truncated to a valid id
     const stillThere = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${created.id}`);
-    assert.equal(stillThere.status, 200, 'ตาราง queues ต้องไม่ถูกกระทบเลย (พิสูจน์ว่าไม่มี injection เกิดขึ้นจริง)');
+    assert.equal(stillThere.status, 200, 'ตาราง queues ต้องไม่ถูกกระทบเลย');
 });
 
 test('7. the Staff QR-generation request path itself contains no raw queue token — only the non-secret numeric id', async () => {
