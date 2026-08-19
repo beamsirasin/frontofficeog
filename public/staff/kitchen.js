@@ -103,7 +103,7 @@ window.KitchenModule = (function () {
                 for (const [menu, qty] of Object.entries(o.items)) {
                     itemsHtml += `<div class="flex justify-between items-center border-b border-gray-600 py-1">${renderMenu(menu, 'w-8 h-8')}<span class="text-blue-300 text-lg font-bold">x${qty}</span></div>`;
                 }
-                return `<div class="bg-gray-800 border border-gray-600 w-64 min-h-[220px] rounded shadow-lg p-3 flex flex-col text-white">
+                return `<div class="bg-gray-800 border border-gray-600 w-64 flex-shrink-0 min-h-[220px] rounded shadow-lg p-3 flex flex-col text-white">
                     <div class="flex justify-between items-center border-b border-gray-500 pb-2 mb-2">
                         <span class="text-xl font-extrabold text-white">โต๊ะ ${StaffApp.esc(o.table_no)}</span>
                         <span class="text-xs text-gray-300 font-mono">เสิร์ฟ ${timeStr} น.</span>

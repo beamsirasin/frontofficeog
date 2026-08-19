@@ -61,7 +61,8 @@ async function getDay(cookie, date) {
     const res = await api(cookie, 'GET', `/api/cashier/day?date=${date}`);
     return { status: res.status, body: await res.json() };
 }
-// (Phase 8.1.1) มาตรฐานใหม่: standalone finalize ของ Opening ถูกปิด API ไปแล้วเด็ดขาด — จำลอง "ใบเปิดร้านที่ finalized มาก่อนจากระบบรุ่นเก่า (pre-8.1)" ผ่าน DB ตรงๆ แทนการเรียก endpoint ที่ไม่มีให้เรียกแล้ว
+// (Phase 10) แม้ endpoint /finalize จะยอมรับ standalone finalize ของ Opening ได้แล้วอีกครั้ง — ยังคงจำลอง "ใบเปิดร้านที่ finalized มาก่อนจากระบบรุ่นเก่า (pre-8.1)" ผ่าน DB ตรงๆ ต่อไป
+// เพราะข้อมูลเก่าจริงๆ ไม่เคยมี audit event กำกับ (ระบบ audit log เพิ่งมีใน Phase 9) — เรียก endpoint จริงตอนนี้จะสร้าง cashier.opening_confirmed ทับ ทำให้ไม่ตรงกับสภาพข้อมูลเก่าที่ต้องการจำลอง
 async function markSheetFinalizedDirectly(sheetId, finalizedByUserId) {
     await dbRun(
         "UPDATE cash_count_sheets SET status = 'finalized', finalized_by = ?, finalized_at = CURRENT_TIMESTAMP, version = version + 1 WHERE id = ?",

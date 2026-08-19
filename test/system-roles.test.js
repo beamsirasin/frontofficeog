@@ -141,8 +141,8 @@ test('9. kitchen_staff has exactly kitchen.view + kitchen.manage + reports.view,
     assert.deepEqual(await permsOfRoleKey('kitchen_staff'), ['kitchen.manage', 'kitchen.view', 'reports.view']);
 });
 
-test('10. service_staff has exactly kitchen.view + kitchen.manage + queue.view + reports.view, nothing more (no queue.manage)', async () => {
-    assert.deepEqual(await permsOfRoleKey('service_staff'), ['kitchen.manage', 'kitchen.view', 'queue.view', 'reports.view']);
+test('10. service_staff has exactly kitchen.view + kitchen.manage + queue.view + queue.manage + reports.view, nothing more', async () => {
+    assert.deepEqual(await permsOfRoleKey('service_staff'), ['kitchen.manage', 'kitchen.view', 'queue.manage', 'queue.view', 'reports.view']);
 });
 
 test('11. manager has exactly the full operational permission set (cashier.*/kitchen.*/queue.*/reports.view/tables.*), and no users.*/roles.*', async () => {
@@ -235,7 +235,7 @@ test('17. deleting the DB entirely and rebooting recreates the exact same built-
     assert.ok(await dbGet("SELECT id FROM roles WHERE key = 'manager'"));
     assert.equal(await dbGet("SELECT id FROM roles WHERE key = 'kitchen'"), undefined);
     assert.deepEqual(await permsOfRoleKey('kitchen_staff'), ['kitchen.manage', 'kitchen.view', 'reports.view']);
-    assert.deepEqual(await permsOfRoleKey('service_staff'), ['kitchen.manage', 'kitchen.view', 'queue.view', 'reports.view']);
+    assert.deepEqual(await permsOfRoleKey('service_staff'), ['kitchen.manage', 'kitchen.view', 'queue.manage', 'queue.view', 'reports.view']);
     assert.deepEqual(await permsOfRoleKey('manager'), [
         'cashier.manage', 'cashier.view', 'kitchen.manage', 'kitchen.view',
         'queue.manage', 'queue.view', 'reports.view', 'tables.manage', 'tables.qr', 'tables.view',

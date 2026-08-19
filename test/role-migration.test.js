@@ -257,7 +257,7 @@ test('28. restarting again after migration is complete remains stable — no fur
 
     // role ที่ถูกโปรโมทไปแล้วต้องยังมี permission ตรงตาม ROLE_CATALOGUE เป๊ะ ไม่มี drift สะสมจากการ full-sync ซ้ำหลายรอบ
     assert.deepEqual(await permsOfRoleId(kitchenCustomId), ['kitchen.manage', 'kitchen.view', 'reports.view']);
-    assert.deepEqual(await permsOfRoleId(serviceCustomId), ['kitchen.manage', 'kitchen.view', 'queue.view', 'reports.view']);
+    assert.deepEqual(await permsOfRoleId(serviceCustomId), ['kitchen.manage', 'kitchen.view', 'queue.manage', 'queue.view', 'reports.view']);
     assert.deepEqual(await permsOfRoleId(managerCustomId), [
         'cashier.manage', 'cashier.view', 'kitchen.manage', 'kitchen.view',
         'queue.manage', 'queue.view', 'reports.view', 'tables.manage', 'tables.qr', 'tables.view',

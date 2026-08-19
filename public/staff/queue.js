@@ -9,7 +9,7 @@ window.QueueModule = (function () {
 
     const socket = StaffApp.socket;
     let currentQueueId = null;
-    let selectedQueueTableNo = null;
+    let selectedQueueTableNos = new Set();
     let tablePickerMode = 'new'; // 'new' | 'reassign' | 'preassign_type'
     let reassignQueueContext = null;
     let undoEnterId = null;
@@ -206,80 +206,148 @@ window.QueueModule = (function () {
         document.getElementById('queueQrLink').href = qr.url;
     }
 
-    // ================== เรียกเข้าโต๊ะ / เลือกโต๊ะ ==================
-    function openQueueActionModal(id, qNum, preAssignedTable) {
-        if (!canManage()) return;
-        currentQueueId = id;
-        const specialTypes = ['รอโต๊ะใหญ่', 'รอโต๊ะเชื่อม'];
-        const hasTable = preAssignedTable && preAssignedTable !== 'null' && preAssignedTable !== '' && !specialTypes.includes(preAssignedTable);
-        selectedQueueTableNo = hasTable ? preAssignedTable : null;
-        document.getElementById('queueModalQNum').innerText = qNum;
+    // ================== เรียกเข้าโต๊ะ / เลือกโต๊ะ (รองรับเลือกได้หลายโต๊ะพร้อมกัน สำหรับกรณีโต๊ะเชื่อม/กลุ่มใหญ่) ==================
+    const SPECIAL_TABLE_TYPES = ['รอโต๊ะใหญ่', 'รอโต๊ะเชื่อม'];
+    // "3, 7" -> ['3','7'] — ใช้ทั้งตอนอ่านค่าเดิมมา preselect และตอนเทียบว่าเป็นเลขโต๊ะจริงหรือ special type
+    function splitTableNos(str) {
+        if (!str) return [];
+        return String(str).split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    // เรียงเลขโต๊ะจากน้อยไปมากก่อน join กลับเป็น string เดียวเก็บลง table_assigned (คอลัมน์เดิม ไม่ต้องแก้ schema — แค่ยัดได้หลายเลขคั่นด้วยจุลภาค)
+    function joinTableNos(nos) {
+        return Array.from(nos).sort((a, b) => Number(a) - Number(b) || String(a).localeCompare(String(b))).join(', ');
+    }
+
+    function updateTablePickerBtn() {
         const btn = document.getElementById('tablePickerBtn');
-        if (hasTable) {
-            btn.textContent = `โต๊ะ ${preAssignedTable}`;
+        if (selectedQueueTableNos.size > 0) {
+            btn.textContent = `โต๊ะ ${joinTableNos(selectedQueueTableNos)}`;
             btn.className = 'w-full border-2 border-blue-400 bg-blue-50 text-blue-700 font-bold py-4 rounded-xl text-xl transition active:scale-95 shadow';
         } else {
             btn.textContent = 'กดเพื่อเลือกโต๊ะ';
             btn.className = 'w-full border-2 border-dashed border-gray-300 bg-gray-50 hover:bg-gray-100 text-gray-500 font-bold py-4 rounded-xl text-lg transition active:scale-95';
         }
+    }
+
+    function openQueueActionModal(id, qNum, preAssignedTable) {
+        if (!canManage()) return;
+        currentQueueId = id;
+        const hasTable = preAssignedTable && preAssignedTable !== 'null' && preAssignedTable !== '' && !SPECIAL_TABLE_TYPES.includes(preAssignedTable);
+        selectedQueueTableNos = new Set(hasTable ? splitTableNos(preAssignedTable) : []);
+        document.getElementById('queueModalQNum').innerText = qNum;
+        updateTablePickerBtn();
         document.getElementById('queueActionModal').classList.remove('hidden');
+    }
+
+    // สร้างปุ่มโต๊ะในกริดใหม่ทุกครั้งที่เปิด picker (โหลดสถานะเปิด/ว่างสดจาก /api/tables) — เก็บ list ไว้ที่ tablePickerTables
+    // เพื่อ toggle เลือก/ยกเลิกได้โดยไม่ต้องยิง fetch ซ้ำทุกครั้งที่แตะ
+    let tablePickerTables = [];
+    function tablePickerBtnClass(t) {
+        const isSelected = selectedQueueTableNos.has(String(t.table_no));
+        return `py-4 rounded-xl text-lg font-bold shadow transition active:scale-95 ${t.is_open ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'} ${isSelected ? 'ring-4 ring-blue-500 ring-offset-2 scale-105' : ''}`;
+    }
+    async function renderTablePickerGrid() {
+        const res = await StaffApp.apiFetch('/api/tables'); // secret-free ตั้งแต่ Phase 3.1 — ไม่มี session_token หลุดมา
+        if (!res) return;
+        tablePickerTables = await res.json();
+        const grid = document.getElementById('queueTableGrid');
+        grid.innerHTML = '';
+        if (tablePickerMode === 'preassign_type') {
+            grid.insertAdjacentHTML('beforeend', `
+                <button onclick="QueueModule.selectPreassignType('รอโต๊ะใหญ่')" class="col-span-2 py-5 rounded-xl text-xl font-bold shadow-lg transition active:scale-95 bg-orange-100 text-orange-700 border-2 border-orange-300 hover:bg-orange-200">รอโต๊ะใหญ่</button>
+                <button onclick="QueueModule.selectPreassignType('รอโต๊ะเชื่อม')" class="col-span-2 py-5 rounded-xl text-xl font-bold shadow-lg transition active:scale-95 bg-orange-100 text-orange-700 border-2 border-orange-300 hover:bg-orange-200">รอโต๊ะเชื่อม</button>
+                <div class="col-span-4 sm:col-span-5 border-t border-gray-200 my-1"></div>
+            `);
+        }
+        tablePickerTables.forEach((t) => {
+            const btn = document.createElement('button');
+            btn.dataset.tableNo = t.table_no;
+            btn.className = tablePickerBtnClass(t);
+            btn.innerText = `โต๊ะ ${t.table_no}`;
+            btn.onclick = () => toggleQueueTable(String(t.table_no));
+            grid.appendChild(btn);
+        });
+        renderTablePickerFooter();
+    }
+    function toggleQueueTable(tableNo) {
+        if (selectedQueueTableNos.has(tableNo)) selectedQueueTableNos.delete(tableNo);
+        else selectedQueueTableNos.add(tableNo);
+        document.querySelectorAll('#queueTableGrid button[data-table-no]').forEach((btn) => {
+            const t = tablePickerTables.find((x) => String(x.table_no) === btn.dataset.tableNo);
+            if (t) btn.className = tablePickerBtnClass(t);
+        });
+        renderTablePickerFooter();
+    }
+    function renderTablePickerFooter() {
+        const btn = document.getElementById('tablePickerConfirmBtn');
+        if (!btn) return;
+        const n = selectedQueueTableNos.size;
+        if (n > 0) {
+            btn.textContent = `ยืนยัน (เลือก ${n} โต๊ะ)`;
+            btn.className = 'flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow transition active:scale-95';
+        } else if (tablePickerMode === 'new') {
+            btn.textContent = 'ยืนยัน (ไม่ระบุโต๊ะ)';
+            btn.className = 'flex-1 bg-gray-400 hover:bg-gray-500 text-white font-bold py-3 rounded-lg shadow transition active:scale-95';
+        } else {
+            btn.textContent = 'ยกเลิกโต๊ะที่กำหนดไว้';
+            btn.className = 'flex-1 bg-red-100 hover:bg-red-200 text-red-700 font-bold py-3 rounded-lg shadow transition active:scale-95';
+        }
+    }
+    // ล้างที่เลือกไว้ทั้งหมด (ยังไม่ commit) — กด "ยืนยัน" ต่อหลังล้างแล้วคือการยกเลิกโต๊ะที่เคยกำหนดไว้จริงๆ (ตอบโจทย์ "กดยกเลิกสถานะรอโต๊ะใหญ่ได้")
+    function clearTablePickerSelection() {
+        selectedQueueTableNos = new Set();
+        document.querySelectorAll('#queueTableGrid button[data-table-no]').forEach((btn) => {
+            const t = tablePickerTables.find((x) => String(x.table_no) === btn.dataset.tableNo);
+            if (t) btn.className = tablePickerBtnClass(t);
+        });
+        renderTablePickerFooter();
     }
 
     async function openTablePicker() {
         tablePickerMode = 'new';
-        const res = await StaffApp.apiFetch('/api/tables'); // secret-free ตั้งแต่ Phase 3.1 — ไม่มี session_token หลุดมา
-        if (!res) return;
-        const tables = await res.json();
-        const grid = document.getElementById('queueTableGrid');
-        grid.innerHTML = '';
-        tables.forEach((t) => {
-            const btn = document.createElement('button');
-            btn.dataset.tableNo = t.table_no;
-            const isSelected = t.table_no == selectedQueueTableNo;
-            btn.className = `py-4 rounded-xl text-lg font-bold shadow transition active:scale-95 ${t.is_open ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'} ${isSelected ? 'ring-4 ring-blue-500 ring-offset-2 scale-105' : ''}`;
-            btn.innerText = `โต๊ะ ${t.table_no}`;
-            btn.onclick = () => selectQueueTable(t.table_no, t.is_open);
-            grid.appendChild(btn);
-        });
+        await renderTablePickerGrid();
         document.getElementById('tablePickerModal').classList.remove('hidden');
     }
 
-    async function openTablePickerForReassign(queueId, status, isBilled) {
+    async function openTablePickerForReassign(queueId, status, isBilled, currentTable) {
         if (!canManage()) return;
         tablePickerMode = 'reassign';
         reassignQueueContext = { id: queueId, status, isBilled };
-        const res = await StaffApp.apiFetch('/api/tables');
-        if (!res) return;
-        const tables = await res.json();
-        const grid = document.getElementById('queueTableGrid');
-        grid.innerHTML = '';
-        tables.forEach((t) => {
-            const btn = document.createElement('button');
-            btn.className = `py-4 rounded-xl text-lg font-bold shadow transition active:scale-95 ${t.is_open ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`;
-            btn.innerText = `โต๊ะ ${t.table_no}`;
-            btn.onclick = () => selectQueueTable(t.table_no, t.is_open);
-            grid.appendChild(btn);
-        });
+        const hasTable = currentTable && currentTable !== 'null' && currentTable !== '' && !SPECIAL_TABLE_TYPES.includes(currentTable);
+        selectedQueueTableNos = new Set(hasTable ? splitTableNos(currentTable) : []);
+        await renderTablePickerGrid();
         document.getElementById('tablePickerModal').classList.remove('hidden');
     }
 
-    async function selectQueueTable(tableNo, isOpen) {
-        if ((tablePickerMode === 'reassign' || tablePickerMode === 'preassign_type') && reassignQueueContext) {
-            const ctx = reassignQueueContext;
-            const res = await StaffApp.apiFetch('/api/queue/update', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: ctx.id, status: ctx.status, table_assigned: tableNo, is_billed: ctx.isBilled }),
-            });
-            tablePickerMode = 'new';
-            reassignQueueContext = null;
-            if (res) { closeTablePicker(); loadQueueHistory(); }
+    async function openPreassignPicker(queueId, currentTable) {
+        if (!canManage()) return;
+        tablePickerMode = 'preassign_type';
+        reassignQueueContext = { id: queueId, status: 'waiting', isBilled: false };
+        const hasTable = currentTable && currentTable !== 'null' && currentTable !== '' && !SPECIAL_TABLE_TYPES.includes(currentTable);
+        selectedQueueTableNos = new Set(hasTable ? splitTableNos(currentTable) : []);
+        await renderTablePickerGrid();
+        document.getElementById('tablePickerModal').classList.remove('hidden');
+    }
+
+    // ปุ่ม "ยืนยัน" ท้าย picker — โหมด 'new' แค่เก็บค่าไว้ในฟอร์ม (ยังไม่ยิง API จนกว่าจะกด "ยืนยันให้เข้าโต๊ะ")
+    // โหมด 'reassign'/'preassign_type' ยิง /api/queue/update ทันที — เลือก 0 โต๊ะแล้วกดยืนยัน = ยกเลิกโต๊ะ/สถานะที่เคยกำหนดไว้ (ส่ง null)
+    async function confirmTablePicker() {
+        if (tablePickerMode === 'new') {
+            updateTablePickerBtn();
+            closeTablePicker();
             return;
         }
-        selectedQueueTableNo = tableNo;
-        const pickerBtn = document.getElementById('tablePickerBtn');
-        pickerBtn.textContent = `โต๊ะ ${tableNo}`;
-        pickerBtn.className = `w-full border-2 font-bold py-4 rounded-xl text-xl transition active:scale-95 shadow ${isOpen ? 'border-green-500 bg-green-50 text-green-700' : 'border-blue-400 bg-blue-50 text-blue-700'}`;
+        const ctx = reassignQueueContext;
+        if (!ctx) { closeTablePicker(); return; }
+        const joined = joinTableNos(selectedQueueTableNos);
+        const res = await StaffApp.apiFetch('/api/queue/update', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: ctx.id, status: ctx.status, table_assigned: joined || null, is_billed: ctx.isBilled }),
+        });
+        tablePickerMode = 'new';
+        reassignQueueContext = null;
         closeTablePicker();
+        if (res) loadQueueHistory();
     }
 
     function closeTablePicker() {
@@ -288,31 +356,7 @@ window.QueueModule = (function () {
         document.getElementById('queueTableGrid').className = 'grid grid-cols-4 sm:grid-cols-5 gap-3';
     }
 
-    async function openPreassignPicker(queueId) {
-        if (!canManage()) return;
-        tablePickerMode = 'preassign_type';
-        reassignQueueContext = { id: queueId, status: 'waiting', isBilled: false };
-        document.getElementById('tablePickerLegend').classList.remove('hidden');
-        const grid = document.getElementById('queueTableGrid');
-        grid.className = 'grid grid-cols-4 sm:grid-cols-5 gap-3';
-        const res = await StaffApp.apiFetch('/api/tables');
-        if (!res) return;
-        const tables = await res.json();
-        grid.innerHTML = `
-            <button onclick="QueueModule.selectPreassignType('รอโต๊ะใหญ่')" class="col-span-2 py-5 rounded-xl text-xl font-bold shadow-lg transition active:scale-95 bg-orange-100 text-orange-700 border-2 border-orange-300 hover:bg-orange-200">รอโต๊ะใหญ่</button>
-            <button onclick="QueueModule.selectPreassignType('รอโต๊ะเชื่อม')" class="col-span-2 py-5 rounded-xl text-xl font-bold shadow-lg transition active:scale-95 bg-orange-100 text-orange-700 border-2 border-orange-300 hover:bg-orange-200">รอโต๊ะเชื่อม</button>
-            <div class="col-span-4 sm:col-span-5 border-t border-gray-200 my-1"></div>
-        `;
-        tables.forEach((t) => {
-            const btn = document.createElement('button');
-            btn.className = `py-4 rounded-xl text-lg font-bold shadow transition active:scale-95 ${t.is_open ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`;
-            btn.innerText = `โต๊ะ ${t.table_no}`;
-            btn.onclick = () => selectQueueTable(t.table_no, t.is_open);
-            grid.appendChild(btn);
-        });
-        document.getElementById('tablePickerModal').classList.remove('hidden');
-    }
-
+    // "รอโต๊ะใหญ่"/"รอโต๊ะเชื่อม" เป็นสถานะหมวดหมู่ ไม่ใช่เลขโต๊ะ — แตะแล้ว commit ทันที (ไม่ต้องผ่านปุ่มยืนยันด้านล่างเหมือนกริดเลขโต๊ะ)
     async function selectPreassignType(type) {
         const ctx = reassignQueueContext;
         if (!ctx) return;
@@ -332,7 +376,7 @@ window.QueueModule = (function () {
         if (!canManage()) return;
         const res = await StaffApp.apiFetch('/api/queue/update', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: currentQueueId, status: 'entered', table_assigned: selectedQueueTableNo, is_billed: false }),
+            body: JSON.stringify({ id: currentQueueId, status: 'entered', table_assigned: joinTableNos(selectedQueueTableNos) || null, is_billed: false }),
         });
         if (res) closeQueueModal();
     }
@@ -525,7 +569,7 @@ window.QueueModule = (function () {
             if (q.status === 'entered') {
                 const tableLabel = q.table_assigned && q.table_assigned !== 'null' ? `โต๊ะ ${StaffApp.esc(q.table_assigned)}` : 'โต๊ะ -';
                 statusHtml = manage
-                    ? `<div onclick="event.stopPropagation(); QueueModule.openTablePickerForReassign(${q.id}, '${StaffApp.jsAttr(q.status)}', ${!!q.is_billed})" class="bg-green-100 text-green-800 p-3 rounded text-center font-bold text-base cursor-pointer hover:bg-green-200 active:scale-95 transition select-none">${tableLabel}</div>`
+                    ? `<div onclick="event.stopPropagation(); QueueModule.openTablePickerForReassign(${q.id}, '${StaffApp.jsAttr(q.status)}', ${!!q.is_billed}, '${StaffApp.jsAttr(q.table_assigned || '')}')" class="bg-green-100 text-green-800 p-3 rounded text-center font-bold text-base cursor-pointer hover:bg-green-200 active:scale-95 transition select-none">${tableLabel}</div>`
                     : `<div class="bg-green-100 text-green-800 p-3 rounded text-center font-bold text-base">${tableLabel}</div>`;
                 actionHtml = manage
                     ? `<label onclick="event.stopPropagation()" class="flex items-center justify-center gap-2 cursor-pointer font-bold ${q.is_billed ? 'text-green-600' : 'text-gray-500'}">
@@ -541,7 +585,7 @@ window.QueueModule = (function () {
                 actionHtml = '-';
             } else {
                 const specialTypes = ['รอโต๊ะใหญ่', 'รอโต๊ะเชื่อม'];
-                const clickAttr = manage ? `onclick="event.stopPropagation(); QueueModule.openPreassignPicker(${q.id})"` : '';
+                const clickAttr = manage ? `onclick="event.stopPropagation(); QueueModule.openPreassignPicker(${q.id}, '${StaffApp.jsAttr(q.table_assigned || '')}')"` : '';
                 if (q.table_assigned && q.table_assigned !== 'null') {
                     const label = specialTypes.includes(q.table_assigned) ? StaffApp.esc(q.table_assigned) : `รอเข้าโต๊ะ ${StaffApp.esc(q.table_assigned)}`;
                     statusHtml = `<div ${clickAttr} class="bg-orange-100 text-orange-700 p-3 rounded text-center font-bold text-base ${manage ? 'cursor-pointer hover:bg-orange-200 active:scale-95 transition select-none' : ''} border border-orange-300">${label}</div>`;
@@ -605,6 +649,11 @@ window.QueueModule = (function () {
     socket.on('queue_updated', () => {
         if (document.getElementById('module-queue') && !document.getElementById('module-queue').classList.contains('hidden')) loadQueueHistory();
     });
+    // แท็บที่สลับไปแอปอื่น/พักหน้าจอนานแล้วกลับมา มักโดน browser ตัดการเชื่อมต่อ socket ระหว่างนั้น — เหตุการณ์ queue_updated ที่เกิดขึ้นตอนหลุดการเชื่อมต่อจะไม่มีวันไปถึงเครื่องนี้เลย
+    // ต้องโหลดข้อมูลใหม่ทุกครั้งที่ต่อกลับสำเร็จ (ไม่ใช่แค่ตอนมี event ใหม่มาถึง) เหมือนที่ kitchen.js ทำไว้แล้ว ไม่งั้นตารางคิวจะค้างข้อมูลเก่าจนกว่าจะมีการเปลี่ยนแปลงครั้งถัดไปเกิดขึ้น
+    socket.io.on('reconnect', () => {
+        if (document.getElementById('module-queue') && !document.getElementById('module-queue').classList.contains('hidden')) loadQueueHistory();
+    });
 
     function activate() {
         document.getElementById('queueCreateBtnInline').classList.toggle('hidden', !canManage());
@@ -614,7 +663,7 @@ window.QueueModule = (function () {
     return {
         activate, loadQueueHistory,
         openCreateQueueModal, closeCreateQueueModal, setActiveNumpad, numpadPress, toggleFlag, addPot, submitQueue, printQueueSlip, showQueueQr,
-        openQueueActionModal, openTablePicker, openTablePickerForReassign, selectQueueTable, closeTablePicker, openPreassignPicker, selectPreassignType,
+        openQueueActionModal, openTablePicker, openTablePickerForReassign, toggleQueueTable, confirmTablePicker, clearTablePickerSelection, closeTablePicker, openPreassignPicker, selectPreassignType,
         closeQueueModal, confirmQueueEnter, cancelQueue, updateQueueBill, deleteQueue, toggleQueueMenu,
         openUndoEnterModal, confirmUndoEnter,
         setEditActiveNumpad, editNumpadPress, openEditQueueModal, addEditPot, confirmEditQueue,

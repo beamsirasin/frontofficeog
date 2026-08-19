@@ -59,6 +59,19 @@ window.StaffApp = (function () {
         _confirmCb = null;
     }
 
+    // ===== alert modal (ใช้ร่วมกันทุกโมดูล แทน browser alert() เดิม) =====
+    let _alertCb = null;
+    function showAlert(message, onOk) {
+        document.getElementById('alertMessage').innerText = message;
+        _alertCb = onOk || null;
+        document.getElementById('alertModal').classList.remove('hidden');
+    }
+    function alertOk() {
+        document.getElementById('alertModal').classList.add('hidden');
+        if (_alertCb) _alertCb();
+        _alertCb = null;
+    }
+
     // ===== fetch กลาง: จัดการ 401/403 ให้เหมือนกันทุกจุด =====
     // 401 (ไม่มี session ที่ใช้ได้) -> กลับไปหน้า login
     // 403 (login อยู่แต่ไม่มีสิทธิ์) -> "ไม่" พาไป login, โชว์แบนเนอร์ + รีเฟรชสิทธิ์ล่าสุดแทน
@@ -249,12 +262,12 @@ window.StaffApp = (function () {
     }
 
     async function connectUSBPrinter() {
-        if (!navigator.usb) { alert('เบราว์เซอร์นี้ไม่รองรับ WebUSB กรุณาใช้ Chrome'); return; }
+        if (!navigator.usb) { showAlert('เบราว์เซอร์นี้ไม่รองรับ WebUSB กรุณาใช้ Chrome'); return; }
         try {
             const device = await navigator.usb.requestDevice({ filters: [] });
             await connectToDevice(device);
         } catch (e) {
-            if (e.name !== 'NotFoundError') alert('เชื่อมต่อไม่สำเร็จ: ' + e.message);
+            if (e.name !== 'NotFoundError') showAlert('เชื่อมต่อไม่สำเร็จ: ' + e.message);
         }
     }
 
@@ -318,7 +331,7 @@ window.StaffApp = (function () {
         ));
         await new Promise((r) => setTimeout(r, 300));
         if (usbDevice) {
-            try { await printViaUSB(el); } catch (e) { alert('ปริ้นไม่สำเร็จ: ' + e.message); }
+            try { await printViaUSB(el); } catch (e) { showAlert('ปริ้นไม่สำเร็จ: ' + e.message); }
             el.classList.add('hidden');
         } else {
             const canvas = await html2canvas(el, { scale: 3, backgroundColor: '#ffffff', useCORS: true, logging: false });
@@ -391,6 +404,8 @@ window.StaffApp = (function () {
         showConfirm,
         confirmOk,
         confirmCancel,
+        showAlert,
+        alertOk,
         boot,
         logout,
         navigateTo,

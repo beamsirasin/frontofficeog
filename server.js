@@ -39,12 +39,13 @@ function escHtml(v) {
     return String(v ?? '').replace(/[&<>"']/g, c => map[c]);
 }
 
-// table_assigned รับได้เฉพาะเลขโต๊ะ/ข้อความสั้นๆ (ไทย-อังกฤษ-ตัวเลข) เท่านั้น
+// table_assigned รับได้เฉพาะเลขโต๊ะ/ข้อความสั้นๆ (ไทย-อังกฤษ-ตัวเลข) เท่านั้น — อนุญาต comma ด้วย เพราะฝั่ง queue.js
+// เก็บโต๊ะที่เลือกได้มากกว่าหนึ่งโต๊ะ (เช่นกรณีโต๊ะเชื่อม) เป็น string เดียวคั่นด้วย ", " เช่น "3, 7" ไม่ต้องแก้ schema
 // ปิดตั้งแต่ต้นทาง ไม่ให้ HTML หรือสคริปต์ถูกเก็บลง DB แล้วไปโผล่ที่หน้าแอดมิน
 function cleanTableAssigned(v) {
     if (v === null || v === undefined || v === '' || v === 'null') return null;
     const s = String(v).trim();
-    return /^[฀-๿\w \-]{1,20}$/.test(s) ? s : null;
+    return /^[฀-๿\w ,\-]{1,40}$/.test(s) ? s : null;
 }
 
 const QUEUE_STATUSES = ['waiting', 'entered', 'skipped', 'cancelled'];
@@ -309,7 +310,7 @@ const PERMISSION_CATALOGUE = [
 const ROLE_CATALOGUE = {
     owner: { name: 'เจ้าของร้าน', description: 'สิทธิ์เต็มทุกอย่างในระบบ', permissions: '*' },
     kitchen_staff: { name: 'พนักงานครัว', description: 'ดูแลออเดอร์ในครัวและดูรายงานยอดเสิร์ฟ', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE, PERMISSIONS.REPORTS_VIEW] },
-    service_staff: { name: 'พนักงานเสิร์ฟ', description: 'ดูแลออเดอร์ในครัว ดูคิวลูกค้า และดูรายงานยอดเสิร์ฟ', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE, PERMISSIONS.QUEUE_VIEW, PERMISSIONS.REPORTS_VIEW] },
+    service_staff: { name: 'พนักงานเสิร์ฟ', description: 'ดูแลออเดอร์ในครัว จัดการคิวลูกค้า และดูรายงานยอดเสิร์ฟ', permissions: [PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE, PERMISSIONS.QUEUE_VIEW, PERMISSIONS.QUEUE_MANAGE, PERMISSIONS.REPORTS_VIEW] },
     manager: { name: 'ผู้จัดการ', description: 'บริหารจัดการหน้าร้านทุกส่วน ครัว คิว โต๊ะ และเงินสดประจำวัน พร้อมดูรายงาน', permissions: [PERMISSIONS.CASHIER_VIEW, PERMISSIONS.CASHIER_MANAGE, PERMISSIONS.KITCHEN_VIEW, PERMISSIONS.KITCHEN_MANAGE, PERMISSIONS.QUEUE_VIEW, PERMISSIONS.QUEUE_MANAGE, PERMISSIONS.REPORTS_VIEW, PERMISSIONS.TABLES_VIEW, PERMISSIONS.TABLES_MANAGE, PERMISSIONS.TABLES_QR] },
 };
 
@@ -577,7 +578,7 @@ const AUDIT_EVENT_KEYS = new Set([
     'queue.created', 'queue.updated', 'queue.assigned_table', 'queue.deleted', 'queue.customer_cancelled',
     'order.served', 'order.cancelled',
     'cashier.opening_saved', 'cashier.closing_saved', 'cashier.movement_created', 'cashier.movement_voided',
-    'cashier.cash_sales_updated', 'cashier.next_day_opening_prepared', 'cashier.day_closed',
+    'cashier.cash_sales_updated', 'cashier.next_day_opening_prepared', 'cashier.day_closed', 'cashier.opening_confirmed',
     'user.created', 'user.profile_updated', 'user.roles_changed', 'user.disabled', 'user.enabled', 'user.password_reset',
     'role.created', 'role.updated', 'role.permissions_changed', 'role.deleted',
 ]);
@@ -1378,44 +1379,103 @@ app.post('/api/queue/edit', requireAuth, requirePermission(PERMISSIONS.QUEUE_MAN
     }
 });
 
+// ปุ่มสลับภาษา TH/EN ของหน้าเช็คคิวลูกค้า (/q/:token) — ใช้ร่วมกันทุก state ของหน้า (พบคิว/เข้าโต๊ะแล้ว/ข้าม/ยกเลิก/ไม่พบคิว)
+function langToggleHtml() {
+    return `<div class="absolute top-3 right-3 flex bg-gray-100 rounded-full p-0.5 text-[11px] font-bold z-10">
+        <button id="langBtnTh" onclick="setQLang('th')" class="px-2.5 py-1 rounded-full transition">TH</button>
+        <button id="langBtnEn" onclick="setQLang('en')" class="px-2.5 py-1 rounded-full transition">EN</button>
+    </div>`;
+}
+// dictionary TH/EN ของหน้าเช็คคิว — จำภาษาที่เลือกไว้ผ่าน localStorage เดียวกับหน้าสั่งอาหาร (key 'lang') ใช้ร่วมกันข้ามหน้า
+// องค์ประกอบที่มีค่าจริง (เลขคิว/จำนวนคน/ชื่อน้ำซุป) render เป็น text node แยกนอก data-i18n เสมอ — สลับภาษาแล้วค่าจริงต้องไม่หาย
+function queueLangScript() {
+    return `<script>
+        var QI18N = {
+            th: {
+                yourQueueCard: 'บัตรคิวของคุณ', queueNumberLabel: 'หมายเลขคิว',
+                paxLabel: 'จำนวน', paxUnit: 'ท่าน', adultsLabel: 'ผู้ใหญ่', childrenLabel: 'เด็ก',
+                soupChosen: 'น้ำซุปที่เลือก', potLabel: 'หม้อ',
+                lastCalledLabel: 'คิวปัจจุบันที่เรียกเข้าโต๊ะล่าสุด', notCalledYet: 'ยังไม่มีการเรียก',
+                waitingPrefix: 'รออีก', waitingSuffix: 'คิว',
+                realtimeNotice: 'กำลังอัปเดตสถานะแบบเรียลไทม์...', cancelMyQueue: 'ยกเลิกคิวของฉัน',
+                cancelConfirmPrefix: 'ยืนยันยกเลิกคิว', cancelConfirmSuffix: 'ใช่หรือไม่?',
+                cancelBtn: 'ยกเลิก', confirmBtn: 'ตกลง',
+                cancelFailedAlert: 'ยกเลิกคิวนี้ไม่ได้ กรุณาติดต่อพนักงาน',
+                enteredTitle: '✅ เข้าโต๊ะเรียบร้อยแล้ว', yourTableIs: 'โต๊ะของคุณคือ', thankYou: 'ขอบคุณที่ใช้บริการครับ',
+                skippedTitle: 'คิวนี้ถูกข้ามแล้ว', skippedSubtitle: 'กรุณาติดต่อพนักงานเพื่อรับคิวใหม่',
+                cancelledTitle: 'คิวนี้ถูกยกเลิกแล้ว', cancelledSubtitle: 'หากต้องการเข้าร้าน กรุณารับคิวใหม่ที่หน้าร้าน',
+                notFoundTitle: 'ไม่พบคิวนี้', notFoundSubtitle: 'อาจหมดอายุหรือไม่มีในระบบ',
+            },
+            en: {
+                yourQueueCard: 'Your queue ticket', queueNumberLabel: 'Queue Number',
+                paxLabel: 'Party of', paxUnit: 'people', adultsLabel: 'Adults', childrenLabel: 'Children',
+                soupChosen: 'Soup selected', potLabel: 'Pot',
+                lastCalledLabel: 'Latest queue called to a table', notCalledYet: 'Not called yet',
+                waitingPrefix: 'Queues ahead:', waitingSuffix: '',
+                realtimeNotice: 'Updating in real time...', cancelMyQueue: 'Cancel my queue',
+                cancelConfirmPrefix: 'Cancel queue', cancelConfirmSuffix: '?',
+                cancelBtn: 'Back', confirmBtn: 'Confirm',
+                cancelFailedAlert: 'This queue could not be cancelled. Please contact staff.',
+                enteredTitle: '✅ You have been seated', yourTableIs: 'Your table is', thankYou: 'Thank you for visiting!',
+                skippedTitle: 'This queue was skipped', skippedSubtitle: 'Please contact staff for a new queue number',
+                cancelledTitle: 'This queue was cancelled', cancelledSubtitle: 'To dine with us, please take a new queue number at the front',
+                notFoundTitle: 'Queue not found', notFoundSubtitle: 'It may have expired or does not exist',
+            },
+        };
+        var qlang = localStorage.getItem('lang') || 'th';
+        function qt(k) { var v = QI18N[qlang] && QI18N[qlang][k]; return v !== undefined ? v : k; } // ห้ามใช้ || เพราะค่าว่าง '' (เช่น waitingSuffix ฝั่ง EN) เป็น falsy จะหลุดไปคืนชื่อ key แทน
+        function qApplyLang() {
+            document.documentElement.lang = qlang;
+            document.querySelectorAll('[data-i18n]').forEach(function (el) { el.textContent = qt(el.dataset.i18n); });
+            var th = document.getElementById('langBtnTh'), en = document.getElementById('langBtnEn');
+            if (th) th.className = 'px-2.5 py-1 rounded-full transition' + (qlang === 'th' ? ' bg-white text-gray-800 shadow-sm' : ' text-gray-400');
+            if (en) en.className = 'px-2.5 py-1 rounded-full transition' + (qlang === 'en' ? ' bg-white text-gray-800 shadow-sm' : ' text-gray-400');
+        }
+        function setQLang(l) { qlang = l; localStorage.setItem('lang', l); qApplyLang(); }
+        qApplyLang();
+    </script>`;
+}
+
 // หน้าเช็คคิว
 app.get('/q/:token', (req, res) => {
     const token = req.params.token;
     db.get("SELECT * FROM queues WHERE token = ? AND date(created_at, 'localtime') = date('now', 'localtime')", [token], (err, q) => {
         const mobileHead = `<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><script src="https://cdn.tailwindcss.com"></script><style>body{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);}</style>`;
 
-        if (!q) return res.send(`<html><head>${mobileHead}</head><body class="min-h-screen bg-gray-50 flex items-center justify-center px-4"><div class="bg-white w-full max-w-sm rounded-2xl shadow-md text-center py-10 px-6"><h1 class="text-2xl font-bold text-red-600">ไม่พบคิวนี้</h1><p class="text-gray-400 mt-2 text-sm">อาจหมดอายุหรือไม่มีในระบบ</p></div></body></html>`);
+        if (!q) return res.send(`<html><head>${mobileHead}</head><body class="min-h-screen bg-gray-50 flex items-center justify-center px-4"><div class="bg-white w-full max-w-sm rounded-2xl shadow-md text-center py-10 px-6 relative">${langToggleHtml()}<h1 class="text-2xl font-bold text-red-600" data-i18n="notFoundTitle">ไม่พบคิวนี้</h1><p class="text-gray-400 mt-2 text-sm" data-i18n="notFoundSubtitle">อาจหมดอายุหรือไม่มีในระบบ</p></div>${queueLangScript()}</body></html>`);
 
         // คิวที่จบแล้ว (เข้าโต๊ะ/ข้าม/ยกเลิก) — ยังต้องโชว์เลขคิวของลูกค้าไว้เสมอ
         // เผื่อลูกค้าเปิดดูเพื่อยืนยันเลขคิวตัวเองกับพนักงาน
-        const finishedPage = (theme, title, subtitle) => {
+        const finishedPage = (theme, titleHtml, subtitleHtml) => {
             const paxLine = (q.adults > 0 || q.children > 0)
-                ? `<div class="flex justify-center gap-2 mt-2">${q.adults > 0 ? `<span class="bg-gray-100 text-gray-600 px-3 py-0.5 rounded-full text-xs font-bold">ผู้ใหญ่ ${q.adults}</span>` : ''}${q.children > 0 ? `<span class="bg-gray-100 text-gray-600 px-3 py-0.5 rounded-full text-xs font-bold">เด็ก ${q.children}</span>` : ''}</div>`
-                : `<p class="text-sm text-gray-500 mt-2">จำนวน ${q.pax} ท่าน</p>`;
+                ? `<div class="flex justify-center gap-2 mt-2">${q.adults > 0 ? `<span class="bg-gray-100 text-gray-600 px-3 py-0.5 rounded-full text-xs font-bold"><span data-i18n="adultsLabel">ผู้ใหญ่</span> ${q.adults}</span>` : ''}${q.children > 0 ? `<span class="bg-gray-100 text-gray-600 px-3 py-0.5 rounded-full text-xs font-bold"><span data-i18n="childrenLabel">เด็ก</span> ${q.children}</span>` : ''}</div>`
+                : `<p class="text-sm text-gray-500 mt-2"><span data-i18n="paxLabel">จำนวน</span> ${q.pax} <span data-i18n="paxUnit">ท่าน</span></p>`;
 
             return res.send(`
                 <html><head>${mobileHead}</head>
                 <body class="bg-gray-100 min-h-screen flex items-center justify-center px-3 py-6">
-                    <div class="bg-white w-full max-w-sm rounded-2xl shadow-md overflow-hidden">
+                    <div class="bg-white w-full max-w-sm rounded-2xl shadow-md overflow-hidden relative">
+                        ${langToggleHtml()}
                         <div class="flex flex-col items-center pt-6 pb-4 px-4 border-b">
                             <img src="/images/logo.png" class="w-16 h-16 rounded-full shadow-md object-cover mb-2" onerror="this.style.display='none'">
-                            <p class="text-gray-400 text-sm">บัตรคิวของคุณ</p>
+                            <p class="text-gray-400 text-sm" data-i18n="yourQueueCard">บัตรคิวของคุณ</p>
                         </div>
 
                         <div class="py-6 text-center border-b px-4">
-                            <p class="text-xs font-bold text-gray-400 mb-1">หมายเลขคิว</p>
+                            <p class="text-xs font-bold text-gray-400 mb-1" data-i18n="queueNumberLabel">หมายเลขคิว</p>
                             <h1 class="text-7xl font-black ${theme.number} leading-none">${escHtml(q.q_number)}</h1>
                             ${paxLine}
                         </div>
 
                         <div class="px-4 py-5 text-center">
                             <div class="${theme.box} rounded-xl border px-4 py-4">
-                                <h2 class="text-xl font-bold ${theme.text}">${title}</h2>
-                                ${subtitle ? `<p class="text-sm ${theme.sub} mt-1">${subtitle}</p>` : ''}
+                                <h2 class="text-xl font-bold ${theme.text}">${titleHtml}</h2>
+                                ${subtitleHtml ? `<p class="text-sm ${theme.sub} mt-1">${subtitleHtml}</p>` : ''}
                             </div>
                         </div>
                     </div>
                     <script src="/socket.io/socket.io.js"></script>
+                    ${queueLangScript()}
                     <script>
                         // ถ้าพนักงานกดย้อนคิวกลับเป็น "รอคิว" หน้านี้จะกลับไปแสดงสถานะคิวสดเอง
                         const socket = io();
@@ -1429,35 +1489,35 @@ app.get('/q/:token', (req, res) => {
             const tableNo = cleanTableAssigned(q.table_assigned);
             return finishedPage(
                 { number: 'text-green-600', box: 'bg-green-50 border-green-200', text: 'text-green-700', sub: 'text-green-600' },
-                '✅ เข้าโต๊ะเรียบร้อยแล้ว',
-                tableNo ? `โต๊ะของคุณคือ <span class="font-black text-lg">${escHtml(tableNo)}</span>` : 'ขอบคุณที่ใช้บริการครับ'
+                `<span data-i18n="enteredTitle">✅ เข้าโต๊ะเรียบร้อยแล้ว</span>`,
+                tableNo ? `<span data-i18n="yourTableIs">โต๊ะของคุณคือ</span> <span class="font-black text-lg">${escHtml(tableNo)}</span>` : `<span data-i18n="thankYou">ขอบคุณที่ใช้บริการครับ</span>`
             );
         }
 
         if (q.status === 'skipped') {
             return finishedPage(
                 { number: 'text-orange-500', box: 'bg-orange-50 border-orange-200', text: 'text-orange-700', sub: 'text-orange-600' },
-                'คิวนี้ถูกข้ามแล้ว',
-                'กรุณาติดต่อพนักงานเพื่อรับคิวใหม่'
+                `<span data-i18n="skippedTitle">คิวนี้ถูกข้ามแล้ว</span>`,
+                `<span data-i18n="skippedSubtitle">กรุณาติดต่อพนักงานเพื่อรับคิวใหม่</span>`
             );
         }
 
         if (q.status === 'cancelled') {
             return finishedPage(
                 { number: 'text-gray-400', box: 'bg-gray-50 border-gray-200', text: 'text-gray-600', sub: 'text-gray-400' },
-                'คิวนี้ถูกยกเลิกแล้ว',
-                'หากต้องการเข้าร้าน กรุณารับคิวใหม่ที่หน้าร้าน'
+                `<span data-i18n="cancelledTitle">คิวนี้ถูกยกเลิกแล้ว</span>`,
+                `<span data-i18n="cancelledSubtitle">หากต้องการเข้าร้าน กรุณารับคิวใหม่ที่หน้าร้าน</span>`
             );
         }
 
         db.get("SELECT COUNT(*) as ahead FROM queues WHERE status = 'waiting' AND id < ? AND date(created_at, 'localtime') = date('now', 'localtime')", [q.id], (err, rowAhead) => {
             const ahead = rowAhead ? rowAhead.ahead : 0;
             const pots = safeParse(q.pots, []);
-            const potsHtml = pots.map((p, i) => `<div class="flex items-center justify-center gap-1 text-sm text-gray-700 py-0.5"><span class="text-gray-400 text-xs">หม้อ ${i+1}:</span> <span class="font-bold">${escHtml(p.soup1)}</span> <span class="text-gray-300">&</span> <span class="font-bold">${escHtml(p.soup2)}</span></div>`).join('');
+            const potsHtml = pots.map((p, i) => `<div class="flex items-center justify-center gap-1 text-sm text-gray-700 py-0.5"><span class="text-gray-400 text-xs"><span data-i18n="potLabel">หม้อ</span> ${i+1}:</span> <span class="font-bold">${escHtml(p.soup1)}</span> <span class="text-gray-300">&</span> <span class="font-bold">${escHtml(p.soup2)}</span></div>`).join('');
 
             // ค้นหาคิวที่เข้าล่าสุด
             db.get("SELECT q_number FROM queues WHERE status = 'entered' AND date(created_at, 'localtime') = date('now', 'localtime') ORDER BY id DESC LIMIT 1", [], (err, calledRow) => {
-                const currentCalled = calledRow ? calledRow.q_number : 'ยังไม่มีการเรียก';
+                const currentCalledHtml = calledRow ? escHtml(calledRow.q_number) : `<span data-i18n="notCalledYet">ยังไม่มีการเรียก</span>`;
 
                 res.send(`
                     <html><head>${mobileHead}</head>
@@ -1466,51 +1526,54 @@ app.get('/q/:token', (req, res) => {
                         <div id="cancelConfirmModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 px-4">
                             <div class="bg-white rounded-2xl shadow-2xl w-full max-w-xs overflow-hidden">
                                 <div class="px-6 py-6 text-center">
-                                    <p class="text-gray-800 font-semibold text-lg">ยืนยันยกเลิกคิว ${escHtml(q.q_number)} ใช่หรือไม่?</p>
+                                    <p class="text-gray-800 font-semibold text-lg"><span data-i18n="cancelConfirmPrefix">ยืนยันยกเลิกคิว</span> ${escHtml(q.q_number)} <span data-i18n="cancelConfirmSuffix">ใช่หรือไม่?</span></p>
                                 </div>
                                 <div class="flex border-t border-gray-100">
-                                    <button onclick="document.getElementById('cancelConfirmModal').classList.add('hidden')" class="flex-1 py-3.5 text-gray-500 font-bold hover:bg-gray-50 border-r border-gray-100">ยกเลิก</button>
-                                    <button onclick="doCancel()" class="flex-1 py-3.5 text-red-600 font-bold hover:bg-red-50">ตกลง</button>
+                                    <button onclick="document.getElementById('cancelConfirmModal').classList.add('hidden')" class="flex-1 py-3.5 text-gray-500 font-bold hover:bg-gray-50 border-r border-gray-100" data-i18n="cancelBtn">ยกเลิก</button>
+                                    <button onclick="doCancel()" class="flex-1 py-3.5 text-red-600 font-bold hover:bg-red-50" data-i18n="confirmBtn">ตกลง</button>
                                 </div>
                             </div>
                         </div>
 
-                        <div class="bg-white w-full max-w-sm rounded-2xl shadow-md overflow-hidden">
+                        <div class="bg-white w-full max-w-sm rounded-2xl shadow-md overflow-hidden relative">
+                            ${langToggleHtml()}
                             <div class="flex flex-col items-center pt-6 pb-4 px-4 border-b bg-white">
                                 <img src="/images/logo.png" class="w-20 h-20 rounded-full shadow-md object-cover mb-2" onerror="this.style.display='none'">
-                                <p class="text-gray-400 text-sm">บัตรคิวของคุณ</p>
+                                <p class="text-gray-400 text-sm" data-i18n="yourQueueCard">บัตรคิวของคุณ</p>
                             </div>
 
                             <div class="py-5 text-center border-b px-4">
                                 <h1 class="text-7xl font-black text-blue-600 leading-none">${escHtml(q.q_number)}</h1>
-                                <p class="text-lg font-bold text-gray-700 mt-2">จำนวน: ${q.pax} ท่าน</p>
-                                ${(q.adults > 0 || q.children > 0) ? `<div class="flex justify-center gap-3 mt-1">${q.adults > 0 ? `<span class="bg-blue-100 text-blue-700 px-3 py-0.5 rounded-full text-sm font-bold">ผู้ใหญ่ ${q.adults}</span>` : ''}${q.children > 0 ? `<span class="bg-gray-100 text-gray-600 px-3 py-0.5 rounded-full text-sm font-bold">เด็ก ${q.children}</span>` : ''}</div>` : ''}
-                                ${potsHtml ? `<div class="mt-3 bg-gray-50 rounded-xl border border-gray-200 px-4 py-2 inline-block text-left"><p class="text-xs font-bold text-gray-400 text-center mb-1">น้ำซุปที่เลือก</p>${potsHtml}</div>` : ''}
+                                ${(q.adults > 0 || q.children > 0)
+                                    ? `<div class="flex justify-center gap-3 mt-2">${q.adults > 0 ? `<span class="bg-blue-100 text-blue-700 px-3 py-0.5 rounded-full text-sm font-bold"><span data-i18n="adultsLabel">ผู้ใหญ่</span> ${q.adults}</span>` : ''}${q.children > 0 ? `<span class="bg-gray-100 text-gray-600 px-3 py-0.5 rounded-full text-sm font-bold"><span data-i18n="childrenLabel">เด็ก</span> ${q.children}</span>` : ''}</div>`
+                                    : `<p class="text-lg font-bold text-gray-700 mt-2"><span data-i18n="paxLabel">จำนวน</span> ${q.pax} <span data-i18n="paxUnit">ท่าน</span></p>`}
+                                ${potsHtml ? `<div class="mt-3 bg-gray-50 rounded-xl border border-gray-200 px-4 py-2 inline-block text-left"><p class="text-xs font-bold text-gray-400 text-center mb-1" data-i18n="soupChosen">น้ำซุปที่เลือก</p>${potsHtml}</div>` : ''}
                             </div>
 
                             <div class="px-4 pt-4 space-y-3">
                                 <div class="p-3 bg-blue-50 rounded-xl border border-blue-200 text-center">
-                                    <p class="text-xs font-bold text-gray-500 mb-1">คิวปัจจุบันที่เรียกเข้าโต๊ะล่าสุด</p>
-                                    <p class="text-4xl font-black text-blue-700">${currentCalled}</p>
+                                    <p class="text-xs font-bold text-gray-500 mb-1" data-i18n="lastCalledLabel">คิวปัจจุบันที่เรียกเข้าโต๊ะล่าสุด</p>
+                                    <p class="text-4xl font-black text-blue-700">${currentCalledHtml}</p>
                                 </div>
                                 <div class="p-3 bg-yellow-50 rounded-xl border border-yellow-200 text-center">
-                                    <p class="text-lg font-bold text-yellow-800">รออีก <span class="text-2xl font-black mx-1">${ahead}</span> คิว</p>
+                                    <p class="text-lg font-bold text-yellow-800"><span data-i18n="waitingPrefix">รออีก</span> <span class="text-2xl font-black mx-1">${ahead}</span> <span data-i18n="waitingSuffix">คิว</span></p>
                                 </div>
                             </div>
 
-                            <p class="text-xs text-gray-400 text-center mt-3 animate-pulse">กำลังอัปเดตสถานะแบบเรียลไทม์...</p>
+                            <p class="text-xs text-gray-400 text-center mt-3 animate-pulse" data-i18n="realtimeNotice">กำลังอัปเดตสถานะแบบเรียลไทม์...</p>
 
                             <div class="p-4">
-                                <button onclick="document.getElementById('cancelConfirmModal').classList.remove('hidden')" class="w-full bg-red-50 text-red-500 font-bold py-3 rounded-xl text-sm border border-red-300 active:scale-95 transition-transform">ยกเลิกคิวของฉัน</button>
+                                <button onclick="document.getElementById('cancelConfirmModal').classList.remove('hidden')" class="w-full bg-red-50 text-red-500 font-bold py-3 rounded-xl text-sm border border-red-300 active:scale-95 transition-transform" data-i18n="cancelMyQueue">ยกเลิกคิวของฉัน</button>
                             </div>
                         </div>
                         <script src="/socket.io/socket.io.js"></script>
+                        ${queueLangScript()}
                         <script>
                             const socket = io();
                             socket.on('queue_updated', () => location.reload());
                             function doCancel() {
                                 fetch('/api/queue/cancel-by-token', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:'${escHtml(q.token)}'})})
-                                    .then(r => r.ok ? location.reload() : alert('ยกเลิกคิวนี้ไม่ได้ กรุณาติดต่อพนักงาน'));
+                                    .then(r => r.ok ? location.reload() : alert(qt('cancelFailedAlert')));
                             }
                         </script>
                     </body></html>
@@ -2579,27 +2642,17 @@ app.put('/api/cashier/sheets/:type', requireAuth, requirePermission(PERMISSIONS.
 // ตอนนี้รวมเป็น UPDATE ... WHERE status = 'draft' คำสั่งเดียว แล้วเช็ค affected rows แทน — ผ่าน withTransaction (คิว serialize ระดับแอป
 // เดียวกับ PUT/prepare-next-day) เพื่อไม่ให้ statement เดี่ยวๆ นี้ไปแทรกกลางธุรกรรม BEGIN...COMMIT ของ sheet อื่นบน connection เดียวกันโดยบังเอิญ
 // มีแค่ request เดียวเท่านั้นที่ WHERE จะ match — คนแพ้ affected rows = 0 ไม่แตะ finalized_by/finalized_at ของตัวเองเข้าไปในแถวเลยแม้แต่นิดเดียว
-// (Phase 8.1) ปิดยอดประจำวันคือจุดเดียวที่ล็อกทั้งวัน — ไม่มี "ยืนยันเงินเปิดร้าน" แยกต่างหากอีกต่อไป เงินเปิดร้านแก้ไขได้อิสระตลอดวันผ่าน PUT ปกติ (มี version guard เดิมของ Phase 7.1 อยู่แล้ว)
-// เมื่อ sheet_type='closing' ถูก finalize: เงินเปิดร้านของวันเดียวกัน (ถ้ายังเป็น draft อยู่) จะถูกแช่แข็งไปพร้อมกันแบบ atomic ในธุรกรรมเดียวกันนี้เลย ใช้ค่าปัจจุบันของมัน ณ ขณะนั้น
-// ไม่ต้องมีการ "ยืนยัน" เงินเปิดร้านแยกต่างหากก่อนหน้าอีกต่อไป — แค่ต้อง "มีอยู่จริง" (เคย save อย่างน้อยหนึ่งครั้ง) เท่านั้น (ดูข้อกำหนด Phase 8.1 section 5)
-// ใบเปิดร้านที่ finalized ไปแล้วจากระบบเดิมก่อนหน้านี้ (เช่นจาก Phase 7/8 ที่เคยกด "ยืนยันรายการ" เอง) ยังคงใช้งานได้ปกติ — ข้ามการแช่แข็งซ้ำ ไม่ต้องเช็ค version ของมันอีก (มันนิ่งอยู่แล้ว)
+// (Phase 10) กลับมามี "ยืนยันเงินเปิดร้าน" แยกต่างหากจากการปิดยอดประจำวันอีกครั้ง (ย้อนกลับส่วนหนึ่งของ Phase 8.1/8.1.1) — ใบเปิดร้านยืนยันผ่าน endpoint นี้ตรงๆ ได้เหมือนใบปิดร้าน
+// (ผ่าน branch ทั่วไปด้านล่าง ไม่มีเงื่อนไข Phase 8 ของ closing มาเกี่ยวข้อง) เพื่อล็อกไม่ให้แก้ไขได้อีกก่อนถึงเวลาปิดยอด — เหตุผล: พนักงานกะเช้าต้องการล็อกยอดเปิดร้านทันทีหลังนับเสร็จ ไม่ต้องรอถึงปิดร้าน
+// เมื่อ sheet_type='closing' ถูก finalize: เงินเปิดร้านของวันเดียวกัน (ถ้ายังเป็น draft อยู่ เช่นลืมกดยืนยันเปิดร้านแยกไว้) จะยังถูกแช่แข็งไปพร้อมกันแบบ atomic ในธุรกรรมเดียวกันนี้เป็น fallback เสมอ ใช้ค่าปัจจุบันของมัน ณ ขณะนั้น
+// ถ้าเปิดร้านถูกยืนยันแยกไปก่อนหน้าแล้ว (ทางปกติตอนนี้) — ตกไปที่ branch "openingRow.status === 'finalized' อยู่แล้ว" ด้านล่าง ข้ามการแช่แข็งซ้ำไปเฉยๆ
 // ทุกเงื่อนไข (status/version ของ sheet เอง + เงื่อนไข Phase 8 ของ closing) ตรวจภายใน withTransaction เดียวกันทั้งหมด — กัน race ระหว่าง movement/void/แก้ยอด POS/แก้เงินเปิดร้าน กับ finalize (ดู section 18-20 ของข้อกำหนด Phase 8, section 20 ของ Phase 8.1)
-// (Phase 8.1.1) ปิดช่องโหว่: endpoint นี้ยังเรียกตรงๆ ด้วย id ของใบเปิดร้าน (sheet_type='opening') แล้วยืนยันแบบเดี่ยวๆ ได้อยู่ ทั้งที่ frontend ไม่มีปุ่มให้กดแล้ว — ต้องบล็อกที่ backend เองเสมอ ไม่พึ่งแค่การซ่อนปุ่ม
-// ใบเปิดร้านที่ยังเป็น draft อยู่: "ทาง" เดียวที่ทำให้กลายเป็น finalized ได้คือถูกแช่แข็งไปพร้อมกับ Closing ตอนปิดยอดประจำวันเท่านั้น (branch sheet_type==='closing' ด้านล่าง)
-// ใบเปิดร้านที่ finalized ไปแล้ว (ไม่ว่าจะจากการปิดยอดประจำวันจริง หรือจากระบบเดิมก่อนหน้า) ยังคงตกไปที่ UPDATE ท้ายฟังก์ชันตามปกติ ซึ่งจะไม่ match แถวใดเลย (status ไม่ใช่ 'draft' แล้ว) และตอบ 409 "ใบตรวจนับนี้ยืนยันไปแล้ว" เหมือนเดิมทุกประการ — ไม่ใช่ปัญหาใหม่
 app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERMISSIONS.CASHIER_MANAGE), async (req, res) => {
     const sheetId = parseInt(req.params.id, 10);
     if (!Number.isInteger(sheetId)) return res.status(400).json({ error: 'invalid_id' });
     try {
         const before = await getCashSheetById(sheetId);
         if (!before) return res.status(404).json({ error: 'not_found' });
-
-        if (before.sheet_type === 'opening' && before.status === 'draft') {
-            return res.status(409).json({
-                error: 'เงินเปิดร้านจะถูกยืนยันเมื่อปิดยอดประจำวัน',
-                conflict_reason: 'opening_finalizes_with_day_close',
-            });
-        }
 
         let expectedDayRevision = null;
         let expectedOpeningVersion = null;
@@ -2669,6 +2722,15 @@ app.post('/api/cashier/sheets/:id/finalize', requireAuth, requirePermission(PERM
                         opening_cash: recon.opening_cash, cash_sales: recon.cash_sales, cash_in: recon.cash_in, cash_out: recon.cash_out,
                         expected_cash: recon.expected_cash, actual_cash: recon.actual_cash, variance: recon.variance,
                     },
+                    businessDate: before.business_date,
+                });
+            } else if (finalUpdateResult.changes > 0 && before.sheet_type === 'opening') {
+                const openingSummaryFinal = await getCashSheetById(sheetId).then(summarizeCashSheet);
+                await recordAuditEvent({
+                    actor: auditActorFromAuthUser(req.authUser),
+                    eventKey: 'cashier.opening_confirmed', category: 'cashier', entityType: 'cash_sheet', entityId: sheetId,
+                    summary: `ยืนยันเงินเปิดร้าน ${formatThaiDate(before.business_date)}`,
+                    details: { business_date: before.business_date, sheet_id: sheetId, total: openingSummaryFinal.grand_total },
                     businessDate: before.business_date,
                 });
             }

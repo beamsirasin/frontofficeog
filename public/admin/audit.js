@@ -29,6 +29,7 @@ window.AuditModule = (function () {
         'cashier.cash_sales_updated': 'แก้ไขยอดขายเงินสด POS',
         'cashier.next_day_opening_prepared': 'เตรียมเงินเปิดร้านวันถัดไป',
         'cashier.day_closed': 'ปิดยอดเงินสดประจำวัน',
+        'cashier.opening_confirmed': 'ยืนยันเงินเปิดร้าน',
         'user.created': 'สร้างบัญชีพนักงาน',
         'user.profile_updated': 'แก้ไขข้อมูลบัญชี',
         'user.roles_changed': 'เปลี่ยน Role ของพนักงาน',
@@ -83,6 +84,8 @@ window.AuditModule = (function () {
                 return `${d.before !== null && d.before !== undefined ? baht(d.before) + ' → ' : ''}${baht(d.after)}`;
             case 'cashier.next_day_opening_prepared':
                 return `รวม ${baht(d.total)} สำหรับวันที่ ${esc(d.target_business_date || '-')}`;
+            case 'cashier.opening_confirmed':
+                return `รวม ${baht(d.total)}`;
             case 'cashier.day_closed':
                 return [
                     `เงินเปิดร้าน ${baht(d.opening_cash)}`, `POS ${baht(d.cash_sales)}`, `เงินเข้า ${baht(d.cash_in)}`, `เงินออก ${baht(d.cash_out)}`,

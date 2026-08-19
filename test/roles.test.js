@@ -635,7 +635,7 @@ test('49. (Phase 8.2) the kitchen_staff/service_staff/manager system roles\' per
     const roles = await res.json();
     const byKey = Object.fromEntries(roles.map((r) => [r.key, r]));
     assert.deepEqual(byKey.kitchen_staff.permissions.sort(), ['kitchen.manage', 'kitchen.view', 'reports.view']);
-    assert.deepEqual(byKey.service_staff.permissions.sort(), ['kitchen.manage', 'kitchen.view', 'queue.view', 'reports.view']);
+    assert.deepEqual(byKey.service_staff.permissions.sort(), ['kitchen.manage', 'kitchen.view', 'queue.manage', 'queue.view', 'reports.view']);
     assert.deepEqual(byKey.manager.permissions.sort(), [
         'cashier.manage', 'cashier.view', 'kitchen.manage', 'kitchen.view',
         'queue.manage', 'queue.view', 'reports.view', 'tables.manage', 'tables.qr', 'tables.view',

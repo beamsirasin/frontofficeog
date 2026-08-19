@@ -25,19 +25,25 @@
 </head>
 <body class="bg-gray-100">
     <div id="lockScreen" class="fixed inset-0 bg-black bg-opacity-80 z-50 flex flex-col items-center justify-center text-white p-6 text-center hidden">
-        <h2 id="lockTitle" class="text-3xl font-bold mb-4">กำลังตรวจสอบโต๊ะ...</h2>
-        <p id="lockDesc" class="text-lg">กรุณารอสักครู่</p>
+        <h2 id="lockTitle" class="text-3xl font-bold mb-4" data-i18n="lockCheckingTitle">กำลังตรวจสอบโต๊ะ...</h2>
+        <p id="lockDesc" class="text-lg" data-i18n="lockCheckingDesc">กรุณารอสักครู่</p>
     </div>
 
     <header class="bg-gray-800 text-white p-4 sticky top-0 z-40 flex justify-between items-center shadow-md">
-        <h1 class="text-lg font-bold">ลำฮิมคือ SHABU BUFFET</h1>
-        <h2 class="text-lg font-bold bg-white text-gray-800 px-4 py-1 rounded">TABLE <span id="tableDisplay"></span></h2>
+        <img src="/images/logo.png" alt="ลำฮิมคือ Shabu Buffet" class="h-12 w-auto rounded bg-white p-1 shadow-sm">
+        <div class="flex items-center gap-2">
+            <div class="flex bg-gray-700 rounded-full p-0.5 text-xs font-bold">
+                <button id="langBtnTh" onclick="setLang('th')" class="px-3 py-1.5 rounded-full transition">TH</button>
+                <button id="langBtnEn" onclick="setLang('en')" class="px-3 py-1.5 rounded-full transition">EN</button>
+            </div>
+            <h2 class="text-lg font-bold bg-white text-gray-800 px-4 py-1 rounded">TABLE <span id="tableDisplay"></span></h2>
+        </div>
     </header>
 
     <div class="max-w-xl mx-auto p-4 pb-28">
         
-        <div class="bg-gray-500 text-white text-center py-3 text-xl font-bold mb-2 shadow-md">หมู-เนื้อ</div>
-        <p class="text-red-500 text-sm font-bold mb-4">*สั่งได้สูงสุดรวมครั้งละ 5 จาน</p>
+        <div class="bg-gray-500 text-white text-center py-3 text-xl font-bold mb-2 shadow-md" data-i18n="meatSection">หมู-เนื้อ</div>
+        <p class="text-red-500 text-sm font-bold mb-4" data-i18n="meatLimit">*สั่งได้สูงสุดรวมครั้งละ 5 จาน</p>
         
         <div class="space-y-3 mb-8">
             <div class="flex justify-between items-center bg-white border p-3 rounded shadow-sm">
@@ -46,7 +52,7 @@
                     <div>
                         <div class="font-bold text-gray-800 text-sm">สันคอหมูสไลด์</div>
                         <div class="text-gray-400 text-xs">Sliced Pork Loin</div>
-                        <div class="text-gray-500 text-xs mt-0.5">4-6 ชิ้น / จาน</div>
+                        <div class="text-gray-500 text-xs mt-0.5" data-i18n="portion46">4-6 ชิ้น / จาน</div>
                     </div>
                 </div>
                 <div class="flex items-center gap-3">
@@ -62,7 +68,7 @@
                     <div>
                         <div class="font-bold text-gray-800 text-sm">หมูสามชั้นสไลด์</div>
                         <div class="text-gray-400 text-xs">Sliced Pork Belly</div>
-                        <div class="text-gray-500 text-xs mt-0.5">4-6 ชิ้น / จาน</div>
+                        <div class="text-gray-500 text-xs mt-0.5" data-i18n="portion46">4-6 ชิ้น / จาน</div>
                     </div>
                 </div>
                 <div class="flex items-center gap-3">
@@ -78,7 +84,7 @@
                     <div>
                         <div class="font-bold text-gray-800 text-sm">เนื้อริบอายโคขุนสไลด์</div>
                         <div class="text-gray-400 text-xs">Sliced Ribeye Beef</div>
-                        <div class="text-gray-500 text-xs mt-0.5">4-6 ชิ้น / จาน</div>
+                        <div class="text-gray-500 text-xs mt-0.5" data-i18n="portion46">4-6 ชิ้น / จาน</div>
                     </div>
                 </div>
                 <div class="flex items-center gap-3">
@@ -89,8 +95,8 @@
             </div>
         </div>
 
-        <div class="bg-gray-500 text-white text-center py-3 text-xl font-bold mb-2 shadow-md">กุ้ง-ปลาหมึก</div>
-        <p class="text-red-500 text-sm font-bold mb-4">*สั่งได้รายการละ 1 จาน ต่อครั้ง</p>
+        <div class="bg-gray-500 text-white text-center py-3 text-xl font-bold mb-2 shadow-md" data-i18n="seafoodSection">กุ้ง-ปลาหมึก</div>
+        <p class="text-red-500 text-sm font-bold mb-4" data-i18n="seafoodLimit">*สั่งได้รายการละ 1 จาน ต่อครั้ง</p>
         
         <div class="space-y-3 mb-6">
             <div class="flex justify-between items-center bg-white border p-3 rounded shadow-sm">
@@ -99,7 +105,7 @@
                     <div>
                         <div class="font-bold text-gray-800 text-sm">ปลาหมึก</div>
                         <div class="text-gray-400 text-xs">Squid</div>
-                        <div class="text-gray-500 text-xs mt-0.5">3-4 ชิ้น / จาน</div>
+                        <div class="text-gray-500 text-xs mt-0.5" data-i18n="portion34">3-4 ชิ้น / จาน</div>
                     </div>
                 </div>
                 <div class="flex items-center gap-3">
@@ -115,7 +121,7 @@
                     <div>
                         <div class="font-bold text-gray-800 text-sm">กุ้ง</div>
                         <div class="text-gray-400 text-xs">Shrimp</div>
-                        <div class="text-gray-500 text-xs mt-0.5">3-4 ชิ้น / จาน</div>
+                        <div class="text-gray-500 text-xs mt-0.5" data-i18n="portion34">3-4 ชิ้น / จาน</div>
                     </div>
                 </div>
                 <div class="flex items-center gap-3">
@@ -126,14 +132,59 @@
             </div>
         </div>
         
-        <p class="text-red-500 text-xs text-center font-semibold mb-6">*อาหารที่สั่งส่งเข้าครัวแล้วจะยกเลิกไม่ได้ หากรอเกิน 10 นาที กรุณาเรียกพนักงาน</p>
+        <p class="text-red-500 text-xs text-center font-semibold mb-6" data-i18n="noCancelNotice">*อาหารที่สั่งส่งเข้าครัวแล้วจะยกเลิกไม่ได้ หากรอเกิน 10 นาที กรุณาเรียกพนักงาน</p>
     </div>
 
     <div class="fixed bottom-0 w-full bg-white border-t p-4 flex justify-center shadow-[0_-10px_20px_rgba(0,0,0,0.1)]">
-        <button onclick="submitOrder()" class="bg-gray-800 text-white font-bold text-xl py-4 px-12 rounded w-full max-w-md hover:bg-black transition-colors shadow-lg">ยืนยันการสั่งอาหาร</button>
+        <button onclick="submitOrder()" class="bg-gray-800 text-white font-bold text-xl py-4 px-12 rounded w-full max-w-md hover:bg-black transition-colors shadow-lg" data-i18n="confirmOrder">ยืนยันการสั่งอาหาร</button>
     </div>
 
     <script>
+        // ===== ภาษา TH/EN — บันทึกไว้ที่เครื่อง (localStorage) จำได้ข้ามการโหลดหน้าใหม่ =====
+        const I18N = {
+            th: {
+                meatSection: 'หมู-เนื้อ', seafoodSection: 'กุ้ง-ปลาหมึก',
+                meatLimit: '*สั่งได้สูงสุดรวมครั้งละ 5 จาน', seafoodLimit: '*สั่งได้รายการละ 1 จาน ต่อครั้ง',
+                portion46: '4-6 ชิ้น / จาน', portion34: '3-4 ชิ้น / จาน',
+                noCancelNotice: '*อาหารที่สั่งส่งเข้าครัวแล้วจะยกเลิกไม่ได้ หากรอเกิน 10 นาที กรุณาเรียกพนักงาน',
+                confirmOrder: 'ยืนยันการสั่งอาหาร',
+                lockCheckingTitle: 'กำลังตรวจสอบโต๊ะ...', lockCheckingDesc: 'กรุณารอสักครู่',
+                lockNoTableTitle: '❌ ไม่สามารถสั่งอาหารได้',
+                lockExpiredTitle: '🚫 QR Code หมดอายุ',
+                lockWaitTitle: '⏳ กรุณารอสักครู่...', lockWaitDesc: 'คุณจะสามารถสั่งรอบต่อไปได้เมื่ออาหารรอบนี้เสิร์ฟเรียบร้อยแล้ว',
+                alertMeatLimit: 'หมูและเนื้อ สั่งรวมกันได้สูงสุด 5 จานครับ',
+                alertNoItems: 'กรุณาเลือกเมนูอย่างน้อย 1 รายการ',
+            },
+            en: {
+                meatSection: 'Pork - Beef', seafoodSection: 'Shrimp - Squid',
+                meatLimit: '*Max 5 plates combined per order', seafoodLimit: '*Max 1 plate per item, per order',
+                portion46: '4-6 pcs / plate', portion34: '3-4 pcs / plate',
+                noCancelNotice: '*Orders already sent to the kitchen cannot be cancelled. If it takes more than 10 minutes, please call a staff member.',
+                confirmOrder: 'Confirm Order',
+                lockCheckingTitle: 'Checking your table...', lockCheckingDesc: 'Please wait a moment',
+                lockNoTableTitle: '❌ Unable to order',
+                lockExpiredTitle: '🚫 QR Code expired',
+                lockWaitTitle: '⏳ Please wait...', lockWaitDesc: "You'll be able to order again once this round is served",
+                alertMeatLimit: 'You can order up to 5 plates of pork and beef combined.',
+                alertNoItems: 'Please select at least 1 item.',
+            },
+        };
+        let lang = localStorage.getItem('lang') || 'th';
+        function t(key) { const v = I18N[lang] && I18N[lang][key]; return v !== undefined ? v : key; } // ห้ามใช้ || เพราะค่าว่าง '' เป็น falsy จะหลุดไปคืนชื่อ key แทน
+        function applyStaticText() {
+            document.documentElement.lang = lang;
+            document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
+            document.getElementById('langBtnTh').className = 'px-3 py-1.5 rounded-full transition' + (lang === 'th' ? ' bg-white text-gray-800' : ' text-gray-300');
+            document.getElementById('langBtnEn').className = 'px-3 py-1.5 rounded-full transition' + (lang === 'en' ? ' bg-white text-gray-800' : ' text-gray-300');
+        }
+        function setLang(l) {
+            lang = l;
+            localStorage.setItem('lang', l);
+            applyStaticText();
+            renderLockText(); // ข้อความบนจอล็อก (ถ้ากำลังโชว์อยู่) ต้องเปลี่ยนภาษาไปพร้อมกันทันที ไม่ใช่แค่ตอนโหลดหน้าใหม่
+        }
+        applyStaticText();
+
         const socket = io();
         const urlParams = new URLSearchParams(window.location.search);
         const tableNo = urlParams.get('table');
@@ -144,34 +195,47 @@
         function changeVal(id, delta) {
             let el = document.getElementById(id);
             let newVal = parseInt(el.value) + delta;
-            
+
             if (id === 'squid' || id === 'shrimp') {
                 if (newVal >= 0 && newVal <= 1) el.value = newVal;
             } else {
                 let totalMeat = 0;
                 document.querySelectorAll('.meat-input').forEach(i => totalMeat += parseInt(i.value));
-                if (delta > 0 && totalMeat >= 5) return alert('หมูและเนื้อ สั่งรวมกันได้สูงสุด 5 จานครับ');
+                if (delta > 0 && totalMeat >= 5) return alert(t('alertMeatLimit'));
                 if (newVal >= 0 && newVal <= 5) el.value = newVal;
             }
         }
 
         const lockScreen = document.getElementById('lockScreen');
+        // สถานะจอล็อกปัจจุบัน (แยกจาก DOM text ตรงๆ) — ไว้ re-render ข้อความใหม่ได้ทันทีตอนสลับภาษา โดยไม่ต้องเช็คสถานะโต๊ะซ้ำ
+        let lockState = null; // null | 'checking' | 'noTable' | 'expired' | 'waiting'
+        function renderLockText() {
+            if (lockState === 'noTable') document.getElementById('lockTitle').innerText = t('lockNoTableTitle');
+            else if (lockState === 'expired') document.getElementById('lockTitle').innerText = t('lockExpiredTitle');
+            else if (lockState === 'waiting') {
+                document.getElementById('lockTitle').innerText = t('lockWaitTitle');
+                document.getElementById('lockDesc').innerText = t('lockWaitDesc');
+            }
+        }
 
         // ตรวจสถานะโต๊ะตัวเองใหม่ แล้วปรับล็อก/ปลดล็อกจอให้ตรงความจริง
         // ใช้ทั้งตอนโหลดหน้าครั้งแรก และตอนเน็ตหลุดแล้วต่อกลับ (reconnect)
         function syncTableStatus() {
             if(!tableNo || !token) {
-                document.getElementById('lockTitle').innerText = "❌ ไม่สามารถสั่งอาหารได้";
+                lockState = 'noTable';
+                renderLockText();
                 lockScreen.classList.remove('hidden');
                 return;
             }
             fetch('/api/table-session?table=' + encodeURIComponent(tableNo) + '&token=' + encodeURIComponent(token)).then(res => res.json()).then(myTable => {
                 if(!myTable || !myTable.is_open || !myTable.token_match) {
-                    document.getElementById('lockTitle').innerText = "🚫 QR Code หมดอายุ";
+                    lockState = 'expired';
+                    renderLockText();
                     lockScreen.classList.remove('hidden');
                 } else if (!myTable.can_order) {
                     showWaitScreen();
                 } else {
+                    lockState = null;
                     lockScreen.classList.add('hidden'); // สั่งได้แล้ว ปลดล็อกจอ
                 }
             }).catch(() => {});
@@ -179,13 +243,13 @@
         syncTableStatus();
 
         function showWaitScreen() {
-            document.getElementById('lockTitle').innerText = "⏳ กรุณารอสักครู่...";
-            document.getElementById('lockDesc').innerText = "คุณจะสามารถสั่งรอบต่อไปได้เมื่ออาหารรอบนี้เสิร์ฟเรียบร้อยแล้ว";
+            lockState = 'waiting';
+            renderLockText();
             lockScreen.classList.remove('hidden');
         }
 
         socket.on('table_locked', (data) => { if(data.table == tableNo) showWaitScreen(); });
-        socket.on('table_unlocked', (data) => { if(data.table == tableNo) lockScreen.classList.add('hidden'); });
+        socket.on('table_unlocked', (data) => { if(data.table == tableNo) { lockState = null; lockScreen.classList.add('hidden'); } });
         // เน็ตลูกค้าหลุดแล้วต่อกลับ: เช็คสถานะโต๊ะใหม่ เผื่อพลาด event ล็อก/ปลดล็อกตอนหลุด
         socket.io.on('reconnect', () => { syncTableStatus(); });
         socket.on('table_closed', (data) => { if(data.table == tableNo) location.reload(); });
@@ -198,7 +262,7 @@
                 let val = parseInt(document.getElementById(id).value);
                 if(val > 0) items[fields[id]] = val;
             }
-            if(Object.keys(items).length === 0) return alert('กรุณาเลือกเมนูอย่างน้อย 1 รายการ');
+            if(Object.keys(items).length === 0) return alert(t('alertNoItems'));
             socket.emit('send_order', { table: tableNo, token: token, items: items });
             document.querySelectorAll('input[type="number"]').forEach(input => input.value = 0);
         }

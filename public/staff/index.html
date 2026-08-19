@@ -15,7 +15,7 @@
     </script>
     <title>พนักงาน - LUM HIM KHUE</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" crossorigin="anonymous">
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
@@ -39,7 +39,7 @@
     <div id="staffShell" class="hidden flex-1 flex flex-col">
         <header class="bg-gray-800 text-white px-3 sm:px-4 py-2 flex items-center justify-between gap-3 shadow-md no-print">
             <div class="flex items-center gap-2 min-w-0">
-                <span class="font-bold text-sm sm:text-base whitespace-nowrap">ลำฮิมคือ</span>
+                <img src="/images/logo.png" alt="ลำฮิมคือ" class="h-8 sm:h-9 w-auto rounded bg-white p-0.5 shadow-sm flex-shrink-0">
                 <span class="text-gray-400 text-xs sm:text-sm truncate" id="staffDisplayName"></span>
             </div>
             <div class="flex items-center gap-2">
@@ -60,7 +60,7 @@
                 <div id="orderList" class="flex flex-wrap gap-4 mb-8"></div>
                 <div class="border-t border-gray-600 pt-6 mt-6">
                     <div class="bg-gray-800 text-blue-300 text-center py-2 text-xl font-bold mb-4 rounded shadow border border-gray-600">ประวัติการเสิร์ฟล่าสุด</div>
-                    <div id="servedHistoryList" class="flex flex-wrap gap-4 items-start"></div>
+                    <div id="servedHistoryList" class="flex gap-4 items-start overflow-x-auto pb-2"></div>
                 </div>
             </section>
 
@@ -436,6 +436,10 @@
                 </div>
                 <div id="queueTableGrid" class="grid grid-cols-4 sm:grid-cols-5 gap-3"></div>
             </div>
+            <div class="px-5 py-3 border-t flex-shrink-0 flex items-center gap-3">
+                <button onclick="QueueModule.clearTablePickerSelection()" class="text-sm font-bold text-gray-500 hover:text-red-600 px-2 py-2 whitespace-nowrap">ล้างการเลือก</button>
+                <button id="tablePickerConfirmBtn" onclick="QueueModule.confirmTablePicker()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow transition active:scale-95">ยืนยัน</button>
+            </div>
         </div>
     </div>
 
@@ -732,6 +736,17 @@
             <div class="flex border-t border-gray-100">
                 <button onclick="StaffApp.confirmCancel()" class="flex-1 py-3.5 text-gray-500 font-bold hover:bg-gray-50 transition border-r border-gray-100">ยกเลิก</button>
                 <button onclick="StaffApp.confirmOk()" class="flex-1 py-3.5 text-blue-600 font-bold hover:bg-blue-50 transition">ตกลง</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="alertModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[200] px-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+            <div class="px-6 py-6 text-center">
+                <p id="alertMessage" class="text-gray-800 font-semibold text-lg leading-snug"></p>
+            </div>
+            <div class="border-t border-gray-100">
+                <button onclick="StaffApp.alertOk()" class="w-full py-3.5 text-blue-600 font-bold hover:bg-blue-50 transition">ตกลง</button>
             </div>
         </div>
     </div>

@@ -152,7 +152,7 @@ test('Cashier nav: a Cashier-role account sees the Cashier tab; a Kitchen-only a
 });
 
 // ---- D/E/F/G. live calculation, save draft, reload persistence, finalize locking ----
-test('Cashier opening flow: live calculation, save, reload persistence, and Opening stays freely editable (Phase 8.1: no separate finalize step)', async () => {
+test('Cashier opening flow: live calculation, save, reload persistence, and Opening stays freely editable until confirmed', async () => {
     const ctx = await browser.newContext();
     const page = await ctx.newPage();
     await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashier.username, app.personas.cashier.password);
@@ -173,7 +173,7 @@ test('Cashier opening flow: live calculation, save, reload persistence, and Open
     await page.click('#cashierSaveBtn');
     await page.waitForTimeout(500);
     assert.match(await page.textContent('#cashierStatusBadge'), /กำลังบันทึก/, 'after an ordinary save, the status badge must use simple "still editable" wording, not a technical draft/finalized term');
-    assert.ok(await page.isHidden('#cashierFinalizeBtn'), 'Opening must never show a separate finalize/lock action — only Closing has the one true end-of-day action');
+    assert.ok(await page.isVisible('#cashierFinalizeBtn'), 'Opening must show its own standalone confirm/lock action once a draft exists');
 
     await page.reload();
     await page.waitForTimeout(600);
@@ -317,10 +317,11 @@ test('Cashier stale-write conflict: a second tab\'s stale save is rejected with 
     await pageB.waitForTimeout(500); // B's save succeeds — version becomes 2 in the DB
 
     // A now attempts to save again using its stale in-memory version (1) — must be rejected, not silently overwrite B's save
-    let dialogMessage = null;
-    pageA.on('dialog', async (dialog) => { dialogMessage = dialog.message(); await dialog.accept(); });
     await pageA.fill('.cashier-qty-input[data-denom="10"]', '999');
     await pageA.click('#cashierSaveBtn');
+    await pageA.waitForSelector('#alertModal:not(.hidden)', { timeout: 3000 });
+    const dialogMessage = await pageA.textContent('#alertMessage');
+    await pageA.click('#alertModal button');
     await pageA.waitForTimeout(700);
 
     assert.ok(dialogMessage, 'a stale save must surface a visible conflict warning, not silently succeed');
@@ -351,7 +352,7 @@ test('Cashier daily reconciliation: full workflow — movements, void, POS sales
     await page.fill('.cashier-qty-input[data-denom="1000"]', '5');
     await page.click('#cashierSaveBtn');
     await page.waitForTimeout(500);
-    assert.ok(await page.isHidden('#cashierFinalizeBtn'), 'Opening tab must never show a finalize action');
+    assert.ok(await page.isVisible('#cashierFinalizeBtn'), 'Opening tab must show its own standalone confirm action once a draft exists');
 
     await page.click('#cashierTabClosing');
     await page.waitForTimeout(400);
@@ -422,7 +423,7 @@ test('Cashier daily reconciliation: full workflow — movements, void, POS sales
     // (Phase 8.1) เงินเปิดร้านต้องถูกแช่แข็งไปพร้อมกันแบบ atomic ด้วย — แม้จะไม่เคย "ยืนยัน" แยกต่างหากมาก่อนเลยทั้งวัน
     await page.click('#cashierTabOpening');
     await page.waitForTimeout(400);
-    assert.match(await page.textContent('#cashierStatusBadge'), /ปิดยอดแล้ว/, 'Opening must be locked automatically together with Closing once the day closes');
+    assert.match(await page.textContent('#cashierStatusBadge'), /ยืนยันแล้ว/, 'Opening must be locked automatically (as a fallback) together with Closing once the day closes');
     const openingReadOnly = await page.getAttribute('.cashier-qty-input[data-denom="1000"]', 'readonly');
     assert.notEqual(openingReadOnly, null);
 
@@ -473,12 +474,13 @@ test('Cashier stale Closing finalize (day revision): a second session\'s finaliz
     await pageA.waitForTimeout(500);
 
     // B พยายามปิดยอดด้วยข้อมูล reconciliation เก่าที่ยังไม่เห็นรายการที่ A เพิ่งเพิ่ม
-    let dialogMessage = null;
-    pageB.on('dialog', async (dialog) => { dialogMessage = dialog.message(); await dialog.accept(); });
     await pageB.click('#cashierFinalizeBtn');
     await pageB.waitForTimeout(300);
     const confirmVisible = await pageB.isVisible('#confirmModal');
     if (confirmVisible) await pageB.click('#confirmModal button:has-text("ตกลง")');
+    await pageB.waitForSelector('#alertModal:not(.hidden)', { timeout: 3000 });
+    const dialogMessage = await pageB.textContent('#alertMessage');
+    await pageB.click('#alertModal button');
     await pageB.waitForTimeout(700);
 
     assert.ok(dialogMessage, 'B ต้องได้รับคำเตือนความขัดแย้ง ไม่ใช่ปิดยอดสำเร็จแบบเงียบๆ ด้วยข้อมูลเก่า');
@@ -756,8 +758,8 @@ test('Password policy: creating a staff account with password "1" succeeds, that
 
 // ==================== Phase 8.1.1: enforce single cashier day-close lifecycle ====================
 
-// ---- 37. Opening stays freely editable with no standalone irreversible control, right up until "ปิดยอดประจำวัน" locks the whole day ----
-test('Cashier single day-close lifecycle: Opening saves/edits/re-saves freely with no standalone Finalize control anywhere, and only "ปิดยอดประจำวัน" locks it', async () => {
+// ---- 37. Opening stays freely editable while draft, and if left unconfirmed, "ปิดยอดประจำวัน" still auto-freezes it as a fallback ----
+test('Cashier single day-close lifecycle: Opening saves/edits/re-saves freely while draft, and if never confirmed standalone, "ปิดยอดประจำวัน" still locks it as a fallback', async () => {
     const ctx = await browser.newContext();
     const page = await ctx.newPage();
     await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.owner.username, app.personas.owner.password);
@@ -774,16 +776,16 @@ test('Cashier single day-close lifecycle: Opening saves/edits/re-saves freely wi
     await page.click('#cashierSaveBtn');
     await page.waitForTimeout(500);
     assert.match(await page.textContent('#cashierStatusBadge'), /กำลังบันทึก/, 'an ordinary save must stay in the plain editable state');
-    assert.ok(await page.isHidden('#cashierFinalizeBtn'), 'no standalone Finalize control may ever appear on the Opening tab');
+    assert.ok(await page.isVisible('#cashierFinalizeBtn'), 'Opening now has its own standalone confirm control once a draft exists');
 
-    // แก้ไขแล้วบันทึกซ้ำ — ต้องยังแก้ไขได้อิสระ ไม่มีอะไรถูกล็อก
+    // แก้ไขแล้วบันทึกซ้ำ — ต้องยังแก้ไขได้อิสระตราบใดที่ยังไม่กดยืนยัน
     await page.fill('.cashier-qty-input[data-denom="1000"]', '6');
     await page.click('#cashierSaveBtn');
     await page.waitForTimeout(500);
     const afterResaveReadOnly = await page.getAttribute('.cashier-qty-input[data-denom="1000"]', 'readonly');
-    assert.equal(afterResaveReadOnly, null, 'Opening must remain fully editable after any number of ordinary saves — no separate finalize step exists to lock it early');
-    assert.ok(await page.isHidden('#cashierFinalizeBtn'), 'still no standalone Finalize control after re-saving');
+    assert.equal(afterResaveReadOnly, null, 'Opening must remain editable after any number of ordinary saves as long as it is not yet confirmed');
 
+    // ตั้งใจ "ไม่" กดยืนยันเงินเปิดร้านแยก — ปล่อยเป็น draft ค้างไว้ เพื่อทดสอบ fallback ตอนปิดยอดประจำวัน
     // เตรียมปิดยอดประจำวัน — POS + เงินนับปิดร้าน
     await page.click('#cashierTabClosing');
     await page.waitForTimeout(400);
@@ -794,20 +796,76 @@ test('Cashier single day-close lifecycle: Opening saves/edits/re-saves freely wi
     await page.click('#cashierSaveBtn');
     await page.waitForTimeout(400);
 
-    // "ปิดยอดประจำวัน" คือปุ่มเดียวที่ล็อกได้ — อยู่บนแท็บ Closing เท่านั้น
-    assert.ok(await page.isVisible('#cashierFinalizeBtn'), 'the one true end-of-day action must be visible now that a Closing draft with POS sales exists');
+    assert.ok(await page.isVisible('#cashierFinalizeBtn'), 'the end-of-day action must be visible now that a Closing draft with POS sales exists');
     await page.click('#cashierFinalizeBtn');
     await page.waitForTimeout(300);
     await page.click('#confirmModal button:has-text("ตกลง")');
     await page.waitForTimeout(600);
     assert.match(await page.textContent('#cashierStatusBadge'), /ปิดยอดแล้ว/);
 
-    // Opening ต้องถูกล็อกไปพร้อมกันแบบ atomic แม้จะไม่เคย "ยืนยัน" แยกต่างหากมาก่อนเลยทั้งวัน
+    // Opening ที่ยังไม่เคยถูก "ยืนยัน" แยกมาก่อนเลย ต้องถูกล็อกไปพร้อมกันแบบ atomic ตอนปิดยอดประจำวัน (fallback)
     await page.click('#cashierTabOpening');
     await page.waitForTimeout(400);
-    assert.match(await page.textContent('#cashierStatusBadge'), /ปิดยอดแล้ว/, 'Opening must be locked automatically the moment the day closes');
+    assert.match(await page.textContent('#cashierStatusBadge'), /ยืนยันแล้ว/, 'Opening must be locked automatically (as a fallback) the moment the day closes, even though it was never confirmed standalone');
     const finalOpeningReadOnly = await page.getAttribute('.cashier-qty-input[data-denom="1000"]', 'readonly');
-    assert.notEqual(finalOpeningReadOnly, null, 'Opening fields must become read-only only now, after the day actually closed');
+    assert.notEqual(finalOpeningReadOnly, null, 'Opening fields must become read-only once the day actually closed');
+
+    await ctx.close();
+});
+
+// ---- 38. Opening can now be confirmed/locked on its own, independently of Closing, and the backend enforces it even if called directly ----
+test('Cashier standalone Opening confirm: locks Opening immediately, the server rejects further edits even via a direct API call, and a later day-close skips re-freezing it', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.cashier.username, app.personas.cashier.password);
+    await page.click('#btn-cashier');
+    await page.waitForTimeout(400);
+    const date = '2025-06-02';
+    await gotoCashierDate(page, date);
+
+    await page.click('#cashierTabOpening');
+    await page.waitForTimeout(300);
+    await page.fill('.cashier-qty-input[data-denom="500"]', '10');
+    await page.click('#cashierSaveBtn');
+    await page.waitForTimeout(500);
+
+    assert.equal(await page.textContent('#cashierFinalizeBtn'), 'ยืนยันเงินเปิดร้าน', 'the Opening confirm button must use Opening-specific wording, not the Closing "ปิดยอดประจำวัน" label');
+    await page.click('#cashierFinalizeBtn');
+    await page.waitForTimeout(300);
+    await page.click('#confirmModal button:has-text("ตกลง")');
+    await page.waitForTimeout(600);
+
+    assert.match(await page.textContent('#cashierStatusBadge'), /ยืนยันแล้ว/, 'Opening must show a confirmed badge immediately after standalone confirm, before Closing is ever touched');
+    assert.ok(await page.isHidden('#cashierSaveBtn'), 'Save must disappear once Opening is confirmed');
+    assert.ok(await page.isHidden('#cashierFinalizeBtn'), 'the confirm action must disappear once already confirmed — it cannot be confirmed twice');
+    const readOnly = await page.getAttribute('.cashier-qty-input[data-denom="500"]', 'readonly');
+    assert.notEqual(readOnly, null, 'quantity fields must become read-only immediately after standalone confirm');
+
+    // (Phase 8.1.1 precedent) ต้องบล็อกที่ backend เองเสมอ ไม่พึ่งแค่การซ่อนปุ่ม/readonly ฝั่ง UI — ยิง PUT ตรงๆ ทับใบที่ยืนยันไปแล้ว ต้องโดน 409
+    const directEditStatus = await page.evaluate(async (d) => {
+        const res = await fetch('/api/cashier/sheets/opening', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ business_date: d, lines: [{ denomination: 500, quantity: 999 }] }),
+        });
+        return res.status;
+    }, date);
+    assert.equal(directEditStatus, 409, 'a direct PUT against an already-confirmed Opening sheet must be rejected server-side, not just hidden in the UI');
+
+    // ปิดยอดประจำวันหลังจากนั้น — เงินเปิดร้านที่ยืนยันไปแล้วต้องไม่ถูกแตะซ้ำ (ข้าม branch แช่แข็ง ไม่ต้องเช็ค version ของมันอีก)
+    await page.click('#cashierTabClosing');
+    await page.waitForTimeout(400);
+    await page.fill('#cashierPosSalesInput', '5000');
+    await page.click('#cashierPosSalesSaveBtn');
+    await page.waitForTimeout(400);
+    await page.fill('.cashier-qty-input[data-denom="500"]', '10');
+    await page.click('#cashierSaveBtn');
+    await page.waitForTimeout(400);
+    await page.click('#cashierFinalizeBtn');
+    await page.waitForTimeout(300);
+    await page.click('#confirmModal button:has-text("ตกลง")');
+    await page.waitForTimeout(600);
+    assert.match(await page.textContent('#cashierStatusBadge'), /ปิดยอดแล้ว/, 'Closing must still finalize normally when Opening was already confirmed standalone beforehand');
 
     await ctx.close();
 });
@@ -963,5 +1021,133 @@ test('Activity Log: filtering by category narrows the list, and the load-more bu
         const afterLoadMoreCount = await page.locator('#auditEventsList > div').count();
         assert.ok(afterLoadMoreCount >= afterClearCount, 'โหลดเพิ่มเติมแล้วจำนวนรายการต้องไม่ลดลง');
     }
+    await ctx.close();
+});
+
+// ==================== Phase 11: realtime resync after a socket reconnect (background tab / lost connectivity) ====================
+// รายงานจากผู้ใช้จริง: เปิดหน้า /staff/queue ค้างไว้บนอุปกรณ์หนึ่ง สลับไปแอปอื่นสักพัก (เบราว์เซอร์/OS มักตัดการเชื่อมต่อ socket ระหว่างนั้น) แล้วสลับกลับมา —
+// สถานะคิวที่อีกเครื่องเปลี่ยนไประหว่างนั้นไม่อัปเดตให้ ต้อง reload มือเองถึงจะเห็นของใหม่ เพราะ realtime เดิมพึ่งพา event ที่ "มาถึงตอนต่อติดอยู่" เท่านั้น
+// ไม่มี catch-up เวลาต่อกลับสำเร็จ — แก้โดยเพิ่ม socket.io.on('reconnect', ...) ให้โหลดข้อมูลใหม่เสมอ (แพทเทิร์นเดียวกับที่ kitchen.js มีอยู่แล้วก่อนหน้านี้)
+test('Queue realtime resync: a device that lost its socket connection (backgrounded) and reconnects must pick up status changes made while it was disconnected, without a manual reload', async () => {
+    const ctxA = await browser.newContext();
+    const ctxB = await browser.newContext();
+    const pageA = await ctxA.newPage();
+    const pageB = await ctxB.newPage();
+    await loginUI(pageA, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.owner.username, app.personas.owner.password);
+    await loginUI(pageB, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.owner.username, app.personas.owner.password);
+    await pageA.goto(`${app.base}/staff/queue`);
+    await pageB.goto(`${app.base}/staff/queue`);
+    await pageA.waitForTimeout(500);
+    await pageB.waitForTimeout(500);
+
+    const created = await pageA.evaluate(async () => {
+        const res = await fetch('/api/queue', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pax: 2, pots: [], adults: 2, children: 0 }),
+        });
+        return res.json();
+    });
+    await pageB.waitForTimeout(800);
+    assert.match(await pageB.textContent('#queueHistoryBody'), new RegExp(created.q_number), 'baseline: normal realtime push must work while both devices are connected');
+
+    // จำลอง B ถูกตัดการเชื่อมต่อแบบไม่ตั้งใจ (พื้นหลัง/หลุดสัญญาณ) — ปิดที่ transport engine โดยตรง ไม่ใช่ socket.disconnect()
+    // ตรงๆ เพราะ .disconnect() ตั้งใจปิด auto-reconnect ทิ้งไปเลย ไม่ตรงกับสถานการณ์จริงที่ทดสอบอยู่นี้
+    await pageB.evaluate(() => window.StaffApp.socket.io.engine.close());
+    await pageB.waitForTimeout(500);
+    assert.equal(await pageB.evaluate(() => window.StaffApp.socket.connected), false, 'B ต้องหลุดการเชื่อมต่อจริงก่อนไปขั้นต่อไป');
+
+    // A เปลี่ยนสถานะคิวทันทีระหว่างที่ B เพิ่งยืนยันว่าหลุดการเชื่อมต่ออยู่จริง — event queue_updated นี้ไปไม่ถึง B ตอนที่ยิงออกไป
+    // (ไม่ assert สถานะระหว่างทางเพิ่ม เพราะ socket.io reconnect อัตโนมัติได้เร็วมาก (ค่า default ~0.5-1s) การจับจังหวะ "ยังหลุดอยู่พอดี" ทำให้เทสต์กระพริบได้ —
+    // สิ่งที่ต้องพิสูจน์จริงๆ คือปลายทางหลังต่อกลับสำเร็จต้องเห็นของใหม่โดยไม่ต้อง reload มือเอง ซึ่งพิสูจน์ได้แน่นอนกว่า)
+    const updateStatus = await pageA.evaluate(async (id) => {
+        const res = await fetch('/api/queue/update', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, status: 'skipped' }),
+        });
+        return res.status;
+    }, created.id);
+    assert.equal(updateStatus, 200);
+
+    // B "กลับมา" — ปล่อยให้ socket.io เชื่อมต่อใหม่เองอัตโนมัติ (ไม่เรียก .connect() มือเอง ให้เหมือนสถานการณ์จริงที่สุด)
+    await pageB.waitForTimeout(3000);
+    assert.equal((await pageB.textContent('.qc-status')).trim(), 'ข้าม', 'หลังต่อกลับสำเร็จ B ต้องเห็นสถานะล่าสุดทันทีโดยไม่ต้อง reload มือเอง');
+
+    await ctxA.close();
+    await ctxB.close();
+});
+
+// ==================== Phase 12: multi-table select + cancel a preassigned status ====================
+// รายงานจากผู้ใช้จริง: เดิม picker "เลือกโต๊ะ" เลือกได้ทีละโต๊ะเดียว (แตะปุ๊บ commit ทันที ปิด modal เลย) ไม่รองรับกลุ่มใหญ่ที่ต้องใช้หลายโต๊ะพร้อมกัน (โต๊ะเชื่อม)
+// และเมื่อตั้งสถานะ "รอโต๊ะใหญ่"/"รอโต๊ะเชื่อม" ไปแล้ว ไม่มีทางยกเลิกกลับเป็น "ไม่ได้กำหนด" ได้เลย นอกจากเลือกโต๊ะจริงทับไปเฉยๆ
+// แก้เป็น toggle-เลือกได้หลายโต๊ะ + ปุ่มยืนยันท้าย picker ซึ่งถ้าไม่ได้เลือกโต๊ะไหนเลยตอนกด ก็คือการยกเลิกโต๊ะ/สถานะที่เคยกำหนดไว้
+test('Queue table picker: multiple tables can be selected at once, a reassign preselects the tables already assigned, and a preassigned status ("รอโต๊ะใหญ่") can be cancelled back to unassigned', async () => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.owner.username, app.personas.owner.password);
+    await page.goto(`${app.base}/staff/queue`);
+    await page.waitForTimeout(500);
+
+    // (การรันรวมทั้งไฟล์สะสมคิวจากเทสก่อนหน้าไว้ในตารางเดียวกัน — ต้อง scope locator ด้วยเลขคิวของตัวเองเสมอ ห้ามใช้ .qc-status เปล่าๆ ซึ่งจะไปจับแถวแรกสุดที่เจอแทน)
+    const created = await page.evaluate(async () => {
+        const res = await fetch('/api/queue', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pax: 4, pots: [], adults: 4, children: 0 }),
+        });
+        return res.json();
+    });
+    await page.waitForTimeout(600);
+    const rowFor = (qNumber) => page.locator('tr.q-row').filter({ has: page.locator('.qc-num', { hasText: new RegExp(`^${qNumber}$`) }) });
+    const row = rowFor(created.q_number);
+
+    // A. เรียกเข้าโต๊ะ (mode 'new') — เลือก 2 โต๊ะพร้อมกันแล้วยืนยันให้เข้าโต๊ะ
+    await row.locator('button:has-text("เรียกเข้าโต๊ะ")').click();
+    await page.waitForTimeout(300);
+    await page.click('#tablePickerBtn');
+    await page.waitForTimeout(400);
+    await page.click('#queueTableGrid button[data-table-no="1"]');
+    await page.click('#queueTableGrid button[data-table-no="2"]');
+    assert.equal((await page.textContent('#tablePickerConfirmBtn')).trim(), 'ยืนยัน (เลือก 2 โต๊ะ)', 'ปุ่มยืนยันต้องนับจำนวนโต๊ะที่เลือกไว้แบบสด');
+    const t1ClassBeforeConfirm = await page.getAttribute('#queueTableGrid button[data-table-no="1"]', 'class');
+    assert.match(t1ClassBeforeConfirm, /ring-4/, 'โต๊ะที่แตะเลือกไว้ต้องมี ring ไฮไลต์ให้เห็นชัด');
+    await page.click('#tablePickerConfirmBtn');
+    await page.waitForTimeout(300);
+    assert.equal((await page.textContent('#tablePickerBtn')).trim(), 'โต๊ะ 1, 2', 'เลือกหลายโต๊ะแล้วต้องรวมเป็นข้อความเดียวบนปุ่ม');
+    await page.click('#queueActionModal button:has-text("ยืนยันให้เข้าโต๊ะ")');
+    await page.waitForTimeout(600);
+    assert.equal((await row.locator('.qc-status').textContent()).trim(), 'โต๊ะ 1, 2', 'คิวที่เข้าโต๊ะแล้วต้องแสดงทั้งสองโต๊ะที่เลือกไว้');
+
+    // B. reassign (แตะป้ายโต๊ะสีเขียว) — ต้อง preselect โต๊ะที่กำหนดไว้เดิมให้เห็นทันที แล้วเพิ่มโต๊ะที่ 3 เข้าไปได้
+    await row.locator('.qc-status').click();
+    await page.waitForTimeout(400);
+    assert.match(await page.getAttribute('#queueTableGrid button[data-table-no="1"]', 'class'), /ring-4/, 'reassign ต้อง preselect โต๊ะเดิมที่เคยกำหนดไว้');
+    assert.match(await page.getAttribute('#queueTableGrid button[data-table-no="2"]', 'class'), /ring-4/);
+    await page.click('#queueTableGrid button[data-table-no="3"]');
+    await page.click('#tablePickerConfirmBtn');
+    await page.waitForTimeout(600);
+    assert.equal((await row.locator('.qc-status').textContent()).trim(), 'โต๊ะ 1, 2, 3', 'เพิ่มโต๊ะที่ 3 ผ่าน reassign แล้วต้องเห็นครบทั้งสามโต๊ะ');
+
+    // C. คิวใหม่อีกใบ — ตั้งสถานะ "รอโต๊ะใหญ่" แล้วยกเลิกกลับเป็น "รอคิวปกติ" โดยไม่ต้องเลือกโต๊ะจริงทับ
+    const created2 = await page.evaluate(async () => {
+        const res = await fetch('/api/queue', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pax: 6, pots: [], adults: 6, children: 0 }),
+        });
+        return res.json();
+    });
+    await page.waitForTimeout(600);
+    const row2 = rowFor(created2.q_number);
+    await row2.locator('.qc-status').click();
+    await page.waitForTimeout(400);
+    await page.click('button:has-text("รอโต๊ะใหญ่")');
+    await page.waitForTimeout(600);
+    assert.equal((await row2.locator('.qc-status').textContent()).trim(), 'รอโต๊ะใหญ่');
+
+    await row2.locator('.qc-status').click();
+    await page.waitForTimeout(400);
+    assert.equal((await page.textContent('#tablePickerConfirmBtn')).trim(), 'ยกเลิกโต๊ะที่กำหนดไว้', 'ไม่เลือกโต๊ะไหนเลย ปุ่มยืนยันต้องเปลี่ยนเป็นคำว่ายกเลิกให้ชัดเจน');
+    await page.click('#tablePickerConfirmBtn');
+    await page.waitForTimeout(600);
+    assert.equal((await row2.locator('.qc-status').textContent()).trim(), 'รอคิวปกติ', 'กดยกเลิกแล้วต้องกลับเป็นสถานะรอคิวปกติ ไม่ใช่ค้างที่รอโต๊ะใหญ่');
+
     await ctx.close();
 });

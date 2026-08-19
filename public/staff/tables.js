@@ -251,6 +251,13 @@ window.TablesModule = (function () {
             loadDailyHistory();
         }
     });
+    // เช่นเดียวกับ Queue — สลับไปแอปอื่นแล้วกลับมามักโดนตัดการเชื่อมต่อ socket ระหว่างนั้น เหตุการณ์ table_updated ที่เกิดตอนหลุดจะไม่มีวันไปถึง ต้องโหลดใหม่ทุกครั้งที่ต่อกลับสำเร็จ
+    socket.io.on('reconnect', () => {
+        if (document.getElementById('module-tables') && !document.getElementById('module-tables').classList.contains('hidden')) {
+            loadTables();
+            loadDailyHistory();
+        }
+    });
 
     function activate() {
         loadTables();
