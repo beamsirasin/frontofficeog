@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { FixedWindowLimiter, normalizeIp, ipFromForwardedHeader } = require('./rate-limiter');
+const ReportsLib = require('./reports-lib');
 
 // โหลดค่าจากไฟล์ .env (ถ้ามี) — เขียนเองสั้นๆ จะได้ไม่ต้องลง package เพิ่ม
 // ค่าที่ตั้งไว้ใน environment อยู่แล้วจะไม่ถูกทับ
@@ -55,15 +56,6 @@ const MEAT_MENU = ['สันคอหมูสไลด์', 'หมูสา�
 const SEAFOOD_MENU = ['ปลาหมึก', 'กุ้ง'];
 const MAX_MEAT_TOTAL = 5;
 const MAX_SEAFOOD_EACH = 1;
-
-// สรุป เร็วสุด/ช้าสุด/เฉลี่ย จากลิสต์วินาที (คืน null ถ้ายังไม่มีข้อมูล จะได้แสดงเป็น "-" ที่หน้าจอ)
-// ใช้ reduce หา min/max แทน Math.min(...arr) เพราะถ้าข้อมูลสะสมเยอะ spread จะทำ stack ล้น
-function summarizeSecs(secs) {
-    if (!secs.length) return { count: 0, min: null, max: null, avg: null };
-    let min = secs[0], max = secs[0], sum = 0;
-    for (const s of secs) { if (s < min) min = s; if (s > max) max = s; sum += s; }
-    return { count: secs.length, min, max, avg: Math.round(sum / secs.length) };
-}
 
 // (Phase 6C) เชื่อ X-Forwarded-For เฉพาะตอนอยู่หลัง reverse proxy ที่เชื่อถือได้จริงเท่านั้น (nginx hop เดียวตาม MIGRATION.md)
 // ปล่อยว่าง/false ตอนพัฒนา/LAN staging/เทสต์ (ไม่มี proxy อยู่หน้าแอปเลย) — ไม่งั้น client จะปลอม IP ตัวเองผ่าน header นี้ตรงๆ ได้
@@ -1041,110 +1033,71 @@ app.get('/api/daily-history', requireAuth, requirePermission(PERMISSIONS.TABLES_
     });
 });
 
-// สถิติรวม: ยอดเสิร์ฟ + เวลาเสิร์ฟ + สถิติคิว ในช่วงวันที่ที่เลือก
-// รับได้ทั้ง ?from=&to= (ช่วงวัน) และ ?date= แบบเดิม (วันเดียว) เพื่อไม่ให้ของเก่าพัง
-app.get('/api/stats', requireAuth, requirePermission(PERMISSIONS.REPORTS_VIEW), (req, res) => {
+// สถิติรวม: ยอดเสิร์ฟ + เวลาเสิร์ฟ + สถิติคิว + เปรียบเทียบช่วงก่อนหน้า ในช่วงวันที่ที่เลือก (ปฏิทินกรุงเทพฯ แบบ explicit ไม่พึ่ง timezone เครื่อง)
+// รับ ?range=today|yesterday|7d|30d|custom (ค่าเริ่มต้น today ถ้าไม่ส่ง from/to มาเลย) หรือ ?from=&to=/?date= แบบเดิม (ตีความเป็น custom) เพื่อไม่ให้ของเก่าพัง
+// การคำนวณทั้งหมด (ขอบเขตช่วงวันที่/ชั่วโมงกรุงเทพฯ/percentile/SLA/เดลต้าเปรียบเทียบ) อยู่ใน reports-lib.js ล้วนๆ เพื่อเทสต์ตรงๆ ได้ — endpoint นี้แค่ query DB แล้วส่งต่อ
+app.get('/api/stats', requireAuth, requirePermission(PERMISSIONS.REPORTS_VIEW), async (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
 
-    const from = req.query.from || req.query.date;
-    const to   = req.query.to   || req.query.from || req.query.date;
-    if (!from || !to) return res.status(400).json({ error: 'ต้องระบุช่วงวันที่' });
-    // สลับให้ from <= to เสมอ เผื่อถูกยิงมากลับด้าน
-    const [dFrom, dTo] = from <= to ? [from, to] : [to, from];
-
-    const days = Math.max(1, Math.round((Date.parse(dTo + 'T00:00:00Z') - Date.parse(dFrom + 'T00:00:00Z')) / 86400000) + 1);
-
-    // orders.created_at / served_at เก็บเป็น UTC ทั้งคู่ ลบกันตรงๆ ได้เวลาเสิร์ฟที่ถูกต้อง
-    // ส่วนการแบ่งวันใช้ localtime เหมือนหน้าอื่นๆ ของระบบ
-    // ถังรายชั่วโมง 00-23 (ใช้ทั้งฝั่งออเดอร์และฝั่งคิว)
-    const emptyHours = () => Array.from({ length: 24 }, (_, h) => ({ hour: h, count: 0, plates: 0 }));
-
-    db.all(`SELECT status, items,
-                   CAST(strftime('%H', created_at, 'localtime') AS INTEGER) AS hr,
-                   CAST(strftime('%s', served_at) - strftime('%s', created_at) AS INTEGER) AS serve_sec
-            FROM orders
-            WHERE date(created_at, 'localtime') BETWEEN ? AND ?`, [dFrom, dTo], (err, orders) => {
-        orders = orders || [];
-
-        const served = orders.filter(o => o.status === 'served');
-
-        // ออเดอร์เข้ามาชั่วโมงไหนบ้าง (นับตามเวลาที่ลูกค้ากดสั่ง ไม่ใช่เวลาเสิร์ฟ)
-        // จานนับเฉพาะออเดอร์ที่ไม่ถูกยกเลิก จะได้ตรงกับยอดที่ทำจริง
-        const serveByHour = emptyHours();
-        orders.forEach(o => {
-            const h = o.hr;
-            if (!Number.isInteger(h) || h < 0 || h > 23) return;
-            serveByHour[h].count++;
-            if (o.status === 'cancelled') return;
-            const items = safeParse(o.items, {});
-            for (const v of Object.values(items)) serveByHour[h].plates += parseInt(v) || 0;
-        });
-
-        // รวมจานต่อเมนู + นับจำนวนออเดอร์ที่มีเมนูนั้น (ไว้หารเป็นค่าเฉลี่ยต่อออเดอร์)
-        const qty = {}, ordersWith = {};
-        served.forEach(o => {
-            const items = safeParse(o.items, {});
-            for (const [k, v] of Object.entries(items)) {
-                const n = parseInt(v) || 0;
-                if (n <= 0) continue;
-                qty[k] = (qty[k] || 0) + n;
-                ordersWith[k] = (ordersWith[k] || 0) + 1;
-            }
-        });
-
-        const menus = Object.entries(qty).sort((a, b) => b[1] - a[1]).map(([name, q]) => ({
-            name,
-            qty: q,
-            perDay: Math.round((q / days) * 10) / 10,
-            perOrder: Math.round((q / ordersWith[name]) * 100) / 100
-        }));
-
-        const serveSecs = served.map(o => o.serve_sec).filter(s => Number.isFinite(s) && s >= 0);
-
-        db.all(`SELECT status, pax,
-                       CAST(strftime('%H', created_at, 'localtime') AS INTEGER) AS hr,
-                       CAST(strftime('%s', entered_at) - strftime('%s', created_at) AS INTEGER) AS wait_sec
-                FROM queues
-                WHERE date(created_at, 'localtime') BETWEEN ? AND ?`, [dFrom, dTo], (err2, queues) => {
-            queues = queues || [];
-            const countBy = st => queues.filter(q => q.status === st).length;
-
-            // คนมารับคิวชั่วโมงไหนบ้าง (นับตามเวลาที่กดรับคิว) — plates ตรงนี้คือจำนวนคน
-            const queueByHour = emptyHours();
-            queues.forEach(q => {
-                const h = q.hr;
-                if (!Number.isInteger(h) || h < 0 || h > 23) return;
-                queueByHour[h].count++;
-                queueByHour[h].plates += parseInt(q.pax) || 0;
-            });
-            // เวลารอ นับเฉพาะคิวที่ได้เข้าโต๊ะจริง (คิวที่ข้าม/ยกเลิก ไม่มี entered_at)
-            const waitSecs = queues.filter(q => q.status === 'entered')
-                                   .map(q => q.wait_sec)
-                                   .filter(s => Number.isFinite(s) && s >= 0);
-
-            res.json({
-                range: { from: dFrom, to: dTo, days },
-                serve: {
-                    menus,
-                    totalPlates: menus.reduce((s, m) => s + m.qty, 0),
-                    servedOrders: served.length,
-                    cancelledOrders: orders.filter(o => o.status === 'cancelled').length,
-                    pendingOrders: orders.filter(o => o.status === 'pending').length,
-                    serveTime: summarizeSecs(serveSecs),
-                    byHour: serveByHour
-                },
-                queue: {
-                    byHour: queueByHour,
-                    total: queues.length,
-                    entered: countBy('entered'),
-                    skipped: countBy('skipped'),
-                    cancelled: countBy('cancelled'),
-                    waiting: countBy('waiting'),
-                    waitTime: summarizeSecs(waitSecs)
-                }
-            });
-        });
+    const resolved = ReportsLib.resolveReportRange({
+        range: req.query.range,
+        from: req.query.from || req.query.date,
+        to: req.query.to || req.query.from || req.query.date,
     });
+    if (resolved.error) return res.status(400).json({ error: resolved.error });
+    const { key, from: dFrom, to: dTo, days, comparison } = resolved;
+
+    const serveSlaSeconds = ReportsLib.SERVE_SLA_MINUTES * 60;
+    const queueSlaSeconds = ReportsLib.QUEUE_SLA_MINUTES * 60;
+    const mainBounds = ReportsLib.bangkokRangeToUtcBounds(dFrom, dTo);
+    const cmpBounds = ReportsLib.bangkokRangeToUtcBounds(comparison.from, comparison.to);
+
+    const ordersSql = `SELECT status, items, created_at, served_at FROM orders WHERE created_at >= ? AND created_at < ?`;
+    const queuesSql = `SELECT status, pax, created_at, entered_at FROM queues WHERE created_at >= ? AND created_at < ?`;
+
+    try {
+        const [mainOrders, mainQueues, cmpOrders, cmpQueues, currentWaiting] = await Promise.all([
+            dbAllAsync(ordersSql, [mainBounds.startUtc, mainBounds.endUtc]),
+            dbAllAsync(queuesSql, [mainBounds.startUtc, mainBounds.endUtc]),
+            dbAllAsync(ordersSql, [cmpBounds.startUtc, cmpBounds.endUtc]),
+            dbAllAsync(queuesSql, [cmpBounds.startUtc, cmpBounds.endUtc]),
+            // สถานการณ์คิว "ตอนนี้" ไม่ผูกกับช่วงวันที่ที่เลือกดูรายงานเลย — เอาคิวที่ยังรออยู่จริงตอนนี้เท่านั้น
+            dbAllAsync(`SELECT pax, created_at FROM queues WHERE status = 'waiting'`),
+        ]);
+
+        const serve = ReportsLib.aggregateServing(mainOrders, { safeParseJson: safeParse, slaSeconds: serveSlaSeconds });
+        const queue = ReportsLib.aggregateQueue(mainQueues, { slaSeconds: queueSlaSeconds });
+        const serveCmp = ReportsLib.aggregateServing(cmpOrders, { safeParseJson: safeParse, slaSeconds: serveSlaSeconds });
+        const queueCmp = ReportsLib.aggregateQueue(cmpQueues, { slaSeconds: queueSlaSeconds });
+
+        delete serve._servedSecs; delete serveCmp._servedSecs;
+        delete queue._waitSecs; delete queueCmp._waitSecs;
+
+        serve.sla.minutes = ReportsLib.SERVE_SLA_MINUTES;
+        queue.sla.minutes = ReportsLib.QUEUE_SLA_MINUTES;
+
+        serve.comparison = {
+            servedOrders: ReportsLib.quantityComparison(serve.servedOrders, serveCmp.servedOrders),
+            avgServeSeconds: ReportsLib.durationComparison(serve.serveTime.avg, serve.serveTime.count, serveCmp.serveTime.avg, serveCmp.serveTime.count),
+            slaBreachRate: ReportsLib.durationComparison(serve.sla.rate, serve.sla.count, serveCmp.sla.rate, serveCmp.sla.count),
+        };
+        queue.comparison = {
+            totalQueues: ReportsLib.quantityComparison(queue.total, queueCmp.total),
+            avgWaitSeconds: ReportsLib.durationComparison(queue.waitTime.avg, queue.waitTime.count, queueCmp.waitTime.avg, queueCmp.waitTime.count),
+            slaBreachRate: ReportsLib.durationComparison(queue.sla.rate, queue.sla.count, queueCmp.sla.rate, queueCmp.sla.count),
+        };
+        queue.current = ReportsLib.currentQueueSituation(currentWaiting);
+
+        res.json({
+            range: { key, from: dFrom, to: dTo, days },
+            comparisonRange: comparison,
+            serve,
+            queue,
+        });
+    } catch (err) {
+        console.error('[stats] โหลดสถิติไม่สำเร็จ:', err.message);
+        res.status(500).json({ error: 'โหลดสถิติไม่สำเร็จ' });
+    }
 });
 
 app.get('/api/orders', requireAuth, requirePermission(PERMISSIONS.KITCHEN_VIEW), (req, res) => {

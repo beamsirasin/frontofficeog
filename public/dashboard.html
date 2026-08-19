@@ -20,6 +20,7 @@
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <script src="/shared/report-format.js"></script>
     <style>
         .late { color: #ef4444; font-weight: bold; animation: blink 1s linear infinite; }
         @keyframes blink { 50% { opacity: 0.5; } }
@@ -352,30 +353,51 @@
 
     <div id="tab-stats" class="hidden flex-1 p-2 md:p-6">
         <div class="max-w-4xl mx-auto">
-            <div class="flex flex-wrap justify-between items-center mb-4 gap-2 md:gap-4">
-                <h2 class="text-xl md:text-2xl font-bold text-gray-800">สถิติ</h2>
-                <div class="flex items-center gap-2 w-full sm:w-auto">
-                    <label class="font-bold text-gray-700 text-sm md:text-base whitespace-nowrap">ช่วงวันที่:</label>
-                    <input type="text" id="statsDate" class="flex-1 sm:flex-none sm:w-64 min-w-0 border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500 text-center" readonly>
+            <div class="flex flex-wrap justify-between items-center mb-1 gap-2 md:gap-3">
+                <h2 class="text-xl md:text-2xl font-bold text-gray-800">รายงาน</h2>
+                <div class="flex items-center gap-2 flex-wrap w-full sm:w-auto">
+                    <label class="font-bold text-gray-700 text-sm md:text-base whitespace-nowrap">ช่วงเวลา:</label>
+                    <select id="statsRangeKey" class="border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500 text-sm md:text-base font-bold bg-white">
+                        <option value="today">วันนี้</option>
+                        <option value="yesterday">เมื่อวาน</option>
+                        <option value="7d">7 วันที่ผ่านมา</option>
+                        <option value="30d">30 วันที่ผ่านมา</option>
+                        <option value="custom">กำหนดเอง</option>
+                    </select>
+                    <div id="statsCustomRange" class="hidden items-center gap-2 flex-wrap">
+                        <input type="text" id="statsCustomFrom" placeholder="วันที่เริ่มต้น" class="w-32 border border-gray-400 p-2 rounded shadow-sm text-center text-sm" readonly>
+                        <span class="text-gray-400 text-sm">ถึง</span>
+                        <input type="text" id="statsCustomTo" placeholder="วันที่สิ้นสุด" class="w-32 border border-gray-400 p-2 rounded shadow-sm text-center text-sm" readonly>
+                    </div>
                 </div>
             </div>
             <p id="statsRangeNote" class="text-xs text-gray-500 mb-4"></p>
 
             <!-- ===== สถิติการเสิร์ฟ ===== -->
             <div class="bg-white rounded-lg shadow-md border-t-4 border-gray-700 mb-6 overflow-hidden">
-                <div class="px-4 py-3 bg-gray-100 border-b">
+                <div class="px-4 py-3 bg-gray-100 border-b flex items-center justify-between gap-2 flex-wrap">
                     <h3 class="text-lg font-bold text-gray-800">การเสิร์ฟอาหาร</h3>
+                    <span id="serveTrendNote" class="text-xs font-bold text-gray-600"></span>
                 </div>
                 <div id="serveTiles" class="grid grid-cols-2 md:grid-cols-3 gap-3 p-4"></div>
                 <div class="px-4 pb-4">
+                    <div class="flex items-baseline justify-between gap-2 flex-wrap mb-2">
+                        <h4 class="font-bold text-gray-700 text-sm md:text-base">ประสิทธิภาพแต่ละเมนู</h4>
+                        <div class="flex items-center gap-2 text-xs text-gray-500">
+                            <span>เรียงตาม:</span>
+                            <button type="button" data-sort="qty" class="stats-sort-btn font-bold px-2 py-1 rounded border border-gray-300">จำนวนจาน</button>
+                            <button type="button" data-sort="avgServeSeconds" class="stats-sort-btn font-bold px-2 py-1 rounded border border-gray-300">เวลาเสิร์ฟเฉลี่ย</button>
+                        </div>
+                    </div>
                     <div class="overflow-x-auto">
-                        <table class="w-full text-left min-w-[420px]">
+                        <table class="w-full text-left min-w-[560px]">
                             <thead>
                                 <tr class="border-b text-xs md:text-sm text-gray-500">
                                     <th class="pb-2">เมนู</th>
-                                    <th class="pb-2 text-right whitespace-nowrap">รวม (จาน)</th>
-                                    <th class="pb-2 text-right whitespace-nowrap">เฉลี่ย/วัน</th>
+                                    <th class="pb-2 text-right whitespace-nowrap">จำนวนจาน</th>
+                                    <th class="pb-2 text-right whitespace-nowrap">จำนวนออเดอร์</th>
                                     <th class="pb-2 text-right whitespace-nowrap">เฉลี่ย/ออเดอร์</th>
+                                    <th class="pb-2 text-right whitespace-nowrap">เวลาเสิร์ฟเฉลี่ย</th>
                                 </tr>
                             </thead>
                             <tbody id="statsBody"></tbody>
@@ -385,8 +407,8 @@
                 <div class="px-4 pb-4">
                     <div class="border-t pt-3">
                         <div class="flex items-baseline justify-between gap-2 flex-wrap mb-1">
-                            <h4 class="font-bold text-gray-700 text-sm md:text-base">ออเดอร์เข้าตามช่วงเวลา</h4>
-                            <span class="text-xs text-gray-500">นับตามเวลาที่ลูกค้ากดสั่ง</span>
+                            <h4 class="font-bold text-gray-700 text-sm md:text-base">ออเดอร์ตามช่วงเวลา</h4>
+                            <span class="text-xs text-gray-500">แท่ง = จำนวนออเดอร์ · ตัวเลขบน = เวลาเสิร์ฟเฉลี่ย</span>
                         </div>
                         <div id="serveHourChart"></div>
                     </div>
@@ -395,15 +417,27 @@
 
             <!-- ===== สถิติคิว ===== -->
             <div class="bg-white rounded-lg shadow-md border-t-4 border-blue-600 mb-6 overflow-hidden">
-                <div class="px-4 py-3 bg-gray-100 border-b">
+                <div class="px-4 py-3 bg-gray-100 border-b flex items-center justify-between gap-2 flex-wrap">
                     <h3 class="text-lg font-bold text-gray-800">คิว</h3>
+                    <span id="queueTrendNote" class="text-xs font-bold text-gray-600"></span>
                 </div>
                 <div id="queueTiles" class="grid grid-cols-2 md:grid-cols-3 gap-3 p-4"></div>
+
+                <div id="queueCurrentBlock" class="px-4 pb-4 hidden">
+                    <div class="border-t pt-3">
+                        <h4 class="font-bold text-gray-700 text-sm md:text-base mb-2">สถานการณ์ตอนนี้</h4>
+                        <div id="queueCurrentTiles" class="grid grid-cols-3 gap-3"></div>
+                    </div>
+                </div>
+
                 <div class="px-4 pb-4">
                     <div class="border-t pt-3">
                         <div class="flex items-baseline justify-between gap-2 flex-wrap mb-1">
-                            <h4 class="font-bold text-gray-700 text-sm md:text-base">คนมารับคิวตามช่วงเวลา</h4>
-                            <span class="text-xs text-gray-500">นับตามเวลาที่กดรับคิว</span>
+                            <h4 class="font-bold text-gray-700 text-sm md:text-base">คิวตามช่วงเวลา</h4>
+                            <span class="text-xs text-gray-500 flex items-center gap-3">
+                                <span><span class="inline-block w-2.5 h-2.5 rounded-sm bg-blue-500 align-middle mr-1"></span>รับคิว</span>
+                                <span><span class="inline-block w-2.5 h-2.5 rounded-sm bg-green-500 align-middle mr-1"></span>เข้าโต๊ะ</span>
+                            </span>
                         </div>
                         <div id="queueHourChart"></div>
                     </div>
@@ -799,14 +833,14 @@
             const fpOpts = { dateFormat: "Y-m-d", altInput: true, altFormat: "d/m/Y", defaultDate: now };
             flatpickr("#queueHistoryDate", { ...fpOpts, onChange: () => loadQueueHistory() });
             flatpickr("#historyDate",      { ...fpOpts, onChange: () => loadDailyHistory() });
-            // หน้าสถิติเลือกเป็น "ช่วงวัน" ได้ (เริ่มต้นเป็นวันนี้วันเดียว)
-            statsPicker = flatpickr("#statsDate", {
-                ...fpOpts,
-                mode: "range",
-                defaultDate: [now, now],
-                locale: { rangeSeparator: " ถึง " },
-                onChange: (sel) => { if (sel.length === 2) loadStats(); }
-            });
+            // ตัวเลือกช่วงเวลารายงาน: preset (วันนี้/เมื่อวาน/7 วัน/30 วัน) ส่งแค่ key ให้เซิร์ฟเวอร์คำนวณวันที่เอง (ปฏิทินกรุงเทพฯ) — เหมือนกับ /staff/reports เป๊ะ
+            const statsRangeSelect = document.getElementById('statsRangeKey');
+            const statsCustomBox = document.getElementById('statsCustomRange');
+            const syncStatsCustomVisibility = () => statsCustomBox.classList.toggle('hidden', statsRangeSelect.value !== 'custom');
+            statsRangeSelect.addEventListener('change', () => { syncStatsCustomVisibility(); loadStats(); });
+            syncStatsCustomVisibility();
+            statsCustomFromPicker = flatpickr("#statsCustomFrom", { ...fpOpts, onChange: () => loadStats() });
+            statsCustomToPicker = flatpickr("#statsCustomTo", { ...fpOpts, onChange: () => loadStats() });
 
             // เช็คว่ามี session cookie ที่ยังใช้ได้อยู่ไหม (browser แนบ cookie ให้เองถ้ามี ไม่ต้องเช็คฝั่ง JS ก่อน)
             fetch('/api/verify')
@@ -1033,24 +1067,31 @@
         }
         socket.on('table_updated', () => { loadTables(); loadDailyHistory(); });
         
-        let statsPicker = null;
+        let statsCustomFromPicker = null, statsCustomToPicker = null;
+        let lastStatsData = null;
+        let menuSort = { key: 'qty', dir: 'desc' };
 
-        // วินาที -> ข้อความอ่านง่าย ("-" ถ้ายังไม่มีข้อมูล)
-        function fmtDur(sec) {
-            if (sec === null || sec === undefined) return '-';
-            if (sec < 60) return `${sec} วิ`;
-            const m = Math.floor(sec / 60), s = sec % 60;
-            if (m < 60) return s ? `${m} นาที ${s} วิ` : `${m} นาที`;
-            const h = Math.floor(m / 60), mm = m % 60;
-            return mm ? `${h} ชม. ${mm} นาที` : `${h} ชม.`;
-        }
+        // ตัวจัดรูปแบบเวลา/เปอร์เซ็นต์/ป้ายเปรียบเทียบ ใช้ไฟล์เดียวกับ /staff/reports (window.ReportFormat จาก /shared/report-format.js)
+        // เพื่อไม่ให้ตัวเลขที่แสดงเพี้ยนกันระหว่างสองหน้า — ตัวเลขจริงมาจาก /api/stats (reports-lib.js) เหมือนกันอยู่แล้ว
+        const { fmtDur, fmtCompact, fmtPercent, fmtHourRange, comparisonBadge } = ReportFormat;
 
         // ใช้ปีเดือนวันแบบ local ไม่ใช้ toISOString() เพราะมันแปลงเป็น UTC แล้ววันจะเพี้ยน
         function toYMD(d) {
             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
         }
 
-        function statTile(label, value, tone = 'gray', sub = '') {
+        function getStatsRangeParams() {
+            const rangeSelect = document.getElementById('statsRangeKey');
+            if (!rangeSelect) return null;
+            const key = rangeSelect.value;
+            if (key !== 'custom') return { range: key };
+            const fromDate = statsCustomFromPicker && statsCustomFromPicker.selectedDates[0];
+            const toDate = statsCustomToPicker && statsCustomToPicker.selectedDates[0];
+            if (!fromDate || !toDate) return null;
+            return { range: 'custom', from: toYMD(fromDate), to: toYMD(toDate) };
+        }
+
+        function statTile(label, value, tone = 'gray', sub = '', badge = null) {
             const tones = {
                 gray:   'bg-gray-50 border-gray-200 text-gray-800',
                 blue:   'bg-blue-50 border-blue-200 text-blue-700',
@@ -1062,125 +1103,201 @@
                         <p class="text-xs font-bold opacity-70 leading-tight">${label}</p>
                         <p class="text-xl md:text-2xl font-black mt-1 leading-tight">${value}</p>
                         ${sub ? `<p class="text-xs opacity-60 mt-0.5">${sub}</p>` : ''}
+                        ${badge ? `<p class="text-[11px] font-bold mt-1 ${badge.className}">${badge.text}</p>` : ''}
                     </div>`;
         }
 
-        // กราฟแท่งรายชั่วโมง เขียนด้วย div ล้วนๆ จะได้ไม่ต้องโหลดไลบรารีกราฟเพิ่ม
-        // buckets = [{hour, count, plates}] 24 ช่อง, opts.subLabel = หน่วยของ plates ('จาน' / 'คน')
-        function renderHourChart(elId, buckets, opts) {
-            const el = document.getElementById(elId);
-            if (!el) return;
-            const { unit = 'ออเดอร์', subLabel = '', color = 'blue', days = 1 } = opts || {};
-            const bars = {
-                blue:  { on: 'bg-blue-500',  peak: 'bg-blue-700',  text: 'text-blue-700' },
-                green: { on: 'bg-green-500', peak: 'bg-green-700', text: 'text-green-700' }
-            }[color];
+        function renderRangeNote(range, comparisonRange) {
+            const main = range.days === 1 ? `ข้อมูลวันที่ ${range.from}` : `ข้อมูล ${range.from} ถึง ${range.to} (${range.days} วัน)`;
+            const cmp = `เทียบกับ ${comparisonRange.from === comparisonRange.to ? comparisonRange.from : `${comparisonRange.from} ถึง ${comparisonRange.to}`}`;
+            document.getElementById('statsRangeNote').innerText = `${main} · ${cmp}`;
+        }
 
-            const data = Array.isArray(buckets) ? buckets : [];
-            const total = data.reduce((s, b) => s + b.count, 0);
-            if (!total) {
-                el.innerHTML = '<p class="text-center text-gray-500 font-bold py-8 text-sm">ไม่มีข้อมูลในช่วงที่เลือก</p>';
+        function renderServeTiles(serve) {
+            const st = serve.serveTime;
+            document.getElementById('serveTiles').innerHTML =
+                statTile('เสิร์ฟทั้งหมด', `${serve.totalPlates} <span class="text-sm font-bold">จาน</span>`, 'blue', `${serve.servedOrders} ออเดอร์`, comparisonBadge(serve.comparison.servedOrders))
+              + statTile('ออเดอร์ที่ยกเลิก', `${serve.cancelledOrders} <span class="text-sm font-bold">ออเดอร์</span>`, 'red')
+              + statTile('ออเดอร์ที่ยังค้าง', `${serve.pendingOrders} <span class="text-sm font-bold">ออเดอร์</span>`, 'gray')
+              + statTile('เวลาเสิร์ฟเฉลี่ย', fmtDur(st.avg), 'blue', st.count ? `จาก ${st.count} ออเดอร์` : 'ยังไม่มีข้อมูล', comparisonBadge(serve.comparison.avgServeSeconds))
+              + statTile('เสิร์ฟช้าที่สุด', fmtDur(st.max), 'orange')
+              + statTile(`เกิน ${serve.sla.minutes} นาที`, `${serve.sla.breaches} <span class="text-sm font-bold">ออเดอร์</span>`, serve.sla.breaches ? 'orange' : 'gray', fmtPercent(serve.sla.rate), comparisonBadge(serve.comparison.slaBreachRate))
+              + statTile('90% เสิร์ฟภายใน', serve.p90.sufficient ? fmtDur(serve.p90.seconds) : '-', 'gray', serve.p90.sufficient ? `จาก ${serve.p90.count} ออเดอร์` : 'ข้อมูลยังไม่พอสรุป');
+
+            const trend = document.getElementById('serveTrendNote');
+            trend.innerText = serve.rushHour
+                ? `ช่วงออเดอร์เยอะสุด ${fmtHourRange(serve.rushHour.hour)} — ${serve.rushHour.count} ออเดอร์` + (serve.rushHour.avgServeSeconds !== null ? ` · เวลาเสิร์ฟเฉลี่ย ${fmtDur(serve.rushHour.avgServeSeconds)}` : '')
+                : '';
+        }
+
+        function sortedMenus(menus) {
+            const list = menus.slice();
+            const { key, dir } = menuSort;
+            list.sort((a, b) => {
+                const an = a[key] === null || a[key] === undefined ? -1 : a[key];
+                const bn = b[key] === null || b[key] === undefined ? -1 : b[key];
+                return dir === 'asc' ? an - bn : bn - an;
+            });
+            return list;
+        }
+
+        function renderMenuTable(serve) {
+            document.querySelectorAll('.stats-sort-btn').forEach((btn) => {
+                const active = btn.dataset.sort === menuSort.key;
+                btn.classList.toggle('bg-blue-600', active);
+                btn.classList.toggle('text-white', active);
+                btn.classList.toggle('border-blue-600', active);
+                btn.classList.toggle('bg-white', !active);
+            });
+
+            const tbody = document.getElementById('statsBody');
+            if (!serve.menus.length) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center p-6 text-gray-500 font-bold">ยังไม่มีข้อมูลการเสิร์ฟในช่วงนี้</td></tr>';
                 return;
             }
+            const slaSeconds = serve.sla.minutes * 60;
+            tbody.innerHTML = sortedMenus(serve.menus).map(m => {
+                const slow = m.avgServeSeconds !== null && m.avgServeSeconds > slaSeconds;
+                return `
+                    <tr class="border-b last:border-0 ${slow ? 'bg-orange-50' : ''}">
+                        <td class="py-3">${renderMenu(m.name, 'w-12 h-12')}</td>
+                        <td class="text-right py-3 font-bold text-xl md:text-2xl">${m.qty}</td>
+                        <td class="text-right py-3 text-gray-600 font-bold">${m.orders}</td>
+                        <td class="text-right py-3 text-gray-600 font-bold">${m.perOrder}</td>
+                        <td class="text-right py-3 font-bold ${slow ? 'text-orange-700' : 'text-gray-600'}">${fmtDur(m.avgServeSeconds)}</td>
+                    </tr>`;
+            }).join('')
+              + `<tr class="border-t-2 border-gray-800">
+                    <td class="py-4 font-bold text-lg md:text-xl">รวมทั้งหมด</td>
+                    <td class="text-right py-4 font-extrabold text-blue-600 text-xl md:text-2xl">${serve.totalPlates}</td>
+                    <td colspan="3"></td>
+                 </tr>`;
+        }
 
-            // ตัดชั่วโมงที่ไม่มีอะไรเลยหัวท้ายทิ้ง เผื่อไว้ข้างละ 1 ชม. กราฟจะได้ไม่โล่ง
-            const active = data.filter(b => b.count > 0).map(b => b.hour);
+        function renderServeHourChart(elId, byHour, slaSeconds) {
+            const el = document.getElementById(elId);
+            if (!el) return;
+            const total = byHour.reduce((s, b) => s + b.count, 0);
+            if (!total) { el.innerHTML = '<p class="text-center text-gray-500 font-bold py-8 text-sm">ยังไม่มีข้อมูลการเสิร์ฟในช่วงนี้</p>'; return; }
+
+            const active = byHour.filter(b => b.count > 0).map(b => b.hour);
             const first = Math.max(0, Math.min(...active) - 1);
             const last  = Math.min(23, Math.max(...active) + 1);
-            const shown = data.slice(first, last + 1);
-
+            const shown = byHour.slice(first, last + 1);
             const max = Math.max(...shown.map(b => b.count));
-            const peak = shown.reduce((a, b) => (b.count > a.count ? b : a), shown[0]);
             const hh = h => String(h).padStart(2, '0');
 
             const cols = shown.map(b => {
                 const pct = max ? Math.round((b.count / max) * 100) : 0;
-                const isPeak = b.count === max && b.count > 0;
-                const tip = `${hh(b.hour)}:00-${hh(b.hour)}:59 — ${b.count} ${unit}` + (subLabel && b.plates ? ` / ${b.plates} ${subLabel}` : '');
-                // คูณ 0.86 กันไม่ให้แท่งที่สูงสุดดันตัวเลขข้างบนล้นกรอบ
-                const h = b.count ? Math.max(Math.round(pct * 0.86), 4) : 2;
-                return `<div class="flex-1 min-w-[20px] flex flex-col items-center" title="${tip}">
-                            <div class="w-full h-28 md:h-36 flex flex-col justify-end items-center">
+                const breach = b.avgServeSeconds !== null && b.avgServeSeconds > slaSeconds;
+                const tip = `${fmtHourRange(b.hour)} — ${b.count} ออเดอร์` + (b.avgServeSeconds !== null ? ` / เฉลี่ย ${fmtDur(b.avgServeSeconds)}` : '');
+                const barH = b.count ? Math.max(Math.round(pct * 0.72), 4) : 2;
+                return `<div class="flex-1 min-w-[30px] flex flex-col items-center" title="${tip}">
+                            <span class="text-[10px] leading-none font-bold ${breach ? 'text-orange-600' : 'text-gray-500'} mb-0.5 h-3">${b.avgServeSeconds !== null ? fmtCompact(b.avgServeSeconds) : ''}</span>
+                            <div class="w-full h-24 md:h-32 flex flex-col justify-end items-center">
                                 <span class="text-[10px] leading-none font-bold ${b.count ? 'text-gray-700' : 'text-transparent'} mb-1">${b.count || 0}</span>
-                                <div class="w-full rounded-t ${b.count ? (isPeak ? bars.peak : bars.on) : 'bg-gray-200'}"
-                                     style="height:${h}%;max-width:44px;margin:0 auto"></div>
+                                <div class="w-full rounded-t ${b.count ? (breach ? 'bg-orange-500' : 'bg-blue-500') : 'bg-gray-200'}" style="height:${barH}%;max-width:44px;margin:0 auto"></div>
                             </div>
-                            <span class="text-[10px] leading-none ${isPeak ? 'font-bold ' + bars.text : 'text-gray-500'} mt-1">${hh(b.hour)}</span>
+                            <span class="text-[10px] leading-none text-gray-500 mt-1">${hh(b.hour)}</span>
                         </div>`;
             }).join('');
 
-            const perDay = days > 1 ? ` (เฉลี่ย ${Math.round((peak.count / days) * 10) / 10} ${unit}/วัน)` : '';
-            el.innerHTML = `
-                <div class="overflow-x-auto pb-1">
-                    <div class="flex items-end gap-1 md:gap-1.5" style="min-width:${Math.max(shown.length * 26, 300)}px">${cols}</div>
+            el.innerHTML = `<div class="overflow-x-auto pb-1">
+                    <div class="flex items-end gap-1 md:gap-1.5" style="min-width:${Math.max(shown.length * 32, 300)}px">${cols}</div>
                 </div>
-                <p class="text-xs text-gray-600 mt-2">
-                    ช่วงที่เยอะสุด <span class="font-bold ${bars.text}">${hh(peak.hour)}:00-${hh(peak.hour)}:59</span>
-                    — ${peak.count} ${unit}${perDay}
-                    <span class="text-gray-400">· รวม ${total} ${unit}</span>
-                </p>`;
+                <p class="text-xs text-gray-400 mt-2">สีส้ม = ชั่วโมงที่เวลาเสิร์ฟเฉลี่ยเกิน ${Math.round(slaSeconds / 60)} นาที</p>`;
+        }
+
+        function renderQueueHourChart(elId, byHour) {
+            const el = document.getElementById(elId);
+            if (!el) return;
+            const total = byHour.reduce((s, b) => s + b.received, 0);
+            if (!total) { el.innerHTML = '<p class="text-center text-gray-500 font-bold py-8 text-sm">ยังไม่มีข้อมูลคิวในช่วงนี้</p>'; return; }
+
+            const active = byHour.filter(b => b.received > 0 || b.seated > 0).map(b => b.hour);
+            const first = Math.max(0, Math.min(...active) - 1);
+            const last  = Math.min(23, Math.max(...active) + 1);
+            const shown = byHour.slice(first, last + 1);
+            const max = Math.max(...shown.map(b => Math.max(b.received, b.seated)), 1);
+            const hh = h => String(h).padStart(2, '0');
+
+            const cols = shown.map(b => {
+                const tip = `${fmtHourRange(b.hour)} — รับคิว ${b.received} / เข้าโต๊ะ ${b.seated}`;
+                const hRecv = b.received ? Math.max(Math.round((b.received / max) * 72), 4) : 2;
+                const hSeat = b.seated ? Math.max(Math.round((b.seated / max) * 72), 4) : 2;
+                return `<div class="flex-1 min-w-[30px] flex flex-col items-center" title="${tip}">
+                            <div class="w-full h-24 md:h-32 flex items-end justify-center gap-0.5">
+                                <div class="flex flex-col items-center justify-end h-full">
+                                    <span class="text-[9px] leading-none font-bold ${b.received ? 'text-gray-700' : 'text-transparent'} mb-1">${b.received || 0}</span>
+                                    <div class="rounded-t bg-blue-500" style="height:${hRecv}%;width:12px"></div>
+                                </div>
+                                <div class="flex flex-col items-center justify-end h-full">
+                                    <span class="text-[9px] leading-none font-bold ${b.seated ? 'text-gray-700' : 'text-transparent'} mb-1">${b.seated || 0}</span>
+                                    <div class="rounded-t bg-green-500" style="height:${hSeat}%;width:12px"></div>
+                                </div>
+                            </div>
+                            <span class="text-[10px] leading-none text-gray-500 mt-1">${hh(b.hour)}</span>
+                        </div>`;
+            }).join('');
+
+            el.innerHTML = `<div class="overflow-x-auto pb-1">
+                    <div class="flex items-end gap-1 md:gap-1.5" style="min-width:${Math.max(shown.length * 32, 300)}px">${cols}</div>
+                </div>`;
+        }
+
+        function renderQueueTiles(queue) {
+            const wt = queue.waitTime;
+            document.getElementById('queueTiles').innerHTML =
+                statTile('คิวทั้งหมด', `${queue.total} <span class="text-sm font-bold">คิว</span>`, 'gray', undefined, comparisonBadge(queue.comparison.totalQueues))
+              + statTile('เข้าโต๊ะแล้ว', `${queue.entered} <span class="text-sm font-bold">คิว</span>`, 'green')
+              + statTile('กำลังรอ', `${queue.waiting} <span class="text-sm font-bold">คิว</span>`, 'blue')
+              + statTile('ข้ามคิว', `${queue.skipped} <span class="text-sm font-bold">คิว</span>`, 'orange')
+              + statTile('ยกเลิกคิว', `${queue.cancelled} <span class="text-sm font-bold">คิว</span>`, 'red')
+              + statTile(`เกิน ${queue.sla.minutes} นาที`, `${queue.sla.breaches} <span class="text-sm font-bold">คิว</span>`, queue.sla.breaches ? 'orange' : 'gray', fmtPercent(queue.sla.rate), comparisonBadge(queue.comparison.slaBreachRate))
+              + statTile('รอเฉลี่ย', fmtDur(wt.avg), 'blue', wt.count ? `จาก ${wt.count} คิวที่เข้าโต๊ะ` : 'ยังไม่มีข้อมูล', comparisonBadge(queue.comparison.avgWaitSeconds))
+              + statTile('รอนานที่สุด', fmtDur(wt.max), 'orange');
+
+            const trend = document.getElementById('queueTrendNote');
+            trend.innerText = queue.rushHour
+                ? `ช่วงคนมารับคิวเยอะสุด ${fmtHourRange(queue.rushHour.hour)} — ${queue.rushHour.received} คิว · เข้าโต๊ะ ${queue.rushHour.seated} คิว`
+                : '';
+        }
+
+        function renderCurrentQueue(rangeKey, current) {
+            const block = document.getElementById('queueCurrentBlock');
+            if (rangeKey !== 'today') { block.classList.add('hidden'); return; }
+            block.classList.remove('hidden');
+            document.getElementById('queueCurrentTiles').innerHTML =
+                statTile('กำลังรอ', `${current.waitingCount} <span class="text-sm font-bold">คิว</span>`, current.waitingCount ? 'blue' : 'gray')
+              + statTile('จำนวนลูกค้าที่กำลังรอ', `${current.waitingPeople} <span class="text-sm font-bold">คน</span>`, 'gray')
+              + statTile('รอนานที่สุดตอนนี้', current.longestWaitSeconds !== null ? fmtDur(current.longestWaitSeconds) : '-', current.longestWaitSeconds !== null ? 'orange' : 'gray');
         }
 
         function loadStats() {
-            const sel = statsPicker ? statsPicker.selectedDates : [];
-            if (!sel.length) return;
-            const from = toYMD(sel[0]);
-            const to   = toYMD(sel[1] || sel[0]);
+            const params = getStatsRangeParams();
+            if (!params) return; // เลือก "กำหนดเอง" แต่ยังกรอกวันที่ไม่ครบ
 
-            fetch(`/api/stats?from=${from}&to=${to}&_=${Date.now()}`).then(res => res.json()).then(data => {
+            const qs = new URLSearchParams({ ...params, _: Date.now() });
+            fetch(`/api/stats?${qs.toString()}`).then(res => res.ok ? res.json() : null).then(data => {
                 if (!data || !data.range) return;
-                const { serve, queue, range } = data;
-
-                document.getElementById('statsRangeNote').innerText =
-                    range.days === 1 ? `ข้อมูลวันที่ ${range.from}` : `ข้อมูล ${range.from} ถึง ${range.to} (${range.days} วัน)`;
-
-                // ---- การ์ดสรุปการเสิร์ฟ ----
-                const st = serve.serveTime;
-                document.getElementById('serveTiles').innerHTML =
-                    statTile('รวมที่เสิร์ฟ', `${serve.totalPlates} <span class="text-sm font-bold">จาน</span>`, 'blue', `${serve.servedOrders} ออเดอร์`)
-                  + statTile('ออเดอร์ที่ยกเลิก', `${serve.cancelledOrders} <span class="text-sm font-bold">ออเดอร์</span>`, 'red')
-                  + statTile('ออเดอร์ที่ยังค้าง', `${serve.pendingOrders} <span class="text-sm font-bold">ออเดอร์</span>`, 'gray')
-                  + statTile('เสิร์ฟเร็วสุด', fmtDur(st.min), 'green')
-                  + statTile('เสิร์ฟช้าสุด', fmtDur(st.max), 'orange')
-                  + statTile('เวลาเสิร์ฟเฉลี่ย', fmtDur(st.avg), 'blue', st.count ? `จาก ${st.count} ออเดอร์` : 'ยังไม่มีข้อมูล');
-
-                // ---- ตารางเมนู ----
-                const tbody = document.getElementById('statsBody');
-                if (!serve.menus.length) {
-                    tbody.innerHTML = '<tr><td colspan="4" class="text-center p-6 text-gray-500 font-bold">ไม่มีสถิติในช่วงที่เลือก</td></tr>';
-                } else {
-                    tbody.innerHTML = serve.menus.map(m => `
-                        <tr class="border-b last:border-0">
-                            <td class="py-3">${renderMenu(m.name, 'w-12 h-12')}</td>
-                            <td class="text-right py-3 font-bold text-xl md:text-2xl">${m.qty}</td>
-                            <td class="text-right py-3 text-gray-600 font-bold">${m.perDay}</td>
-                            <td class="text-right py-3 text-gray-600 font-bold">${m.perOrder}</td>
-                        </tr>`).join('')
-                      + `<tr class="border-t-2 border-gray-800">
-                            <td class="py-4 font-bold text-lg md:text-xl">รวมทั้งหมด</td>
-                            <td class="text-right py-4 font-extrabold text-blue-600 text-xl md:text-2xl">${serve.totalPlates}</td>
-                            <td colspan="2"></td>
-                         </tr>`;
-                }
-
-                // ---- กราฟออเดอร์รายชั่วโมง ----
-                renderHourChart('serveHourChart', serve.byHour, { unit: 'ออเดอร์', subLabel: 'จาน', color: 'blue', days: range.days });
-
-                // ---- การ์ดสรุปคิว ----
-                const wt = queue.waitTime;
-                document.getElementById('queueTiles').innerHTML =
-                    statTile('คิวทั้งหมด', `${queue.total} <span class="text-sm font-bold">คิว</span>`, 'gray', queue.waiting ? `ยังรออยู่ ${queue.waiting}` : '')
-                  + statTile('เข้าโต๊ะแล้ว', `${queue.entered} <span class="text-sm font-bold">คิว</span>`, 'green')
-                  + statTile('ข้ามคิว', `${queue.skipped} <span class="text-sm font-bold">คิว</span>`, 'orange')
-                  + statTile('ยกเลิกคิว', `${queue.cancelled} <span class="text-sm font-bold">คิว</span>`, 'red')
-                  + statTile('รอนานสุด', fmtDur(wt.max), 'orange')
-                  + statTile('เข้าเร็วสุด', fmtDur(wt.min), 'green')
-                  + statTile('รอเฉลี่ย', fmtDur(wt.avg), 'blue', wt.count ? `จาก ${wt.count} คิวที่เข้าโต๊ะ` : 'ยังไม่มีข้อมูล');
-
-                // ---- กราฟคิวรายชั่วโมง ----
-                renderHourChart('queueHourChart', queue.byHour, { unit: 'คิว', subLabel: 'คน', color: 'green', days: range.days });
+                lastStatsData = data;
+                renderRangeNote(data.range, data.comparisonRange);
+                renderServeTiles(data.serve);
+                renderMenuTable(data.serve);
+                renderServeHourChart('serveHourChart', data.serve.byHour, data.serve.sla.minutes * 60);
+                renderQueueTiles(data.queue);
+                renderCurrentQueue(data.range.key, data.queue.current);
+                renderQueueHourChart('queueHourChart', data.queue.byHour);
             });
         }
+
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('.stats-sort-btn');
+            if (!btn) return;
+            const key = btn.dataset.sort;
+            menuSort = menuSort.key === key ? { key, dir: menuSort.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' };
+            if (lastStatsData) renderMenuTable(lastStatsData.serve);
+        });
         socket.on('stats_updated', loadStats);
 
         let _confirmCb = null;

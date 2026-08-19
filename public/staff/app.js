@@ -203,7 +203,9 @@ window.StaffApp = (function () {
     }
 
     // ===== flatpickr (ตัวเลือกวันที่ใช้ร่วมกันหลายโมดูล) เตรียมไว้ตอน boot ครั้งเดียว =====
-    let statsPicker = null;
+    function toYMD(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+
+    let statsCustomFromPicker = null, statsCustomToPicker = null;
     function initFlatpickrs() {
         const now = new Date();
         const fpOpts = { dateFormat: 'Y-m-d', altInput: true, altFormat: 'd/m/Y', defaultDate: now };
@@ -216,17 +218,33 @@ window.StaffApp = (function () {
         if (document.getElementById('cashierDate')) {
             flatpickr('#cashierDate', { ...fpOpts, onChange: () => window.CashierModule && CashierModule.onDateChange() });
         }
-        if (document.getElementById('statsDate')) {
-            statsPicker = flatpickr('#statsDate', {
-                ...fpOpts,
-                mode: 'range',
-                defaultDate: [now, now],
-                locale: { rangeSeparator: ' ถึง ' },
-                onChange: (sel) => { if (sel.length === 2 && window.ReportsModule) ReportsModule.loadStats(); },
-            });
+        // ตัวเลือกช่วงเวลารายงาน: preset (วันนี้/เมื่อวาน/7 วัน/30 วัน) ส่งแค่ key ให้เซิร์ฟเวอร์คำนวณวันที่เอง (ปฏิทินกรุงเทพฯ)
+        // "กำหนดเอง" เท่านั้นที่ client เลือกวันที่จริงเอง (ผู้ใช้กดปฏิทินตรงๆ ไม่มีเรื่อง timezone มาเกี่ยวข้อง)
+        const rangeSelect = document.getElementById('statsRangeKey');
+        if (rangeSelect) {
+            const customBox = document.getElementById('statsCustomRange');
+            const syncCustomVisibility = () => customBox && customBox.classList.toggle('hidden', rangeSelect.value !== 'custom');
+            rangeSelect.addEventListener('change', () => { syncCustomVisibility(); if (window.ReportsModule) ReportsModule.loadStats(); });
+            syncCustomVisibility();
+            if (document.getElementById('statsCustomFrom')) {
+                statsCustomFromPicker = flatpickr('#statsCustomFrom', { ...fpOpts, onChange: () => { if (window.ReportsModule) ReportsModule.loadStats(); } });
+            }
+            if (document.getElementById('statsCustomTo')) {
+                statsCustomToPicker = flatpickr('#statsCustomTo', { ...fpOpts, onChange: () => { if (window.ReportsModule) ReportsModule.loadStats(); } });
+            }
         }
     }
-    function getStatsPicker() { return statsPicker; }
+    // คืนพารามิเตอร์ให้ ReportsModule ยิง /api/stats — null ถ้ายังเลือกวันที่แบบกำหนดเองไม่ครบ (รอผู้ใช้เลือกให้ครบก่อน)
+    function getStatsRangeParams() {
+        const rangeSelect = document.getElementById('statsRangeKey');
+        if (!rangeSelect) return null;
+        const key = rangeSelect.value;
+        if (key !== 'custom') return { range: key };
+        const fromDate = statsCustomFromPicker && statsCustomFromPicker.selectedDates[0];
+        const toDate = statsCustomToPicker && statsCustomToPicker.selectedDates[0];
+        if (!fromDate || !toDate) return null;
+        return { range: 'custom', from: toYMD(fromDate), to: toYMD(toDate) };
+    }
 
     // ===== WebUSB เครื่องพิมพ์ความร้อน (ย้ายมาจาก dashboard.html เดิม ใช้ร่วมกันโดย Tables/Queue) =====
     let usbDevice = null;
@@ -409,7 +427,7 @@ window.StaffApp = (function () {
         boot,
         logout,
         navigateTo,
-        getStatsPicker,
+        getStatsRangeParams,
         connectUSBPrinter,
         doPrint,
         get currentUser() { return currentUser; },

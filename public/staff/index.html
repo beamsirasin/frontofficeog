@@ -134,27 +134,50 @@
             <!-- ================= Reports ================= -->
             <section id="module-reports" class="hidden flex-1 p-2 md:p-6">
                 <div class="max-w-4xl mx-auto">
-                    <div class="flex flex-wrap justify-between items-center mb-4 gap-2 md:gap-4">
-                        <h2 class="text-xl md:text-2xl font-bold text-gray-800">สถิติ</h2>
-                        <div class="flex items-center gap-2 w-full sm:w-auto">
-                            <label class="font-bold text-gray-700 text-sm md:text-base whitespace-nowrap">ช่วงวันที่:</label>
-                            <input type="text" id="statsDate" class="flex-1 sm:flex-none sm:w-64 min-w-0 border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500 text-center" readonly>
+                    <div class="flex flex-wrap justify-between items-center mb-1 gap-2 md:gap-3">
+                        <h2 class="text-xl md:text-2xl font-bold text-gray-800">รายงาน</h2>
+                        <div class="flex items-center gap-2 flex-wrap w-full sm:w-auto">
+                            <label class="font-bold text-gray-700 text-sm md:text-base whitespace-nowrap">ช่วงเวลา:</label>
+                            <select id="statsRangeKey" class="border border-gray-400 p-2 rounded shadow-sm focus:outline-none focus:border-blue-500 text-sm md:text-base font-bold bg-white">
+                                <option value="today">วันนี้</option>
+                                <option value="yesterday">เมื่อวาน</option>
+                                <option value="7d">7 วันที่ผ่านมา</option>
+                                <option value="30d">30 วันที่ผ่านมา</option>
+                                <option value="custom">กำหนดเอง</option>
+                            </select>
+                            <div id="statsCustomRange" class="hidden items-center gap-2 flex-wrap">
+                                <input type="text" id="statsCustomFrom" placeholder="วันที่เริ่มต้น" class="w-32 border border-gray-400 p-2 rounded shadow-sm text-center text-sm" readonly>
+                                <span class="text-gray-400 text-sm">ถึง</span>
+                                <input type="text" id="statsCustomTo" placeholder="วันที่สิ้นสุด" class="w-32 border border-gray-400 p-2 rounded shadow-sm text-center text-sm" readonly>
+                            </div>
                         </div>
                     </div>
                     <p id="statsRangeNote" class="text-xs text-gray-500 mb-4"></p>
 
                     <div class="bg-white rounded-lg shadow-md border-t-4 border-gray-700 mb-6 overflow-hidden">
-                        <div class="px-4 py-3 bg-gray-100 border-b"><h3 class="text-lg font-bold text-gray-800">การเสิร์ฟอาหาร</h3></div>
+                        <div class="px-4 py-3 bg-gray-100 border-b flex items-center justify-between gap-2 flex-wrap">
+                            <h3 class="text-lg font-bold text-gray-800">การเสิร์ฟอาหาร</h3>
+                            <span id="serveTrendNote" class="text-xs font-bold text-gray-600"></span>
+                        </div>
                         <div id="serveTiles" class="grid grid-cols-2 md:grid-cols-3 gap-3 p-4"></div>
                         <div class="px-4 pb-4">
+                            <div class="flex items-baseline justify-between gap-2 flex-wrap mb-2">
+                                <h4 class="font-bold text-gray-700 text-sm md:text-base">ประสิทธิภาพแต่ละเมนู</h4>
+                                <div class="flex items-center gap-2 text-xs text-gray-500">
+                                    <span>เรียงตาม:</span>
+                                    <button type="button" data-sort="qty" class="stats-sort-btn font-bold px-2 py-1 rounded border border-gray-300">จำนวนจาน</button>
+                                    <button type="button" data-sort="avgServeSeconds" class="stats-sort-btn font-bold px-2 py-1 rounded border border-gray-300">เวลาเสิร์ฟเฉลี่ย</button>
+                                </div>
+                            </div>
                             <div class="overflow-x-auto">
-                                <table class="w-full text-left min-w-[420px]">
+                                <table class="w-full text-left min-w-[560px]">
                                     <thead>
                                         <tr class="border-b text-xs md:text-sm text-gray-500">
                                             <th class="pb-2">เมนู</th>
-                                            <th class="pb-2 text-right whitespace-nowrap">รวม (จาน)</th>
-                                            <th class="pb-2 text-right whitespace-nowrap">เฉลี่ย/วัน</th>
+                                            <th class="pb-2 text-right whitespace-nowrap">จำนวนจาน</th>
+                                            <th class="pb-2 text-right whitespace-nowrap">จำนวนออเดอร์</th>
                                             <th class="pb-2 text-right whitespace-nowrap">เฉลี่ย/ออเดอร์</th>
+                                            <th class="pb-2 text-right whitespace-nowrap">เวลาเสิร์ฟเฉลี่ย</th>
                                         </tr>
                                     </thead>
                                     <tbody id="statsBody"></tbody>
@@ -164,8 +187,8 @@
                         <div class="px-4 pb-4">
                             <div class="border-t pt-3">
                                 <div class="flex items-baseline justify-between gap-2 flex-wrap mb-1">
-                                    <h4 class="font-bold text-gray-700 text-sm md:text-base">ออเดอร์เข้าตามช่วงเวลา</h4>
-                                    <span class="text-xs text-gray-500">นับตามเวลาที่ลูกค้ากดสั่ง</span>
+                                    <h4 class="font-bold text-gray-700 text-sm md:text-base">ออเดอร์ตามช่วงเวลา</h4>
+                                    <span class="text-xs text-gray-500">แท่ง = จำนวนออเดอร์ · ตัวเลขบน = เวลาเสิร์ฟเฉลี่ย</span>
                                 </div>
                                 <div id="serveHourChart"></div>
                             </div>
@@ -173,13 +196,27 @@
                     </div>
 
                     <div class="bg-white rounded-lg shadow-md border-t-4 border-blue-600 mb-6 overflow-hidden">
-                        <div class="px-4 py-3 bg-gray-100 border-b"><h3 class="text-lg font-bold text-gray-800">คิว</h3></div>
+                        <div class="px-4 py-3 bg-gray-100 border-b flex items-center justify-between gap-2 flex-wrap">
+                            <h3 class="text-lg font-bold text-gray-800">คิว</h3>
+                            <span id="queueTrendNote" class="text-xs font-bold text-gray-600"></span>
+                        </div>
                         <div id="queueTiles" class="grid grid-cols-2 md:grid-cols-3 gap-3 p-4"></div>
+
+                        <div id="queueCurrentBlock" class="px-4 pb-4 hidden">
+                            <div class="border-t pt-3">
+                                <h4 class="font-bold text-gray-700 text-sm md:text-base mb-2">สถานการณ์ตอนนี้</h4>
+                                <div id="queueCurrentTiles" class="grid grid-cols-3 gap-3"></div>
+                            </div>
+                        </div>
+
                         <div class="px-4 pb-4">
                             <div class="border-t pt-3">
                                 <div class="flex items-baseline justify-between gap-2 flex-wrap mb-1">
-                                    <h4 class="font-bold text-gray-700 text-sm md:text-base">คนมารับคิวตามช่วงเวลา</h4>
-                                    <span class="text-xs text-gray-500">นับตามเวลาที่กดรับคิว</span>
+                                    <h4 class="font-bold text-gray-700 text-sm md:text-base">คิวตามช่วงเวลา</h4>
+                                    <span class="text-xs text-gray-500 flex items-center gap-3">
+                                        <span><span class="inline-block w-2.5 h-2.5 rounded-sm bg-blue-500 align-middle mr-1"></span>รับคิว</span>
+                                        <span><span class="inline-block w-2.5 h-2.5 rounded-sm bg-green-500 align-middle mr-1"></span>เข้าโต๊ะ</span>
+                                    </span>
                                 </div>
                                 <div id="queueHourChart"></div>
                             </div>
@@ -758,6 +795,7 @@
     <script src="/staff/kitchen.js"></script>
     <script src="/staff/queue.js"></script>
     <script src="/staff/tables.js"></script>
+    <script src="/shared/report-format.js"></script>
     <script src="/staff/reports.js"></script>
     <script src="/staff/cashier-print.js"></script>
     <script src="/staff/cashier.js"></script>
