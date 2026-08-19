@@ -162,11 +162,13 @@ window.QueueModule = (function () {
         }
     }
 
-    function printQueueSlip(qNum, pax, potsStr, token, createdAt) {
+    async function printQueueSlip(qNum, pax, potsStr, token, createdAt) {
         const pots = JSON.parse(decodeURIComponent(potsStr));
         void pots;
-        const url = `${window.location.origin}/q/${token}`;
-        const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(url)}`;
+        // (Phase 10A.1) ขอ QR data URL จากเซิร์ฟเวอร์เอง (ไลบรารี qrcode เดิม) แทนการยิง URL ที่มี cancellation token จริงออกไป third-party ภายนอก
+        const qrRes = await StaffApp.apiFetch(`/api/queue-qr/${encodeURIComponent(token)}`);
+        const qrData = qrRes ? await qrRes.json() : null;
+        const qrSrc = qrData ? qrData.qr : '';
         const now = new Date(createdAt || Date.now());
         const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
         const dateStr = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()}`;
@@ -191,12 +193,17 @@ window.QueueModule = (function () {
         });
     }
 
-    function showQueueQr(qNum, token) {
-        const url = `${window.location.origin}/q/${token}`;
+    async function showQueueQr(qNum, token) {
         document.getElementById('queueQrNum').innerText = qNum;
-        document.getElementById('queueQrImgDisplay').src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(url)}`;
-        document.getElementById('queueQrLink').href = url;
+        document.getElementById('queueQrImgDisplay').src = '';
+        document.getElementById('queueQrLink').href = '#';
         document.getElementById('queueQrModal').classList.remove('hidden');
+        // (Phase 10A.1) ขอ QR data URL จากเซิร์ฟเวอร์เอง แทนการยิง URL ที่มี cancellation token จริงออกไป third-party ภายนอก
+        const res = await StaffApp.apiFetch(`/api/queue-qr/${encodeURIComponent(token)}`);
+        if (!res) return;
+        const qr = await res.json();
+        document.getElementById('queueQrImgDisplay').src = qr.qr;
+        document.getElementById('queueQrLink').href = qr.url;
     }
 
     // ================== เรียกเข้าโต๊ะ / เลือกโต๊ะ ==================

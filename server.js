@@ -936,10 +936,18 @@ app.get('/api/tables', requireAuth, requirePermission(PERMISSIONS.TABLES_VIEW, P
 // แยก permission ต่างหาก (tables.qr) จาก tables.view/tables.manage โดยตั้งใจ (ดู PERMISSIONS ด้านบน)
 // คืนค่าเฉพาะโต๊ะที่ระบุทีละโต๊ะเท่านั้น ไม่มีทางดึงของโต๊ะอื่นพ่วงมาได้จาก endpoint นี้
 app.get('/api/table-qr/:table', requireAuth, requirePermission(PERMISSIONS.TABLES_QR), (req, res) => {
-    db.get("SELECT table_no, is_open, session_token FROM tables WHERE table_no = ?", [req.params.table], (err, row) => {
+    db.get("SELECT table_no, is_open, session_token FROM tables WHERE table_no = ?", [req.params.table], async (err, row) => {
         if (!row || !row.is_open || !row.session_token) return res.status(404).json({ error: 'ไม่พบโต๊ะที่เปิดอยู่' });
         const url = `${PUBLIC_BASE_URL}/?table=${row.table_no}&token=${row.session_token}`;
-        res.json({ table_no: row.table_no, token: row.session_token, url });
+        // (Phase 10A.1) สร้าง QR ฝั่งเซิร์ฟเวอร์เอง (ไลบรารี qrcode เดิมที่ใช้อยู่แล้วใน /api/open-table) แทนการให้ browser ยิง URL ที่มี
+        // session token จริงออกไปยัง third-party QR service ภายนอก (api.qrserver.com) — token ไม่เคยหลุดออกนอกระบบเราเลย
+        try {
+            const qr = await QRCode.toDataURL(url);
+            res.json({ table_no: row.table_no, token: row.session_token, url, qr });
+        } catch (e) {
+            console.error('[table-qr] สร้าง QR ไม่สำเร็จ:', e.message);
+            res.status(500).json({ error: 'สร้าง QR ไม่สำเร็จ' });
+        }
     });
 });
 
@@ -1190,6 +1198,23 @@ app.get('/api/queue-history', requireAuth, requirePermission(PERMISSIONS.QUEUE_V
     db.all("SELECT * FROM queues WHERE date(created_at, 'localtime') = ? ORDER BY id ASC", [date], (err, rows) => {
         if(err || !rows) return res.json([]);
         res.json(rows.map(r => ({...r, pots: safeParse(r.pots, []), created_at: r.created_at ? r.created_at.replace(' ', 'T') + 'Z' : r.created_at, entered_at: r.entered_at ? r.entered_at.replace(' ', 'T') + 'Z' : null})));
+    });
+});
+
+// (Phase 10A.1) QR ของบัตรคิวลูกค้า สร้างฝั่งเซิร์ฟเวอร์เองด้วยไลบรารี qrcode เดิม แทนการให้ browser ยิง URL ที่มี cancellation token จริง
+// ออกไปยัง third-party QR service ภายนอก (api.qrserver.com) — token ไม่เคยหลุดออกนอกระบบเราเลย
+// รับแค่ token (ที่ caller มีอยู่แล้วจริงจากแถวคิวที่โหลดมา/เพิ่งสร้าง) มาตรวจว่ามีคิวจริงในระบบเท่านั้น ไม่ใช่ endpoint เข้ารหัสข้อความใดๆ ตามใจ caller
+app.get('/api/queue-qr/:token', requireAuth, requirePermission(PERMISSIONS.QUEUE_VIEW), (req, res) => {
+    db.get("SELECT q_number FROM queues WHERE token = ?", [req.params.token], async (err, row) => {
+        if (!row) return res.status(404).json({ error: 'ไม่พบคิวนี้' });
+        const url = `${PUBLIC_BASE_URL}/q/${req.params.token}`;
+        try {
+            const qr = await QRCode.toDataURL(url);
+            res.json({ q_number: row.q_number, url, qr });
+        } catch (e) {
+            console.error('[queue-qr] สร้าง QR ไม่สำเร็จ:', e.message);
+            res.status(500).json({ error: 'สร้าง QR ไม่สำเร็จ' });
+        }
     });
 });
 

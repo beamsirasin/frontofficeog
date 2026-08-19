@@ -62,13 +62,13 @@ window.TablesModule = (function () {
                 document.getElementById('tblReprintBtn').classList.remove('hidden');
                 document.getElementById('modalLinkBox').innerHTML = '<span class="text-gray-400 text-sm">กำลังโหลดลิงก์...</span>';
                 document.getElementById('modalQrDisplay').src = '';
+                // (Phase 10A.1) QR สร้างมาจากเซิร์ฟเวอร์แล้ว (data URL ในฟิลด์ qr) ไม่มีการยิง URL ที่มี token ออกไป third-party ใดๆ เลย
                 StaffApp.apiFetch(`/api/table-qr/${table.table_no}`).then(async (res) => {
                     if (!res) return;
                     const qr = await res.json();
-                    currentTableSelection = { ...currentTableSelection, session_token: qr.token };
-                    const orderUrl = `${window.location.origin}/?table=${table.table_no}&token=${qr.token}`;
-                    document.getElementById('modalLinkBox').innerHTML = `<a href="${orderUrl}" target="_blank" class="text-blue-600 underline font-semibold text-lg hover:text-blue-800">กดเพื่อเปิดหน้าสั่งอาหารโต๊ะ ${StaffApp.esc(table.table_no)}</a>`;
-                    document.getElementById('modalQrDisplay').src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(orderUrl)}`;
+                    currentTableSelection = { ...currentTableSelection, session_token: qr.token, qrDataUrl: qr.qr };
+                    document.getElementById('modalLinkBox').innerHTML = `<a href="${qr.url}" target="_blank" class="text-blue-600 underline font-semibold text-lg hover:text-blue-800">กดเพื่อเปิดหน้าสั่งอาหารโต๊ะ ${StaffApp.esc(table.table_no)}</a>`;
+                    document.getElementById('modalQrDisplay').src = qr.qr;
                 });
             } else {
                 // ไม่มีสิทธิ์ tables.qr — ไม่เรียก /api/table-qr/:table เลย (ลูกค้า/queue-only ไม่ควรได้ QR secret)
@@ -193,9 +193,8 @@ window.TablesModule = (function () {
 
     function reprintQR() {
         if (!canQr() || !currentTableSelection || !currentTableSelection.session_token) return;
-        const url = `${window.location.origin}/?table=${currentTableSelection.table_no}&token=${currentTableSelection.session_token}`;
-        const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(url)}`;
-        printTableSlip(currentTableSelection.table_no, qrSrc);
+        // (Phase 10A.1) ใช้ QR data URL ที่โหลดมาจากเซิร์ฟเวอร์แล้วตอนเปิดโมดัล (ดู showTableModal) — ไม่สร้าง URL/ยิงไป third-party เองอีกรอบ
+        printTableSlip(currentTableSelection.table_no, currentTableSelection.qrDataUrl);
         closeModal();
     }
 

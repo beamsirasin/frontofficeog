@@ -946,10 +946,10 @@
                 document.getElementById('modalLinkBox').innerHTML = '<span class="text-gray-400 text-sm">กำลังโหลดลิงก์...</span>';
                 document.getElementById('modalQrDisplay').src = '';
                 fetch(`/api/table-qr/${table.table_no}`).then(res => res.ok ? res.json() : Promise.reject(res.status)).then(qr => {
-                    currentTableSelection = { ...currentTableSelection, session_token: qr.token };
-                    const orderUrl = `${window.location.origin}/?table=${table.table_no}&token=${qr.token}`;
-                    document.getElementById('modalLinkBox').innerHTML = `<a href="${orderUrl}" target="_blank" class="text-blue-600 underline font-semibold text-lg hover:text-blue-800">กดเพื่อเปิดหน้าสั่งอาหารโต๊ะ ${table.table_no}</a>`;
-                    document.getElementById('modalQrDisplay').src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(orderUrl)}`;
+                    // (Phase 10A.1) QR สร้างมาจากเซิร์ฟเวอร์แล้ว (data URL ในฟิลด์ qr) ไม่มีการยิง URL ที่มี token ออกไป third-party ใดๆ เลย
+                    currentTableSelection = { ...currentTableSelection, session_token: qr.token, qrDataUrl: qr.qr };
+                    document.getElementById('modalLinkBox').innerHTML = `<a href="${qr.url}" target="_blank" class="text-blue-600 underline font-semibold text-lg hover:text-blue-800">กดเพื่อเปิดหน้าสั่งอาหารโต๊ะ ${table.table_no}</a>`;
+                    document.getElementById('modalQrDisplay').src = qr.qr;
                 }).catch(() => {
                     document.getElementById('modalLinkBox').innerHTML = '<span class="text-red-500 text-sm">ไม่มีสิทธิ์ดูลิงก์/QR ของโต๊ะนี้</span>';
                 });
@@ -986,10 +986,9 @@
         }
         function closeTableAction() { showConfirm(`ยืนยันการปิดโต๊ะ ${currentTableSelection.table_no} ใช่หรือไม่?`, () => { fetch('/api/close-table', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ table: currentTableSelection.table_no }) }).then(() => closeModal()); }); }
         
-        function reprintQR() { 
-            const url = `${window.location.origin}/?table=${currentTableSelection.table_no}&token=${currentTableSelection.session_token}`;
-            const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(url)}`;
-            printTableSlip(currentTableSelection.table_no, qrSrc); closeModal(); 
+        function reprintQR() {
+            // (Phase 10A.1) ใช้ QR data URL ที่โหลดมาจากเซิร์ฟเวอร์แล้วตอนเปิดโมดัล (ดู showTableModal) — ไม่สร้าง URL/ยิงไป third-party เองอีกรอบ
+            printTableSlip(currentTableSelection.table_no, currentTableSelection.qrDataUrl); closeModal();
         }
         
         function printTableSlip(tableNo, qrSrc) {
@@ -1362,10 +1361,12 @@
             });
         }
 
-        function printQueueSlip(qNum, pax, potsStr, token, createdAt) {
+        async function printQueueSlip(qNum, pax, potsStr, token, createdAt) {
             const pots = JSON.parse(decodeURIComponent(potsStr));
-            const url = `${window.location.origin}/q/${token}`;
-            const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(url)}`;
+            // (Phase 10A.1) ขอ QR data URL จากเซิร์ฟเวอร์เอง แทนการยิง URL ที่มี cancellation token จริงออกไป third-party ภายนอก
+            const qrRes = await fetch(`/api/queue-qr/${encodeURIComponent(token)}`);
+            const qrData = qrRes.ok ? await qrRes.json() : null;
+            const qrSrc = qrData ? qrData.qr : '';
             const now = new Date(createdAt || Date.now());
             const timeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
             const dateStr = `${now.getDate().toString().padStart(2,'0')}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getFullYear()}`;
@@ -1388,12 +1389,17 @@
             `; });
         }
 
-        function showQueueQr(qNum, token) {
-            const url = `${window.location.origin}/q/${token}`;
+        async function showQueueQr(qNum, token) {
             document.getElementById('queueQrNum').innerText = qNum;
-            document.getElementById('queueQrImgDisplay').src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(url)}`;
-            document.getElementById('queueQrLink').href = url;
+            document.getElementById('queueQrImgDisplay').src = '';
+            document.getElementById('queueQrLink').href = '#';
             document.getElementById('queueQrModal').classList.remove('hidden');
+            // (Phase 10A.1) ขอ QR data URL จากเซิร์ฟเวอร์เอง แทนการยิง URL ที่มี cancellation token จริงออกไป third-party ภายนอก
+            const res = await fetch(`/api/queue-qr/${encodeURIComponent(token)}`);
+            if (!res.ok) return;
+            const qr = await res.json();
+            document.getElementById('queueQrImgDisplay').src = qr.qr;
+            document.getElementById('queueQrLink').href = qr.url;
         }
 
         let currentQueueId = null;
