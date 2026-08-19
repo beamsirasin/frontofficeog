@@ -158,15 +158,15 @@ window.QueueModule = (function () {
         if (data.success) {
             closeCreateQueueModal();
             loadQueueHistory();
-            printQueueSlip(data.q_number, pax, encodeURIComponent(JSON.stringify(pots)), data.token, data.created_at);
+            printQueueSlip(data.q_number, pax, encodeURIComponent(JSON.stringify(pots)), data.id, data.created_at);
         }
     }
 
-    async function printQueueSlip(qNum, pax, potsStr, token, createdAt) {
+    async function printQueueSlip(qNum, pax, potsStr, queueId, createdAt) {
         const pots = JSON.parse(decodeURIComponent(potsStr));
         void pots;
-        // (Phase 10A.1) ขอ QR data URL จากเซิร์ฟเวอร์เอง (ไลบรารี qrcode เดิม) แทนการยิง URL ที่มี cancellation token จริงออกไป third-party ภายนอก
-        const qrRes = await StaffApp.apiFetch(`/api/queue-qr/${encodeURIComponent(token)}`);
+        // (Phase 10A.2) ขอ QR ด้วย id (ไม่ใช่ความลับ) แทน token ตรงๆ ใน URL ของ request นี้ — กัน token โผล่ใน nginx access log/devtools โดยไม่จำเป็น
+        const qrRes = await StaffApp.apiFetch(`/api/queue-qr/${encodeURIComponent(queueId)}`);
         const qrData = qrRes ? await qrRes.json() : null;
         const qrSrc = qrData ? qrData.qr : '';
         const now = new Date(createdAt || Date.now());
@@ -193,13 +193,13 @@ window.QueueModule = (function () {
         });
     }
 
-    async function showQueueQr(qNum, token) {
+    async function showQueueQr(qNum, queueId) {
         document.getElementById('queueQrNum').innerText = qNum;
         document.getElementById('queueQrImgDisplay').src = '';
         document.getElementById('queueQrLink').href = '#';
         document.getElementById('queueQrModal').classList.remove('hidden');
-        // (Phase 10A.1) ขอ QR data URL จากเซิร์ฟเวอร์เอง แทนการยิง URL ที่มี cancellation token จริงออกไป third-party ภายนอก
-        const res = await StaffApp.apiFetch(`/api/queue-qr/${encodeURIComponent(token)}`);
+        // (Phase 10A.2) ขอ QR ด้วย id (ไม่ใช่ความลับ) แทน token ตรงๆ ใน URL ของ request นี้ — กัน token โผล่ใน nginx access log/devtools โดยไม่จำเป็น
+        const res = await StaffApp.apiFetch(`/api/queue-qr/${encodeURIComponent(queueId)}`);
         if (!res) return;
         const qr = await res.json();
         document.getElementById('queueQrImgDisplay').src = qr.qr;
@@ -553,8 +553,8 @@ window.QueueModule = (function () {
                     <div class="relative flex-shrink-0">
                         <button onclick="event.stopPropagation(); QueueModule.toggleQueueMenu(${q.id})" class="bg-gray-200 hover:bg-gray-300 text-gray-600 w-11 h-11 rounded-lg text-xl font-bold border border-gray-300 shadow-sm flex items-center justify-center">⋮</button>
                         <div id="queueMenu-${q.id}" class="hidden absolute right-0 bottom-full mb-1 bg-white border border-gray-200 rounded-xl shadow-xl z-[200] w-36 overflow-hidden">
-                            <button onclick="event.stopPropagation(); QueueModule.printQueueSlip('${StaffApp.jsAttr(q.q_number)}', ${q.pax}, '${potsString}', '${StaffApp.jsAttr(q.token)}', '${StaffApp.jsAttr(q.created_at)}')" class="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 border-b border-gray-100">ปริ้น</button>
-                            <button onclick="event.stopPropagation(); QueueModule.showQueueQr('${StaffApp.jsAttr(q.q_number)}', '${StaffApp.jsAttr(q.token)}')" class="w-full text-left px-4 py-3 text-sm font-bold hover:bg-blue-50 text-blue-700">QR</button>
+                            <button onclick="event.stopPropagation(); QueueModule.printQueueSlip('${StaffApp.jsAttr(q.q_number)}', ${q.pax}, '${potsString}', ${q.id}, '${StaffApp.jsAttr(q.created_at)}')" class="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 border-b border-gray-100">ปริ้น</button>
+                            <button onclick="event.stopPropagation(); QueueModule.showQueueQr('${StaffApp.jsAttr(q.q_number)}', ${q.id})" class="w-full text-left px-4 py-3 text-sm font-bold hover:bg-blue-50 text-blue-700">QR</button>
                         </div>
                     </div>`;
 

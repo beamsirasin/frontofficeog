@@ -107,5 +107,13 @@ test('Queue QR: creating and viewing a queue entry\'s QR renders a local data-UR
     const external = requestUrls.filter((u) => /qrserver/i.test(u) || /create-qr-code/i.test(u));
     assert.deepEqual(external, [], `ต้องไม่มี network request ไปยัง third-party QR service เลยตลอด flow คิว — เจอ: ${JSON.stringify(external)}`);
 
+    // (Phase 10A.2) request ภายในไปขอ QR ต้องระบุด้วย id ตัวเลขล้วนๆ เท่านั้น — ไม่มี token (hex 32 ตัวอักษร) ปนอยู่ใน path เลย
+    const queueQrRequests = requestUrls.filter((u) => /\/api\/queue-qr\//.test(u));
+    assert.ok(queueQrRequests.length > 0, 'ต้องมี request ไป /api/queue-qr/ อย่างน้อยหนึ่งครั้งระหว่าง flow นี้');
+    for (const u of queueQrRequests) {
+        assert.match(u, /\/api\/queue-qr\/\d+$/, `request ไป queue-qr ต้องระบุด้วย id ตัวเลขล้วนๆ ท้าย path — เจอ: ${u}`);
+        assert.doesNotMatch(u, /[0-9a-f]{32}/i, `request path ต้องไม่มี token (hex 32 ตัวอักษร) ปนอยู่เลย — เจอ: ${u}`);
+    }
+
     await ctx.close();
 });

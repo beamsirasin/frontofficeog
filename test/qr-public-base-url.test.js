@@ -65,7 +65,7 @@ test('with PUBLIC_BASE_URL set (LAN staging), the locally-generated table QR enc
 test('with PUBLIC_BASE_URL set (LAN staging), the locally-generated queue QR encodes the staging URL, not the production domain', async () => {
     const cookie = await login();
     const created = await (await fetch(`${baseURL}/api/queue`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ pax: 2, pots: [] }) })).json();
-    const res = await fetch(`${baseURL}/api/queue-qr/${created.token}`, { headers: { Cookie: cookie } });
+    const res = await fetch(`${baseURL}/api/queue-qr/${created.id}`, { headers: { Cookie: cookie } });
     assert.equal(res.status, 200);
     const body = await res.json();
     const expectedUrl = `${OVERRIDE_BASE_URL}/q/${created.token}`;

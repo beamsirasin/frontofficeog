@@ -69,7 +69,7 @@ async function createPersona(permissionKeys, label) {
 }
 
 let ownerCookie;
-let tablesQrPersona, tablesNoQrPersona, queueViewPersona, noPermsPersona;
+let tablesQrPersona, tablesNoQrPersona, queueViewPersona, queueManageOnlyPersona, noPermsPersona;
 
 before(async () => {
     await new Promise((resolve, reject) => server.listen(0, (err) => (err ? reject(err) : resolve())));
@@ -83,6 +83,7 @@ before(async () => {
     tablesQrPersona = await createPersona(['tables.view', 'tables.manage', 'tables.qr'], 'tablesqr');
     tablesNoQrPersona = await createPersona(['tables.view', 'tables.manage'], 'tablesnoqr');
     queueViewPersona = await createPersona(['queue.view', 'queue.manage'], 'queueview');
+    queueManageOnlyPersona = await createPersona(['queue.manage'], 'queuemanageonly');
     noPermsPersona = await createPersona([], 'noperm');
 });
 
@@ -143,41 +144,82 @@ test('table-qr response never contains any external hostname anywhere in the pay
     await api(tablesQrPersona.cookie, 'POST', '/api/close-table', { table: '4' });
 });
 
-// ==================== Queue QR: local generation, deterministic content, permission-scoped ====================
+// ==================== Queue QR: local generation, deterministic content, permission-scoped, id-based (Phase 10A.2) ====================
 
-test('9/11. queue-qr response includes a locally-generated qr data URL whose content deterministically matches encoding the exact expected customer URL', async () => {
+test('1. an authenticated queue viewer can fetch QR by queue id, and the response deterministically matches encoding the exact expected customer URL', async () => {
     const created = await (await api(queueViewPersona.cookie, 'POST', '/api/queue', { pax: 2, pots: [] })).json();
-    const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${created.token}`);
+    assert.ok(Number.isInteger(created.id), 'POST /api/queue ต้องคืน id มาด้วย (ใช้เรียก /api/queue-qr/:id ต่อ)');
+    const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${created.id}`);
     assert.equal(res.status, 200);
     const body = await res.json();
     const expectedUrl = `https://lumhimkhue.com/q/${created.token}`;
-    assert.equal(body.url, expectedUrl);
+    assert.equal(body.url, expectedUrl, 'URL ลูกค้าต้องยังมี token เดิมฝังอยู่เหมือนเดิมทุกประการ (พฤติกรรมปลายทางลูกค้าไม่เปลี่ยน)');
     assert.equal(body.q_number, created.q_number);
     assert.ok(body.qr.startsWith('data:image/'), 'qr ต้องเป็น data URL ที่สร้างในระบบเราเอง ไม่ใช่ URL ไป third-party');
     const expectedQr = await QRCode.toDataURL(expectedUrl);
     assert.equal(body.qr, expectedQr, 'เนื้อหา QR ต้องตรงกับการเข้ารหัส url เดียวกันด้วยไลบรารี qrcode ตัวเดียวกันเป๊ะ (deterministic)');
 });
 
-test('queue-qr requires being logged in with queue.view/queue.manage — an account with neither permission is forbidden', async () => {
+test('2. an account with only queue.manage (not queue.view) can also fetch QR by queue id', async () => {
     const created = await (await api(queueViewPersona.cookie, 'POST', '/api/queue', { pax: 2, pots: [] })).json();
-    const res = await api(noPermsPersona.cookie, 'GET', `/api/queue-qr/${created.token}`);
+    const res = await api(queueManageOnlyPersona.cookie, 'GET', `/api/queue-qr/${created.id}`);
+    assert.equal(res.status, 200);
+});
+
+test('3. an account with neither queue.view nor queue.manage is forbidden (403)', async () => {
+    const created = await (await api(queueViewPersona.cookie, 'POST', '/api/queue', { pax: 2, pots: [] })).json();
+    const res = await api(noPermsPersona.cookie, 'GET', `/api/queue-qr/${created.id}`);
     assert.equal(res.status, 403);
 });
 
-test('queue-qr rejects an unauthenticated caller entirely', async () => {
+test('4. an anonymous (unauthenticated) caller is rejected with 401', async () => {
     const created = await (await api(queueViewPersona.cookie, 'POST', '/api/queue', { pax: 2, pots: [] })).json();
-    const res = await api(null, 'GET', `/api/queue-qr/${created.token}`);
+    const res = await api(null, 'GET', `/api/queue-qr/${created.id}`);
     assert.equal(res.status, 401);
 });
 
-test('queue-qr for an unknown/invalid token returns 404, not a QR for arbitrary content (this is not a generic "encode anything" endpoint)', async () => {
-    const res = await api(queueViewPersona.cookie, 'GET', '/api/queue-qr/this-token-does-not-exist-in-any-queue-row');
+test('5. a nonexistent queue id returns 404, not a QR for arbitrary content (this is not a generic "encode anything" endpoint)', async () => {
+    const res = await api(queueViewPersona.cookie, 'GET', '/api/queue-qr/999999999');
     assert.equal(res.status, 404);
+});
+
+test('6. a malformed (non-numeric) queue id is safely rejected with 400, never reaching the DB layer', async () => {
+    // เฉพาะสตริงที่ parseInt ดึงเลขนำหน้าไม่ได้เลย (ไม่ใช่กรณี "1;DROP..." ที่ parseInt('1;DROP...', 10) === 1 ซึ่งตรงกับ
+    // convention เดียวกันที่ endpoint :id ทุกตัวในระบบนี้ใช้อยู่แล้ว — ปลอดภัยเสมอเพราะผ่าน parameterized query ทุกจุด ไม่ใช่ปัญหา)
+    for (const bad of ['abc', 'null', 'NaN', '-', ' ']) {
+        const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${encodeURIComponent(bad)}`);
+        assert.ok([400, 404].includes(res.status), `id แปลกๆ "${bad}" ต้องไม่ทำให้ endpoint พังหรือคืน 200 — ได้ ${res.status}`);
+    }
+});
+
+test('a queue id string with SQL-metacharacter suffix after a valid leading integer resolves safely via parameterized query (no injection possible), matching the same parseInt convention used by every other :id endpoint in this app', async () => {
+    const created = await (await api(queueViewPersona.cookie, 'POST', '/api/queue', { pax: 2, pots: [] })).json();
+    const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${created.id}%3BDROP%20TABLE%20queues`);
+    assert.equal(res.status, 200, 'parseInt ดึงเลขนำหน้าได้ปกติ ส่วนที่เหลือถูกตัดทิ้งไปเลย ไม่มีทางไปถึง SQL');
+    const stillThere = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${created.id}`);
+    assert.equal(stillThere.status, 200, 'ตาราง queues ต้องไม่ถูกกระทบเลย (พิสูจน์ว่าไม่มี injection เกิดขึ้นจริง)');
+});
+
+test('7. the Staff QR-generation request path itself contains no raw queue token — only the non-secret numeric id', async () => {
+    const created = await (await api(queueViewPersona.cookie, 'POST', '/api/queue', { pax: 2, pots: [] })).json();
+    const requestPath = `/api/queue-qr/${created.id}`;
+    assert.doesNotMatch(requestPath, /[0-9a-f]{32}/i, 'path ของ request ต้องไม่มี token (hex 32 ตัวอักษรจาก 16 ไบต์) ปนอยู่เลย');
+    assert.equal(requestPath.includes(created.token), false);
+    const res = await api(queueViewPersona.cookie, 'GET', requestPath);
+    assert.equal(res.status, 200, 'ยืนยันว่า path แบบไม่มี token นี้ยังใช้งานได้จริง ไม่ใช่แค่ไม่มี token เฉยๆ');
+});
+
+test('9. the raw token is not returned as a standalone response property — only embedded inside the customer url field as before', async () => {
+    const created = await (await api(queueViewPersona.cookie, 'POST', '/api/queue', { pax: 2, pots: [] })).json();
+    const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${created.id}`);
+    const body = await res.json();
+    assert.equal(body.token, undefined, 'ห้ามมี field "token" แยกต่างหากในคำตอบ');
+    assert.deepEqual(Object.keys(body).sort(), ['q_number', 'qr', 'url'], 'response shape ต้องมีแค่ q_number/qr/url เท่านั้น');
 });
 
 test('queue-qr response never contains any external hostname anywhere in the payload', async () => {
     const created = await (await api(queueViewPersona.cookie, 'POST', '/api/queue', { pax: 2, pots: [] })).json();
-    const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${created.token}`);
+    const res = await api(queueViewPersona.cookie, 'GET', `/api/queue-qr/${created.id}`);
     const raw = await res.text();
     assert.doesNotMatch(raw, /qrserver|http:\/\/(?!127\.0\.0\.1)|https:\/\/(?!lumhimkhue\.com)/i);
 });

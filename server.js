@@ -1185,7 +1185,8 @@ app.post('/api/queue', requireAuth, requirePermission(PERMISSIONS.QUEUE_MANAGE),
                 details: { queue_id: queueId, q_number: qNum, pax, adults, children },
             });
         });
-        res.json({ success: true, q_number: qNum, token: token, created_at: new Date().toISOString() });
+        // (Phase 10A.2) เพิ่ม id เข้าไปในคำตอบ — หน้าคิว staff ใช้เรียก /api/queue-qr/:id ทันทีหลังสร้างคิว (ปริ้นบัตรคิว) โดยไม่ต้องเดา/ค้นหา id แยกต่างหาก
+        res.json({ success: true, id: queueId, q_number: qNum, token: token, created_at: new Date().toISOString() });
         io.emit('queue_updated');
     } catch (err) {
         console.error('[queue/create] สร้างคิวไม่สำเร็จ:', err.message);
@@ -1203,11 +1204,16 @@ app.get('/api/queue-history', requireAuth, requirePermission(PERMISSIONS.QUEUE_V
 
 // (Phase 10A.1) QR ของบัตรคิวลูกค้า สร้างฝั่งเซิร์ฟเวอร์เองด้วยไลบรารี qrcode เดิม แทนการให้ browser ยิง URL ที่มี cancellation token จริง
 // ออกไปยัง third-party QR service ภายนอก (api.qrserver.com) — token ไม่เคยหลุดออกนอกระบบเราเลย
-// รับแค่ token (ที่ caller มีอยู่แล้วจริงจากแถวคิวที่โหลดมา/เพิ่งสร้าง) มาตรวจว่ามีคิวจริงในระบบเท่านั้น ไม่ใช่ endpoint เข้ารหัสข้อความใดๆ ตามใจ caller
-app.get('/api/queue-qr/:token', requireAuth, requirePermission(PERMISSIONS.QUEUE_VIEW), (req, res) => {
-    db.get("SELECT q_number FROM queues WHERE token = ?", [req.params.token], async (err, row) => {
+// (Phase 10A.2) ระบุคิวด้วย "id" (เลขรันนิ่งไม่ใช่ความลับ) แทน token ตรงๆ ใน URL ของ endpoint นี้เอง — เดิมใช้ token เป็นพารามิเตอร์
+// ทำให้ token เต็มๆ ไปโผล่ใน URL ของ HTTP request ภายใน (เช่น nginx access log/devtools) โดยไม่จำเป็น ทั้งที่ endpoint นี้แค่ต้องระบุ "คิวไหน"
+// ไม่ได้ต้องพิสูจน์ความเป็นเจ้าของแบบ bearer token เหมือน /q/:token หรือ /api/queue/cancel-by-token (สอง endpoint นั้นยังใช้ token เป๊ะเหมือนเดิมทุกประการ)
+// เซิร์ฟเวอร์ดึง token ภายในเองจาก id แล้วค่อยประกอบ URL ลูกค้า (/q/:token) เหมือนเดิมทุกประการ — ไม่มีการเปลี่ยนรูปแบบ URL ลูกค้า/การสร้าง token/พฤติกรรมยกเลิกคิวเลย
+app.get('/api/queue-qr/:id', requireAuth, requirePermission(PERMISSIONS.QUEUE_VIEW, PERMISSIONS.QUEUE_MANAGE), (req, res) => {
+    const queueId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(queueId)) return res.status(400).json({ error: 'invalid_id' });
+    db.get("SELECT q_number, token FROM queues WHERE id = ?", [queueId], async (err, row) => {
         if (!row) return res.status(404).json({ error: 'ไม่พบคิวนี้' });
-        const url = `${PUBLIC_BASE_URL}/q/${req.params.token}`;
+        const url = `${PUBLIC_BASE_URL}/q/${row.token}`;
         try {
             const qr = await QRCode.toDataURL(url);
             res.json({ q_number: row.q_number, url, qr });
