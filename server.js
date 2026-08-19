@@ -137,8 +137,11 @@ app.get(ADMIN_MODULE_PATHS, async (req, res) => {
 app.use(express.static('public'));
 app.use(express.json());
 
-// URL หลักของระบบ (โดเมน https) — ใช้สร้างลิงก์/QR ถ้าเปลี่ยนโดเมนแก้ที่นี่ที่เดียว
-const PUBLIC_BASE_URL = 'https://lumhimkhue.com';
+// URL หลักของระบบ (โดเมน https) — ใช้สร้างลิงก์/QR บน production แก้ที่นี่ที่เดียว
+// (Phase 10A) รองรับ override ผ่าน env สำหรับ LAN staging เท่านั้น (scripts/lan-staging-server.js ตั้งให้ก่อน require server.js)
+// ไม่ตั้ง = พฤติกรรมเดิมทุกประการบน production (ไม่มีไฟล์ .env ไหนของ production ควรตั้งตัวแปรนี้)
+// ไม่มี override นี้ QR ที่สร้างระหว่างทดสอบ LAN staging จะชี้ไปโดเมน production จริงแทนเครื่อง staging เอง (สแกนแล้วสั่งอาหารไม่ได้ ไม่ตรงกับ token ของ DB staging เลย)
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://lumhimkhue.com';
 
 // ================== Auth: ผู้ใช้ + session ถาวรใน DB (Phase 2) ==================
 // แทนที่ระบบเดิมที่เทียบรหัสกับ ADMIN_USER/ADMIN_PASS ตรงๆ แล้วเก็บ token ไว้ใน memory (หายเมื่อ restart)

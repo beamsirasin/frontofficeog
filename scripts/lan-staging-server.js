@@ -69,6 +69,9 @@ if (isFreshDb) {
     process.env.ADMIN_USER = creds.ownerUser;
     process.env.ADMIN_PASS = creds.ownerPass;
 }
+// (Phase 10A) ไม่งั้น QR/ลิงก์เปิดโต๊ะที่สร้างระหว่างทดสอบ LAN จะชี้ไปโดเมน production จริง (https://lumhimkhue.com) แทนเครื่อง staging เอง —
+// สแกนจากมือถือแล้วสั่งอาหารไม่ได้เลยเพราะ token ไม่ตรงกับ DB staging (ต้องตั้ง "ก่อน" require server.js เท่านั้น — ตัวแปรนี้อ่านครั้งเดียวตอนโหลดโมดูล)
+process.env.PUBLIC_BASE_URL = `http://${BIND_ADDRESS}:${process.env.PORT}`;
 
 const { server, db } = require(path.join(__dirname, '..', 'server.js'));
 
