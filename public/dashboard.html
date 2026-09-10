@@ -899,7 +899,7 @@
             const orderTime = new Date(order.created_at);
             div.innerHTML = `
                 <div class="flex justify-between items-start mb-2 pb-2 border-b border-gray-300">
-                    <div><div class="text-2xl font-extrabold text-gray-900">โต๊ะ ${order.table_no}</div><div id="timer-${order.id}" class="font-mono mt-1 text-gray-600">600 วินาที</div></div>${badge}
+                    <div><div class="text-2xl font-extrabold text-gray-900">โต๊ะ ${order.table_no}</div><div id="timer-${order.id}" class="font-mono mt-1 text-gray-600">10 นาที 0 วินาที</div></div>${badge}
                 </div>
                 <div class="flex-grow mb-4">${itemsHtml}</div>
                 <div class="flex mt-auto gap-2">
@@ -910,7 +910,7 @@
             document.getElementById('orderList').append(div);
             timers[order.id] = setInterval(() => {
                 const diffSec = Math.floor((new Date() - orderTime) / 1000), remaining = 600 - diffSec, timerEl = document.getElementById(`timer-${order.id}`);
-                if(timerEl) { if (remaining > 0) timerEl.innerText = `${remaining} วินาที`; else { timerEl.innerText = `ช้าไปแล้ว ${Math.abs(remaining)} วินาที!`; timerEl.classList.add('late'); } }
+                if(timerEl) { if (remaining > 0) timerEl.innerText = `${Math.floor(remaining / 60)} นาที ${remaining % 60} วินาที`; else { const lateSeconds = Math.abs(remaining); timerEl.innerText = `ช้าไปแล้ว ${Math.floor(lateSeconds / 60)} นาที ${lateSeconds % 60} วินาที!`; timerEl.classList.add('late'); } }
             }, 1000);
         }
 
