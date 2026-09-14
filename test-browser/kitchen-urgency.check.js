@@ -18,10 +18,11 @@ after(async () => {
     await app.shutdown();
 });
 
-const ORANGE = 'rgb(234, 88, 12)';
+const YELLOW = 'rgb(234, 179, 8)';
 const RED = 'rgb(220, 38, 38)';
-const STATES = ['normal', 'warning', 'urgent', 'critical'];
-const FIXTURE_IDS = { normal: 101, warning: 102, urgent: 103, critical: 104, overdue: 105 };
+const BLINK = 'kitchen-table-blink';
+const FIXTURE_IDS = { normal: 101, warning: 102, urgent: 103, twoMinutes: 104, overdue: 105 };
+const CARD_STATES = Object.keys(FIXTURE_IDS);
 
 function fixtureOrders() {
     const now = Date.now();
@@ -29,8 +30,8 @@ function fixtureOrders() {
     return [
         { id: 101, table_no: 'N', category: 'meat', items: { 'รายการปกติ': 1 }, status: 'pending', created_at: createdAt(500) },
         { id: 102, table_no: 'W', category: 'meat', items: { 'รายการเตือน': 1 }, status: 'pending', created_at: createdAt(380) },
-        { id: 103, table_no: 'U', category: 'seafood', items: { 'รายการด่วน': 1 }, status: 'pending', created_at: createdAt(220) },
-        { id: 104, table_no: 'C', category: 'meat', items: { 'รายการวิกฤต': 2 }, status: 'pending', created_at: createdAt(90) },
+        { id: 103, table_no: 'U', category: 'seafood', items: { 'รายการเร่ง': 1 }, status: 'pending', created_at: createdAt(220) },
+        { id: 104, table_no: 'T', category: 'meat', items: { 'รายการสองนาที': 2 }, status: 'pending', created_at: createdAt(90) },
         // เลยเวลาเกิน 1 ชม. — ข้อความยาวที่สุดที่เป็นไปได้ ใช้ตรวจการตัดบรรทัด/ล้นการ์ด
         { id: 105, table_no: '12', category: 'seafood', items: { 'รายการเลยเวลา': 1 }, status: 'pending', created_at: createdAt(-3735) },
     ];
@@ -56,7 +57,8 @@ async function installKitchenFixtures(page, orders = fixtureOrders()) {
     }));
 }
 
-async function openKitchen(page, target) {
+async function loginKitchen(page, target) {
+    await installKitchenFixtures(page);
     if (target === 'staff') {
         await loginUI(page, app.base, '/staff/login', '#staffUser', '#staffPin', app.personas.kitchenOnly.username, app.personas.kitchenOnly.password);
         await page.goto(`${app.base}/staff/kitchen`);
@@ -67,23 +69,17 @@ async function openKitchen(page, target) {
         await page.click('#loginScreen button');
         await page.waitForSelector('#loginScreen', { state: 'hidden' });
     }
-}
-
-async function loginKitchen(page, target) {
-    await installKitchenFixtures(page);
-    await openKitchen(page, target);
-    await page.waitForSelector('#order-104[data-urgency="critical"]');
+    await page.waitForSelector('#order-105[data-urgency="urgent"]');
     await page.waitForSelector('[data-kitchen-history-card]');
 }
 
 async function kitchenPresentation(page) {
     return page.evaluate((ids) => {
-        const style = (el) => (el ? getComputedStyle(el) : null);
+        const style = (el) => getComputedStyle(el);
         const read = (id) => {
             const card = document.getElementById(`order-${id}`);
             const table = card.querySelector('[data-kitchen-table]');
             const timer = card.querySelector('[data-kitchen-timer]');
-            const badge = card.querySelector('[data-kitchen-critical-badge]');
             const header = card.querySelector('.kitchen-card-header');
             const categoryBadge = header.querySelector('.kitchen-card-heading').lastElementChild;
             const itemRow = header.nextElementSibling.firstElementChild;
@@ -94,26 +90,25 @@ async function kitchenPresentation(page) {
             const cardStyle = style(card);
             const cardRect = card.getBoundingClientRect();
             const timerRect = timer.getBoundingClientRect();
-            const headerRect = header.getBoundingClientRect();
             const timerLineHeight = parseFloat(style(timer).lineHeight) || 24;
             return {
                 urgency: card.dataset.urgency,
                 text: timer.textContent.trim(),
                 tableColor: style(table).color,
-                timerColor: style(timer).color,
-                timerAnimation: style(timer).animationName,
-                timerAnimationDuration: style(timer).animationDuration,
-                timerNumeric: style(timer).fontVariantNumeric,
                 tableAnimation: style(table).animationName,
-                badgeVisible: style(badge).display !== 'none' && badge.getBoundingClientRect().width > 0,
-                badgeText: badge.textContent.trim(),
-                badgeAnimation: style(badge).animationName,
-                nonTimerAnimations: Array.from(card.querySelectorAll('*'))
-                    .filter((el) => el !== timer)
-                    .concat(card)
-                    .map((el) => style(el).animationName)
-                    .filter((name) => name !== 'none'),
-                chrome: {
+                tableAnimationDuration: style(table).animationDuration,
+                tableAnimationTiming: style(table).animationTimingFunction,
+                tableAnimationIterations: style(table).animationIterationCount,
+                animatedElements: [card, ...card.querySelectorAll('*')]
+                    .filter((el) => style(el).animationName !== 'none')
+                    .map((el) => (el === table ? 'table' : el.className || el.tagName)),
+                hasUrgencyBadge: Boolean(card.querySelector('[data-kitchen-critical-badge], .kitchen-critical-badge'))
+                    || Array.from(card.querySelectorAll('span, div')).some((el) => el.children.length === 0 && el.textContent.trim() === 'ด่วน'),
+                calm: {
+                    timerColor: style(timer).color,
+                    timerAnimation: style(timer).animationName,
+                    timerOpacity: style(timer).opacity,
+                    timerWeight: style(timer).fontWeight,
                     cardBackground: cardStyle.backgroundColor,
                     cardBorder: cardStyle.borderTopColor,
                     cardOpacity: cardStyle.opacity,
@@ -128,7 +123,6 @@ async function kitchenPresentation(page) {
                     cancelBackground: cancel ? style(cancel).backgroundColor : null,
                 },
                 layout: {
-                    headerInsideCard: headerRect.left >= cardRect.left - 0.5 && headerRect.right <= cardRect.right + 0.5,
                     timerInsideCard: timerRect.right <= cardRect.right + 0.5,
                     timerLines: Math.round(timerRect.height / timerLineHeight),
                     timerOverflows: timer.scrollWidth > timer.clientWidth + 1,
@@ -149,58 +143,51 @@ async function kitchenPresentation(page) {
     }, FIXTURE_IDS);
 }
 
-function assertTimerSemantics(view, label) {
-    const { normal, warning, urgent, critical, overdue } = view.cards;
-    assert.deepEqual(view.order, ['order-105', 'order-104', 'order-103', 'order-102', 'order-101'], `${label}: most urgent first`);
+function assertTableOnlySemantics(view, label, { reducedMotion = false } = {}) {
+    const { normal, warning, urgent, twoMinutes, overdue } = view.cards;
+    assert.deepEqual(view.order, ['order-105', 'order-104', 'order-103', 'order-102', 'order-101'], `${label}: least remaining first`);
 
     assert.equal(normal.urgency, 'normal');
     assert.equal(warning.urgency, 'warning');
-    assert.equal(urgent.urgency, 'urgent');
-    assert.equal(critical.urgency, 'critical');
-    assert.equal(overdue.urgency, 'critical');
+    for (const card of [urgent, twoMinutes, overdue]) assert.equal(card.urgency, 'urgent', `${label}: <= 5:00 is a single urgent state`);
 
     assert.match(normal.text, /^8 นาที \d{2} วิ$/);
     assert.match(warning.text, /^6 นาที \d{2} วิ$/);
     assert.match(urgent.text, /^3 นาที \d{2} วิ$/);
-    assert.match(critical.text, /^1 นาที \d{2} วิ$/);
+    assert.match(twoMinutes.text, /^1 นาที \d{2} วิ$/);
     assert.match(overdue.text, /^ช้าไปแล้ว 1 ชม\. 02 นาที \d{2} วิ!$/);
-    assert.match(normal.timerNumeric, /tabular-nums/);
 
-    // NORMAL: สีปกติ ไม่มีแอนิเมชัน ไม่มีป้าย
-    assert.notEqual(normal.tableColor, ORANGE);
+    // สีของ "โต๊ะ X"
+    assert.notEqual(normal.tableColor, YELLOW);
     assert.notEqual(normal.tableColor, RED);
-    assert.notEqual(normal.timerColor, ORANGE);
-    assert.notEqual(normal.timerColor, RED);
-    assert.equal(normal.timerAnimation, 'none');
-    assert.equal(normal.badgeVisible, false);
+    assert.equal(warning.tableColor, YELLOW);
+    for (const card of [urgent, twoMinutes, overdue]) assert.equal(card.tableColor, RED);
 
-    // WARNING: ส้ม ไม่มีแอนิเมชันเลย
-    assert.equal(warning.tableColor, ORANGE);
-    assert.equal(warning.timerColor, ORANGE);
-    assert.equal(warning.timerAnimation, 'none');
-    assert.equal(warning.badgeVisible, false);
-
-    // URGENT/CRITICAL: แดง; เลขโต๊ะนิ่ง, เวลาพัลส์ช้าๆ
-    for (const card of [urgent, critical, overdue]) {
-        assert.equal(card.tableColor, RED);
-        assert.equal(card.timerColor, RED);
-        assert.equal(card.tableAnimation, 'none');
-    }
-    assert.equal(urgent.badgeVisible, false);
-    assert.equal(critical.badgeVisible, true);
-    assert.equal(overdue.badgeVisible, true);
-    assert.equal(critical.badgeText, 'ด่วน');
-
-    // แอนิเมชันไม่เกิดกับส่วนอื่นของการ์ดนอกจากตัวเวลา
-    for (const state of [...STATES, 'overdue']) {
-        assert.deepEqual(view.cards[state].nonTimerAnimations, [], `${label}: ${state} must not animate anything besides the timer`);
+    // การกระพริบ: เฉพาะ "โต๊ะ X" ของ warning/urgent
+    assert.equal(normal.tableAnimation, 'none');
+    assert.deepEqual(normal.animatedElements, []);
+    for (const state of ['warning', 'urgent', 'twoMinutes', 'overdue']) {
+        const card = view.cards[state];
+        if (reducedMotion) {
+            assert.equal(card.tableAnimation, 'none', `${label}: ${state} must not blink with reduced motion`);
+            assert.deepEqual(card.animatedElements, []);
+        } else {
+            assert.equal(card.tableAnimation, BLINK, `${label}: ${state} table number must blink`);
+            assert.equal(card.tableAnimationDuration, '0.9s');
+            assert.equal(card.tableAnimationTiming, 'ease-in-out');
+            assert.equal(card.tableAnimationIterations, 'infinite');
+            assert.deepEqual(card.animatedElements, ['table'], `${label}: ${state} only the table number animates`);
+        }
     }
 
-    // พื้นหลัง/ขอบ/รายการ/ป้าย/ปุ่ม/เส้นแบ่ง ต้องเหมือนการ์ดปกติทุกระดับ
-    for (const state of ['warning', 'urgent', 'critical', 'overdue']) {
-        assert.deepEqual(view.cards[state].chrome, normal.chrome, `${label}: ${state} card chrome must match normal`);
+    // เวลา การ์ด รายการ ป้าย ปุ่ม คงเดิมทุกสถานะ และไม่มีป้าย "ด่วน"
+    for (const state of CARD_STATES) {
+        assert.equal(view.cards[state].hasUrgencyBadge, false, `${label}: ${state} must not render a ด่วน badge`);
+        assert.deepEqual(view.cards[state].calm, normal.calm, `${label}: ${state} timer/card chrome must match normal`);
     }
-    assert.equal(normal.chrome.cardOpacity, '1');
+    assert.equal(normal.calm.timerAnimation, 'none');
+    assert.equal(normal.calm.timerOpacity, '1');
+    assert.equal(normal.calm.cardOpacity, '1');
 
     assert.ok(view.history.length > 0);
     assert.ok(view.history.every((card) => card.urgency === null));
@@ -209,30 +196,20 @@ function assertTimerSemantics(view, label) {
 
 function assertLayout(view, label) {
     assert.equal(view.overflow, false, `${label}: page must not scroll horizontally`);
-    for (const state of [...STATES, 'overdue']) {
+    for (const state of CARD_STATES) {
         const { layout } = view.cards[state];
-        assert.ok(layout.headerInsideCard, `${label}: ${state} header must stay inside the card`);
         assert.ok(layout.timerInsideCard, `${label}: ${state} timer must stay inside the card`);
         assert.equal(layout.timerOverflows, false, `${label}: ${state} timer text must not overflow`);
+        assert.ok(layout.timerLines <= (state === 'overdue' ? 2 : 1), `${label}: ${state} timer wraps too much`);
     }
-    for (const state of STATES) {
-        assert.equal(view.cards[state].layout.timerLines, 1, `${label}: ${state} timer must fit on one line`);
-    }
-    assert.ok(view.cards.overdue.layout.timerLines <= 2, `${label}: overdue timer wraps to at most two lines`);
 }
 
-test('staff Kitchen: only table number and timer communicate urgency', async () => {
+test('staff Kitchen: only the table number turns yellow/red and blinks', async () => {
     const context = await browser.newContext({ viewport: { width: 800, height: 1280 } });
     const page = await context.newPage();
     await loginKitchen(page, 'staff');
     const view = await kitchenPresentation(page);
-
-    assertTimerSemantics(view, 'staff');
-    assert.equal(view.cards.urgent.timerAnimation, 'kitchen-timer-pulse');
-    assert.equal(view.cards.urgent.timerAnimationDuration, '1.9s');
-    assert.equal(view.cards.critical.timerAnimation, 'kitchen-timer-pulse');
-    assert.equal(view.cards.critical.timerAnimationDuration, '1.9s');
-    assert.equal(view.cards.critical.badgeAnimation, 'none');
+    assertTableOnlySemantics(view, 'staff');
     assertLayout(view, 'staff 800px');
 
     await page.click('#order-101 [data-action="served"]');
@@ -243,23 +220,19 @@ test('staff Kitchen: only table number and timer communicate urgency', async () 
     await context.close();
 });
 
-test('reduced motion disables the timer pulse but keeps colors and the critical badge', async () => {
+test('reduced motion disables the table blink but keeps yellow/red table colors', async () => {
     for (const target of ['staff', 'dashboard']) {
         const context = await browser.newContext({ reducedMotion: 'reduce', viewport: { width: 390, height: 844 } });
         const page = await context.newPage();
         await loginKitchen(page, target);
         const view = await kitchenPresentation(page);
-        assert.equal(view.cards.warning.timerColor, ORANGE);
-        assert.equal(view.cards.urgent.timerColor, RED);
-        assert.equal(view.cards.critical.tableColor, RED);
-        for (const state of STATES) assert.equal(view.cards[state].timerAnimation, 'none', `${target}: ${state} must not pulse`);
-        assert.equal(view.cards.critical.badgeVisible, true);
+        assertTableOnlySemantics(view, `${target} reduced motion`, { reducedMotion: true });
         assert.equal(view.overflow, false);
         await context.close();
     }
 });
 
-test('active cards cross the exact 7:00, 5:00 and 2:00 boundaries in realtime without refresh', async () => {
+test('table number crosses the exact 7:00 and 5:00 boundaries in realtime with no extra state at 2:00 or 0:00', async () => {
     for (const target of ['staff', 'dashboard']) {
         const context = await browser.newContext({ viewport: { width: 800, height: 1280 } });
         // ล็อกอินผ่าน API ก่อนติดตั้งนาฬิกาปลอม (ฟอร์มล็อกอินพึ่งพา timer จริง) — ทั้งสองหน้ากู้ session จาก cookie ได้เอง
@@ -275,33 +248,48 @@ test('active cards cross the exact 7:00, 5:00 and 2:00 boundaries in realtime wi
             { id: 301, table_no: 'B7', category: 'meat', items: { 'เจ็ดนาที': 1 }, status: 'pending', created_at: createdAt(421) },
             { id: 302, table_no: 'B5', category: 'meat', items: { 'ห้านาที': 1 }, status: 'pending', created_at: createdAt(301) },
             { id: 303, table_no: 'B2', category: 'meat', items: { 'สองนาที': 1 }, status: 'pending', created_at: createdAt(121) },
+            { id: 304, table_no: 'B0', category: 'meat', items: { 'ศูนย์': 1 }, status: 'pending', created_at: createdAt(1) },
         ]);
-        await page.clock.install({ time: now });
+        // Date.now() คงที่ แต่ setInterval ของการ์ดยังเดินจริง → ค่าที่แสดงแน่นอนไม่ขึ้นกับความเร็วเครื่อง
+        await page.clock.setFixedTime(now);
         await page.goto(`${app.base}${target === 'staff' ? '/staff/kitchen' : '/dashboard'}`);
-        await page.waitForSelector('#order-303[data-urgency=urgent]');
+        await page.waitForSelector('#order-304[data-urgency=urgent]');
 
-        const snapshot = () => page.evaluate(() => [301, 302, 303].map((id) => {
+        const timerTexts = (texts) => page.waitForFunction((expected) => [301, 302, 303, 304]
+            .every((id, i) => document.querySelector(`#order-${id} [data-kitchen-timer]`)?.textContent.trim() === expected[i]), texts);
+        await timerTexts(['7 นาที 01 วิ', '5 นาที 01 วิ', '2 นาที 01 วิ', '1 วิ']);
+
+        const snapshot = () => page.evaluate(() => [301, 302, 303, 304].map((id) => {
             const card = document.getElementById(`order-${id}`);
-            const badge = card.querySelector('[data-kitchen-critical-badge]');
+            const table = getComputedStyle(card.querySelector('[data-kitchen-table]'));
             return {
                 urgency: card.dataset.urgency,
                 text: card.querySelector('[data-kitchen-timer]').textContent.trim(),
-                badge: getComputedStyle(badge).display !== 'none',
+                tableColor: table.color,
+                blinking: table.animationName !== 'none',
             };
         }));
 
-        assert.deepEqual(await snapshot(), [
-            { urgency: 'normal', text: '7 นาที 01 วิ', badge: false },
-            { urgency: 'warning', text: '5 นาที 01 วิ', badge: false },
-            { urgency: 'urgent', text: '2 นาที 01 วิ', badge: false },
+        const before = await snapshot();
+        assert.deepEqual(before.map(({ urgency, text, blinking }) => ({ urgency, text, blinking })), [
+            { urgency: 'normal', text: '7 นาที 01 วิ', blinking: false },
+            { urgency: 'warning', text: '5 นาที 01 วิ', blinking: true },
+            { urgency: 'urgent', text: '2 นาที 01 วิ', blinking: true },
+            { urgency: 'urgent', text: '1 วิ', blinking: true },
         ], `${target}: states just above each boundary`);
+        assert.equal(before[1].tableColor, YELLOW);
+        assert.equal(before[2].tableColor, RED);
 
-        await page.clock.fastForward(1000);
-        assert.deepEqual(await snapshot(), [
-            { urgency: 'warning', text: '7 นาที 00 วิ', badge: false },
-            { urgency: 'urgent', text: '5 นาที 00 วิ', badge: false },
-            { urgency: 'critical', text: '2 นาที 00 วิ', badge: true },
+        await page.clock.setFixedTime(now + 1000);
+        await timerTexts(['7 นาที 00 วิ', '5 นาที 00 วิ', '2 นาที 00 วิ', '0 วิ']);
+        const after = await snapshot();
+        assert.deepEqual(after, [
+            { urgency: 'warning', text: '7 นาที 00 วิ', tableColor: YELLOW, blinking: true },
+            { urgency: 'urgent', text: '5 นาที 00 วิ', tableColor: RED, blinking: true },
+            { urgency: 'urgent', text: '2 นาที 00 วิ', tableColor: RED, blinking: true },
+            { urgency: 'urgent', text: '0 วิ', tableColor: RED, blinking: true },
         ], `${target}: states exactly at each boundary`);
+        assert.equal(after[1].tableColor, after[2].tableColor, `${target}: 2:00 has no separate visual state`);
         await context.close();
     }
 });
@@ -315,18 +303,19 @@ test('legacy dashboard matches staff Kitchen and both stay tidy at desktop, tabl
             await loginKitchen(page, target);
             const view = await kitchenPresentation(page);
             const label = `${target} ${viewport.width}px`;
-            assertTimerSemantics(view, label);
+            assertTableOnlySemantics(view, label);
             assertLayout(view, label);
             views[target] = view;
             await context.close();
         }
         const { staff, dashboard } = views;
         assert.deepEqual(dashboard.order, staff.order);
-        for (const state of [...STATES, 'overdue']) {
-            for (const key of ['urgency', 'tableColor', 'timerColor', 'timerAnimation', 'timerAnimationDuration', 'tableAnimation', 'badgeVisible', 'badgeText']) {
+        for (const state of CARD_STATES) {
+            for (const key of ['urgency', 'tableColor', 'tableAnimation', 'tableAnimationDuration', 'hasUrgencyBadge']) {
                 assert.equal(dashboard.cards[state][key], staff.cards[state][key], `${viewport.width}px ${state}.${key} parity`);
             }
-            assert.equal(dashboard.cards[state].text.replace(/\d{2} วิ/, ''), staff.cards[state].text.replace(/\d{2} วิ/, ''));
+            assert.deepEqual(dashboard.cards[state].animatedElements, staff.cards[state].animatedElements);
+            assert.equal(dashboard.cards[state].calm.timerColor, staff.cards[state].calm.timerColor);
         }
     }
 });

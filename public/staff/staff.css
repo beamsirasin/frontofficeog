@@ -1,6 +1,5 @@
 /* สไตล์ร่วมของ /staff/ — ย้ายมาจาก dashboard.html เดิม (numpad, ตารางคิวบนมือถือ, การพิมพ์) บวกส่วนใหม่ของ shell */
 
-.late { font-weight: bold; }
 @page { size: 58mm auto; margin: 0mm; }
 @media print {
     body * { visibility: hidden; }
