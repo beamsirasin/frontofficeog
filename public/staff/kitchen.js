@@ -45,14 +45,7 @@ window.KitchenModule = (function () {
 
     function updateOrderCard(card, orderTime) {
         if (!card || !card.isConnected) return;
-        const remaining = countdown.remainingSeconds(orderTime);
-        const timerEl = card.querySelector('[data-kitchen-timer]');
-        card.dataset.remainingSeconds = String(remaining);
-        card.dataset.urgency = countdown.getUrgency(remaining);
-        timerEl.innerText = remaining >= 0
-            ? countdown.formatRemaining(remaining)
-            : 'ช้าไปแล้ว ' + countdown.formatRemaining(Math.abs(remaining)) + '!';
-        timerEl.classList.toggle('late', remaining < 0);
+        countdown.applyRemaining(card, countdown.remainingSeconds(orderTime));
         sortActiveCards();
     }
 
@@ -75,18 +68,10 @@ window.KitchenModule = (function () {
                 </div>`
             : `<p class="mt-auto text-center text-xs text-gray-400 border-t pt-2">ดูได้อย่างเดียว — ไม่มีสิทธิ์จัดการออเดอร์</p>`;
         div.innerHTML = `
-            <div class="flex justify-between items-start mb-2 pb-2 border-b border-gray-300">
-                <div><div class="text-2xl font-extrabold text-gray-900">โต๊ะ ${StaffApp.esc(order.table_no)}</div><div id="timer-${order.id}" class="font-mono mt-1 text-gray-600">10 นาที 0 วินาที</div></div>${badge}
-            </div>
+            ${countdown.cardHeaderHtml(StaffApp.esc(order.table_no), badge)}
             <div class="flex-grow mb-4">${itemsHtml}</div>
             ${actionsHtml}
         `;
-        const tableEl = div.querySelector('.text-2xl.font-extrabold');
-        const timerEl = div.querySelector('.font-mono');
-        tableEl.classList.add('kitchen-table-number');
-        tableEl.dataset.kitchenTable = '';
-        timerEl.classList.add('kitchen-timer');
-        timerEl.dataset.kitchenTimer = '';
         if (canManage()) {
             div.querySelector('[data-action="served"]').addEventListener('click', () => updateOrder(order.id, order.table_no, 'served'));
             div.querySelector('[data-action="cancel"]').addEventListener('click', () => {

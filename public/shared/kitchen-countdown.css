@@ -1,7 +1,21 @@
+/* สถานะเร่งด่วนของการ์ดครัว — เน้นเฉพาะเลขโต๊ะ + เวลาที่เหลือ (+ ป้ายด่วน)
+   ห้ามแตะพื้นหลัง/ขอบการ์ด รายการอาหาร ป้ายจำนวน ป้ายหมวด หรือปุ่ม */
 .kitchen-card {
-    animation: none;
-    opacity: 1;
-    transition: border-color 180ms ease;
+    --kitchen-warning-color: #ea580c;
+    --kitchen-urgent-color: #dc2626;
+}
+
+/* เวลาอยู่บรรทัดของตัวเองเต็มความกว้างการ์ด ไม่ต้องแบ่งพื้นที่กับป้ายหมวด */
+.kitchen-card-heading > :last-child {
+    flex-shrink: 0;
+}
+
+.kitchen-table-row {
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.5rem;
 }
 
 .kitchen-table-number,
@@ -9,41 +23,53 @@
     font-variant-numeric: tabular-nums;
 }
 
-.kitchen-card[data-urgency="warning"] {
-    border-color: #d97706;
+.kitchen-timer {
+    overflow-wrap: anywhere;
 }
 
+/* WARNING (<= 7:00): สีส้ม ไม่มีแอนิเมชัน */
 .kitchen-card[data-urgency="warning"] .kitchen-table-number,
 .kitchen-card[data-urgency="warning"] .kitchen-timer {
-    color: #d97706;
-    animation: kitchen-warning-pulse 1.4s ease-in-out infinite;
+    color: var(--kitchen-warning-color);
 }
 
-.kitchen-card[data-urgency="urgent"] {
-    border-color: #dc2626;
-}
-
+/* URGENT (<= 5:00) และ CRITICAL (<= 2:00): สีแดง; เลขโต๊ะนิ่ง เวลากระพริบช้าๆ แบบจางเล็กน้อย */
 .kitchen-card[data-urgency="urgent"] .kitchen-table-number,
-.kitchen-card[data-urgency="urgent"] .kitchen-timer {
-    color: #dc2626;
-    animation: kitchen-urgent-pulse 1s ease-in-out infinite;
+.kitchen-card[data-urgency="urgent"] .kitchen-timer,
+.kitchen-card[data-urgency="critical"] .kitchen-table-number,
+.kitchen-card[data-urgency="critical"] .kitchen-timer {
+    color: var(--kitchen-urgent-color);
 }
 
-@keyframes kitchen-warning-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: .65; }
+.kitchen-card[data-urgency="urgent"] .kitchen-timer,
+.kitchen-card[data-urgency="critical"] .kitchen-timer {
+    animation: kitchen-timer-pulse 1.9s ease-in-out infinite;
 }
 
-@keyframes kitchen-urgent-pulse {
+.kitchen-critical-badge {
+    display: none;
+    align-items: center;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    background-color: var(--kitchen-urgent-color);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 700;
+    line-height: 1.25;
+    white-space: nowrap;
+}
+
+.kitchen-card[data-urgency="critical"] .kitchen-critical-badge {
+    display: inline-flex;
+}
+
+@keyframes kitchen-timer-pulse {
     0%, 100% { opacity: 1; }
-    50% { opacity: .65; }
+    50% { opacity: 0.72; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .kitchen-card,
-    .kitchen-card .kitchen-table-number,
     .kitchen-card .kitchen-timer {
         animation: none !important;
-        transition: none !important;
     }
 }

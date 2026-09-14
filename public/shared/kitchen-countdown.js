@@ -6,25 +6,41 @@
     'use strict';
 
     const COUNTDOWN_SECONDS = 10 * 60;
-    const WARNING = 7 * 60;
-    const URGENT = 5 * 60;
+    const WARNING_REMAINING_SECONDS = 7 * 60;
+    const URGENT_REMAINING_SECONDS = 5 * 60;
+    const CRITICAL_REMAINING_SECONDS = 2 * 60;
+    const CRITICAL_BADGE_TEXT = 'ด่วน';
 
     function wholeSeconds(value) {
         const seconds = Number(value);
         return Number.isFinite(seconds) ? Math.floor(seconds) : 0;
     }
 
+    const pad2 = (value) => String(value).padStart(2, '0');
+
+    // 45 วิ / 1 นาที 05 วิ / 1 ชม. 02 นาที 15 วิ
     function formatRemaining(seconds) {
         const safeSeconds = Math.max(0, wholeSeconds(seconds));
-        const minutes = Math.floor(safeSeconds / 60);
-        const remainder = String(safeSeconds % 60).padStart(2, '0');
-        return `${minutes} นาที ${remainder} วิ`;
+        const hours = Math.floor(safeSeconds / 3600);
+        const minutes = Math.floor((safeSeconds % 3600) / 60);
+        const secs = safeSeconds % 60;
+        if (hours > 0) return `${hours} ชม. ${pad2(minutes)} นาที ${pad2(secs)} วิ`;
+        if (minutes > 0) return `${minutes} นาที ${pad2(secs)} วิ`;
+        return `${secs} วิ`;
+    }
+
+    function formatTimerText(seconds) {
+        const remaining = wholeSeconds(seconds);
+        return remaining >= 0
+            ? formatRemaining(remaining)
+            : 'ช้าไปแล้ว ' + formatRemaining(Math.abs(remaining)) + '!';
     }
 
     function getUrgency(seconds) {
         const remaining = wholeSeconds(seconds);
-        if (remaining <= URGENT) return 'urgent';
-        if (remaining <= WARNING) return 'warning';
+        if (remaining <= CRITICAL_REMAINING_SECONDS) return 'critical';
+        if (remaining <= URGENT_REMAINING_SECONDS) return 'urgent';
+        if (remaining <= WARNING_REMAINING_SECONDS) return 'warning';
         return 'normal';
     }
 
@@ -42,13 +58,42 @@
             .map((entry) => entry.order);
     }
 
+    // หัวการ์ดครัว (โต๊ะ + ป้ายด่วน + เวลาที่เหลือ + ป้ายหมวด) ใช้ร่วมกันระหว่าง /staff/kitchen และ /dashboard
+    // tableHtml/categoryBadgeHtml ต้อง escape มาจากผู้เรียกแล้ว
+    function cardHeaderHtml(tableHtml, categoryBadgeHtml) {
+        return `<div class="kitchen-card-header mb-2 pb-2 border-b border-gray-300">
+                <div class="kitchen-card-heading flex justify-between items-start gap-2">
+                    <div class="kitchen-table-row">
+                        <div class="kitchen-table-number text-2xl font-extrabold text-gray-900" data-kitchen-table>โต๊ะ ${tableHtml}</div>
+                        <span class="kitchen-critical-badge" data-kitchen-critical-badge>${CRITICAL_BADGE_TEXT}</span>
+                    </div>${categoryBadgeHtml}
+                </div>
+                <div class="kitchen-timer font-mono mt-1 text-gray-600" data-kitchen-timer></div>
+            </div>`;
+    }
+
+    // อัปเดตเฉพาะสถานะเวลาของการ์ด — สีเตือนทั้งหมดขับด้วย data-urgency ใน kitchen-countdown.css
+    function applyRemaining(card, seconds) {
+        const remaining = wholeSeconds(seconds);
+        const timerEl = card.querySelector('[data-kitchen-timer]');
+        card.dataset.remainingSeconds = String(remaining);
+        card.dataset.urgency = getUrgency(remaining);
+        timerEl.textContent = formatTimerText(remaining);
+        timerEl.classList.toggle('late', remaining < 0);
+    }
+
     return Object.freeze({
         COUNTDOWN_SECONDS,
-        WARNING,
-        URGENT,
+        WARNING_REMAINING_SECONDS,
+        URGENT_REMAINING_SECONDS,
+        CRITICAL_REMAINING_SECONDS,
+        CRITICAL_BADGE_TEXT,
         formatRemaining,
+        formatTimerText,
         getUrgency,
         remainingSeconds,
         sortOrdersByRemaining,
+        cardHeaderHtml,
+        applyRemaining,
     });
 });
