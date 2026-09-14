@@ -1,7 +1,6 @@
 /* สไตล์ร่วมของ /staff/ — ย้ายมาจาก dashboard.html เดิม (numpad, ตารางคิวบนมือถือ, การพิมพ์) บวกส่วนใหม่ของ shell */
 
-.late { color: #ef4444; font-weight: bold; animation: blink 1s linear infinite; }
-@keyframes blink { 50% { opacity: 0.5; } }
+.late { font-weight: bold; }
 @page { size: 58mm auto; margin: 0mm; }
 @media print {
     body * { visibility: hidden; }

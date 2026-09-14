@@ -7,6 +7,8 @@ window.KitchenModule = (function () {
 
     const socket = StaffApp.socket;
     const timers = {};
+    const countdown = window.KitchenCountdown;
+    let nextCardSequence = 0;
     let activated = false;
 
     const imgMap = {
@@ -31,12 +33,36 @@ window.KitchenModule = (function () {
         socket.emit('update_order', { id: id, table: tableNo, status: status });
     }
 
+    function sortActiveCards() {
+        const list = document.getElementById('orderList');
+        Array.from(list.children)
+            .sort((a, b) => {
+                const remainingDiff = Number(a.dataset.remainingSeconds) - Number(b.dataset.remainingSeconds);
+                return remainingDiff || (Number(a.dataset.kitchenSequence) - Number(b.dataset.kitchenSequence));
+            })
+            .forEach((card) => list.append(card));
+    }
+
+    function updateOrderCard(card, orderTime) {
+        if (!card || !card.isConnected) return;
+        const remaining = countdown.remainingSeconds(orderTime);
+        const timerEl = card.querySelector('[data-kitchen-timer]');
+        card.dataset.remainingSeconds = String(remaining);
+        card.dataset.urgency = countdown.getUrgency(remaining);
+        timerEl.innerText = remaining >= 0
+            ? countdown.formatRemaining(remaining)
+            : 'ช้าไปแล้ว ' + countdown.formatRemaining(Math.abs(remaining)) + '!';
+        timerEl.classList.toggle('late', remaining < 0);
+        sortActiveCards();
+    }
+
     function renderOrderCard(order) {
         if (document.getElementById(`order-${order.id}`)) return; // กันการ์ดซ้ำ (เช่นตอน reconnect ชนกับ receive_order)
         const div = document.createElement('div');
+        div.dataset.kitchenSequence = String(nextCardSequence++);
         div.id = `order-${order.id}`;
         const badge = `<span class="bg-slate-200 text-slate-700 text-xs px-2 py-1 rounded border border-slate-300">${order.category === 'meat' ? 'หมู/เนื้อ' : 'ทะเล'}</span>`;
-        div.className = 'bg-slate-50 border-slate-300 border-2 w-72 rounded shadow-lg p-3 flex flex-col relative';
+        div.className = 'kitchen-card bg-slate-50 border-slate-300 border-2 w-72 rounded shadow-lg p-3 flex flex-col relative';
         let itemsHtml = '';
         for (const [menu, qty] of Object.entries(order.items)) {
             itemsHtml += `<div class="flex justify-between items-center border-b border-gray-300 pb-2 mb-2">${renderMenu(menu, 'w-12 h-12')}<span class="text-black bg-white border px-3 py-1 rounded shadow-sm text-lg font-bold">x${qty}</span></div>`;
@@ -55,6 +81,12 @@ window.KitchenModule = (function () {
             <div class="flex-grow mb-4">${itemsHtml}</div>
             ${actionsHtml}
         `;
+        const tableEl = div.querySelector('.text-2xl.font-extrabold');
+        const timerEl = div.querySelector('.font-mono');
+        tableEl.classList.add('kitchen-table-number');
+        tableEl.dataset.kitchenTable = '';
+        timerEl.classList.add('kitchen-timer');
+        timerEl.dataset.kitchenTimer = '';
         if (canManage()) {
             div.querySelector('[data-action="served"]').addEventListener('click', () => updateOrder(order.id, order.table_no, 'served'));
             div.querySelector('[data-action="cancel"]').addEventListener('click', () => {
@@ -62,25 +94,20 @@ window.KitchenModule = (function () {
             });
         }
         document.getElementById('orderList').append(div);
-        timers[order.id] = setInterval(() => {
-            const diffSec = Math.floor((new Date() - orderTime) / 1000);
-            const remaining = 600 - diffSec;
-            const timerEl = document.getElementById(`timer-${order.id}`);
-            if (timerEl) {
-                if (remaining > 0) timerEl.innerText = `${Math.floor(remaining / 60)} นาที ${remaining % 60} วินาที`;
-                else { const lateSeconds = Math.abs(remaining); timerEl.innerText = `ช้าไปแล้ว ${Math.floor(lateSeconds / 60)} นาที ${lateSeconds % 60} วินาที!`; timerEl.classList.add('late'); }
-            }
-        }, 1000);
+        const tick = () => updateOrderCard(div, orderTime);
+        tick();
+        timers[order.id] = setInterval(tick, 1000);
     }
 
     async function loadOrders() {
         Object.values(timers).forEach(clearInterval);
         for (const k in timers) delete timers[k];
+        nextCardSequence = 0;
         document.getElementById('orderList').innerHTML = '';
         const res = await StaffApp.apiFetch('/api/orders');
         if (!res) return;
         const orders = await res.json();
-        orders.forEach(renderOrderCard);
+        countdown.sortOrdersByRemaining(orders, Date.now()).forEach(renderOrderCard);
     }
 
     let isFetchingServedHistory = false;
@@ -111,6 +138,7 @@ window.KitchenModule = (function () {
                     <div class="flex-grow pb-2">${itemsHtml}</div>
                 </div>`;
             }).join('');
+            container.querySelectorAll(':scope > div').forEach((card) => { card.dataset.kitchenHistoryCard = ''; });
         } catch (e) { /* เงียบไว้ — ลอง refresh รอบหน้า */ }
         finally { isFetchingServedHistory = false; }
     }
