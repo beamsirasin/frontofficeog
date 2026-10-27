@@ -55,6 +55,40 @@
             .map((entry) => entry.order);
     }
 
+    // ทุกออเดอร์นับถอยหลัง COUNTDOWN_SECONDS เท่ากันจาก created_at → "เหลือเวลาน้อยสุดก่อน" = "สร้างก่อนอยู่ก่อน"
+    // ใช้ (created_at, id) ซึ่งไม่เปลี่ยนตามเวลา ลำดับการ์ดจึงคงที่ ไม่สลับไปมาตาม tick ของแต่ละการ์ด
+    // created_at อ่านไม่ได้ → remainingSeconds ถือเป็นเพิ่งสร้าง จึงจัดไว้ท้ายสุดให้ตรงกัน
+    function orderPositionKey(order) {
+        const createdMs = new Date(order && order.created_at).getTime();
+        return {
+            createdMs: Number.isFinite(createdMs) ? createdMs : Infinity,
+            id: Number(order && order.id),
+        };
+    }
+
+    function compareOrderPosition(a, b) {
+        if (a.createdMs !== b.createdMs) return a.createdMs < b.createdMs ? -1 : 1;
+        return (a.id || 0) - (b.id || 0);
+    }
+
+    function cardPositionKey(card) {
+        return { createdMs: Number(card.dataset.createdMs), id: Number(card.dataset.orderId) };
+    }
+
+    // วางการ์ดลงตำแหน่งที่ถูกต้องครั้งเดียวตอนเพิ่ม — ไม่ย้ายการ์ดอื่น และไม่ย้ายตัวเองถ้าอยู่ถูกที่แล้ว
+    // (การย้าย node ออก/เข้า DOM ทำให้ animation กระพริบเริ่มใหม่)
+    function placeCardInOrder(list, card, order) {
+        const key = orderPositionKey(order);
+        card.dataset.createdMs = String(key.createdMs);
+        card.dataset.orderId = String(key.id);
+        let before = null;
+        for (const other of list.children) {
+            if (other !== card && compareOrderPosition(key, cardPositionKey(other)) < 0) { before = other; break; }
+        }
+        if (card.parentNode === list && card.nextElementSibling === before) return;
+        list.insertBefore(card, before);
+    }
+
     // หัวการ์ดครัว (โต๊ะ + ป้ายหมวด + เวลาที่เหลือ) ใช้ร่วมกันระหว่าง /staff/kitchen และ /dashboard
     // tableHtml/categoryBadgeHtml ต้อง escape มาจากผู้เรียกแล้ว
     function cardHeaderHtml(tableHtml, categoryBadgeHtml) {
@@ -84,6 +118,9 @@
         getUrgency,
         remainingSeconds,
         sortOrdersByRemaining,
+        orderPositionKey,
+        compareOrderPosition,
+        placeCardInOrder,
         cardHeaderHtml,
         applyRemaining,
     });

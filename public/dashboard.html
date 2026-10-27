@@ -595,7 +595,6 @@
         let currentTableSelection = null;
         const timers = {};
         const countdown = window.KitchenCountdown;
-        let nextKitchenCardSequence = 0;
         const paxValues = { adults: 0, children: 0, toddlers: 0 };
         let undoEnterId = null;
 
@@ -886,26 +885,20 @@
             if(tabId === 'queue') { loadQueueHistory(); }
         }
 
-        function sortActiveKitchenCards() {
-            const list = document.getElementById('orderList');
-            Array.from(list.children)
-                .sort((a, b) => {
-                    const remainingDiff = Number(a.dataset.remainingSeconds) - Number(b.dataset.remainingSeconds);
-                    return remainingDiff || (Number(a.dataset.kitchenSequence) - Number(b.dataset.kitchenSequence));
-                })
-                .forEach((card) => list.append(card));
+        function clearKitchenOrderTimer(id) {
+            if (timers[id]) clearInterval(timers[id]);
+            delete timers[id];
         }
 
+        // tick อัปเดตแค่เวลา/สีของการ์ดตัวเอง — ไม่จัดลำดับใหม่ (ลำดับคงที่ตั้งแต่ตอนวางการ์ด ดู placeCardInOrder)
         function updateKitchenOrderCard(card, orderTime) {
             if (!card || !card.isConnected) return;
             countdown.applyRemaining(card, countdown.remainingSeconds(orderTime));
-            sortActiveKitchenCards();
         }
 
         function renderOrderCard(order) {
             if (document.getElementById(`order-${order.id}`)) return; // กันการ์ดซ้ำ (เช่นตอน reconnect ชนกับ receive_order)
             const div = document.createElement('div');
-            div.dataset.kitchenSequence = String(nextKitchenCardSequence++);
             div.id = `order-${order.id}`;
             const isMeat = order.category === 'meat';
             const colorClass = 'bg-slate-50 border-slate-300';
@@ -924,9 +917,10 @@
                     <button onclick="showConfirm('ยืนยันยกเลิกออเดอร์นี้ใช่หรือไม่?', () => updateOrder(${order.id}, '${order.table_no}', 'cancelled'))" class="w-16 bg-red-600 hover:bg-red-700 text-white py-3 rounded font-bold shadow-md text-xl">X</button>
                 </div>
             `;
-            document.getElementById('orderList').append(div);
+            countdown.placeCardInOrder(document.getElementById('orderList'), div, order);
             const tick = () => updateKitchenOrderCard(div, orderTime);
             tick();
+            clearKitchenOrderTimer(order.id);
             timers[order.id] = setInterval(tick, 1000);
         }
 
@@ -962,12 +956,11 @@
         function loadOrders() {
             Object.values(timers).forEach(clearInterval);
             for (const k in timers) delete timers[k];
-            nextKitchenCardSequence = 0;
             document.getElementById('orderList').innerHTML = '';
             fetch('/api/orders').then(res => res.json()).then(orders => countdown.sortOrdersByRemaining(orders, Date.now()).forEach(renderOrderCard)).catch(() => {});
         }
         socket.on('receive_order', (newOrder) => { renderOrderCard(newOrder); });
-        socket.on('order_removed_from_kitchen', (data) => { if(document.getElementById(`order-${data.id}`)) document.getElementById(`order-${data.id}`).remove(); if(timers[data.id]) clearInterval(timers[data.id]); loadServedHistory(); });
+        socket.on('order_removed_from_kitchen', (data) => { if(document.getElementById(`order-${data.id}`)) document.getElementById(`order-${data.id}`).remove(); clearKitchenOrderTimer(data.id); loadServedHistory(); });
         // เน็ตหลุดแล้วกลับมา: ดึงออเดอร์ + ประวัติเสิร์ฟใหม่ เผื่อมีที่ตกหล่นระหว่างหลุด
         socket.io.on('reconnect', () => { loadOrders(); loadServedHistory(); });
         
