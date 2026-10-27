@@ -294,6 +294,64 @@ test('table number crosses the exact 7:00 and 5:00 boundaries in realtime with n
     }
 });
 
+test('card order is fixed by creation time + id: same-timestamp, rapid and out-of-order socket orders never reorder on ticks', async () => {
+    const orderIds = (page) => page.evaluate(() => Array.from(document.querySelectorAll('#orderList > .kitchen-card')).map((card) => Number(card.id.slice(6))));
+    // ยิง event ผ่าน handler จริงของหน้า (socket.listeners) — เหมือนเซิร์ฟเวอร์ส่งมาโดยไม่ต้องแตะ backend
+    const dispatch = (page, event, payload) => page.evaluate(([name, data]) => {
+        const target = typeof StaffApp !== 'undefined' ? StaffApp.socket : socket;
+        target.listeners(name).forEach((fn) => fn(data));
+    }, [event, payload]);
+
+    for (const target of ['staff', 'dashboard']) {
+        const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+        const persona = target === 'staff' ? app.personas.kitchenOnly : app.personas.owner;
+        const loginResponse = await context.request.post(`${app.base}/api/login`, { data: { user: persona.username, pin: persona.password } });
+        assert.equal(loginResponse.status(), 200);
+        const page = await context.newPage();
+        // อยู่ในช่วง warning (เหลือ ~6:20) เพื่อให้ "โต๊ะ X" กระพริบ — ใช้ตรวจว่า animation ไม่ถูกเริ่มใหม่จากการย้าย node
+        const base = Date.now() - 220 * 1000;
+        const at = (offsetMs) => new Date(base + offsetMs).toISOString();
+        const order = (id, offsetMs) => ({ id, table_no: '14', category: id % 2 ? 'meat' : 'seafood', items: { [`รายการ ${id}`]: 1 }, status: 'pending', created_at: at(offsetMs) });
+        // API ส่งมาลำดับสลับ + มี created_at ซ้ำกัน
+        await installKitchenFixtures(page, [order(402, 0), order(401, 0), order(403, 3)]);
+        await page.goto(`${app.base}${target === 'staff' ? '/staff/kitchen' : '/dashboard'}`);
+        await page.waitForSelector('#order-403[data-urgency="warning"]');
+        assert.deepEqual(await orderIds(page), [401, 402, 403], `${target}: same timestamp tie-breaks by id`);
+
+        // socket มาไม่เรียงตามเวลาสร้าง (ออเดอร์ที่ห่างกันไม่กี่ ms จากการแยกหมู/ทะเล)
+        await dispatch(page, 'receive_order', order(406, 20));
+        await dispatch(page, 'receive_order', order(405, 10));
+        await dispatch(page, 'receive_order', order(404, 10));
+        assert.deepEqual(await orderIds(page), [401, 402, 403, 404, 405, 406], `${target}: out-of-order socket events placed by creation time`);
+
+        await page.evaluate(() => {
+            window.__kitchenMutations = 0;
+            new MutationObserver((records) => { window.__kitchenMutations += records.length; })
+                .observe(document.getElementById('orderList'), { childList: true });
+            window.__kitchenBlinks = Array.from(document.querySelectorAll('#orderList [data-kitchen-table]')).map((el) => el.getAnimations()[0]);
+            window.__kitchenTimerText = document.querySelector('#order-401 [data-kitchen-timer]').textContent;
+        });
+        await page.waitForTimeout(2500);
+        const afterTicks = await page.evaluate(() => ({
+            mutations: window.__kitchenMutations,
+            blinkPreserved: Array.from(document.querySelectorAll('#orderList [data-kitchen-table]'))
+                .every((el, i) => el.getAnimations()[0] && el.getAnimations()[0] === window.__kitchenBlinks[i]),
+            timerAdvanced: document.querySelector('#order-401 [data-kitchen-timer]').textContent !== window.__kitchenTimerText,
+        }));
+        assert.equal(afterTicks.mutations, 0, `${target}: timer ticks must not move cards`);
+        assert.equal(afterTicks.blinkPreserved, true, `${target}: blink animation keeps running (not restarted by DOM moves)`);
+        assert.equal(afterTicks.timerAdvanced, true, `${target}: countdown keeps updating`);
+        assert.deepEqual(await orderIds(page), [401, 402, 403, 404, 405, 406]);
+
+        // ลบแล้วรับกลับมา: การ์ดหาย timer ถูกล้าง และวางกลับตำแหน่งเดิมได้
+        await dispatch(page, 'order_removed_from_kitchen', { id: 402 });
+        assert.deepEqual(await orderIds(page), [401, 403, 404, 405, 406], `${target}: removal leaves others in place`);
+        await dispatch(page, 'receive_order', order(402, 0));
+        assert.deepEqual(await orderIds(page), [401, 402, 403, 404, 405, 406], `${target}: re-added order returns to its position`);
+        await context.close();
+    }
+});
+
 test('legacy dashboard matches staff Kitchen and both stay tidy at desktop, tablet and phone widths', async () => {
     for (const viewport of [{ width: 1280, height: 800 }, { width: 800, height: 1280 }, { width: 390, height: 844 }]) {
         const views = {};

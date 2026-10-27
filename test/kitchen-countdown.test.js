@@ -149,3 +149,149 @@ test('overdue timers get no extra styling hook on either page', () => {
     assert.doesNotMatch(read('public/staff/staff.css'), /\.late\b/);
     assert.doesNotMatch(read('public/dashboard.html'), /\.late\s*\{/);
 });
+
+// --- ลำดับการ์ดครัวคงที่ (กันการ์ดสลับไปมา/กระพริบ) ---
+// list จำลองขั้นต่ำ: นับจำนวนครั้งที่ย้าย node เพื่อพิสูจน์ว่าไม่มีการย้ายที่ไม่จำเป็น
+function fakeList() {
+    return {
+        children: [],
+        moves: 0,
+        insertBefore(card, ref) {
+            if (card.parentNode === this) this.children.splice(this.children.indexOf(card), 1);
+            const index = ref ? this.children.indexOf(ref) : this.children.length;
+            this.children.splice(index, 0, card);
+            card.parentNode = this;
+            this.moves++;
+        },
+    };
+}
+
+function fakeCard(id) {
+    const timer = { textContent: '' };
+    return {
+        id: `order-${id}`,
+        dataset: {},
+        parentNode: null,
+        get nextElementSibling() {
+            const siblings = this.parentNode.children;
+            return siblings[siblings.indexOf(this) + 1] || null;
+        },
+        querySelector: () => timer,
+    };
+}
+
+function placeAll(list, orders) {
+    for (const order of orders) countdown.placeCardInOrder(list, fakeCard(order.id), order);
+    return list.children.map((card) => card.id);
+}
+
+test('rapid consecutive orders (meat+seafood split milliseconds apart) are placed oldest first', () => {
+    const list = fakeList();
+    const ids = placeAll(list, [
+        { id: 101, created_at: '2030-01-01T00:00:00.000Z' },
+        { id: 102, created_at: '2030-01-01T00:00:00.004Z' },
+        { id: 103, created_at: '2030-01-01T00:00:00.009Z' },
+    ]);
+    assert.deepEqual(ids, ['order-101', 'order-102', 'order-103']);
+});
+
+test('same-timestamp orders tie-break by order id regardless of arrival order', () => {
+    const list = fakeList();
+    const ids = placeAll(list, [
+        { id: 12, created_at: '2030-01-01T00:05:00Z' },
+        { id: 3, created_at: '2030-01-01T00:05:00Z' },
+        { id: 7, created_at: '2030-01-01T00:05:00Z' },
+    ]);
+    assert.deepEqual(ids, ['order-3', 'order-7', 'order-12']);
+});
+
+test('out-of-order socket events still end in creation order', () => {
+    const list = fakeList();
+    const ids = placeAll(list, [
+        { id: 206, created_at: '2030-01-01T00:00:00.020Z' },
+        { id: 201, created_at: '2030-01-01T00:00:00.000Z' },
+        { id: 204, created_at: '2030-01-01T00:00:00.010Z' },
+        { id: 205, created_at: '2030-01-01T00:00:00.010Z' },
+        { id: 202, created_at: '2030-01-01T00:00:00.000Z' },
+    ]);
+    assert.deepEqual(ids, ['order-201', 'order-202', 'order-204', 'order-205', 'order-206']);
+});
+
+test('placing a card moves only that card once and never re-moves a card already in place', () => {
+    const list = fakeList();
+    placeAll(list, [
+        { id: 1, created_at: '2030-01-01T00:00:01Z' },
+        { id: 3, created_at: '2030-01-01T00:00:03Z' },
+    ]);
+    assert.equal(list.moves, 2);
+    const middle = fakeCard(2);
+    countdown.placeCardInOrder(list, middle, { id: 2, created_at: '2030-01-01T00:00:02Z' });
+    assert.equal(list.moves, 3, 'inserting into the middle is a single move');
+    countdown.placeCardInOrder(list, middle, { id: 2, created_at: '2030-01-01T00:00:02Z' });
+    countdown.placeCardInOrder(list, list.children[0], { id: 1, created_at: '2030-01-01T00:00:01Z' });
+    countdown.placeCardInOrder(list, list.children[2], { id: 3, created_at: '2030-01-01T00:00:03Z' });
+    assert.equal(list.moves, 3, 'cards already in the right position are not re-appended');
+    assert.deepEqual(list.children.map((card) => card.id), ['order-1', 'order-2', 'order-3']);
+});
+
+test('unreadable created_at is treated as newest, matching remainingSeconds fallback', () => {
+    const list = fakeList();
+    const ids = placeAll(list, [
+        { id: 1, created_at: 'not-a-date' },
+        { id: 2, created_at: '2030-01-01T00:00:00Z' },
+    ]);
+    assert.deepEqual(ids, ['order-2', 'order-1']);
+    assert.equal(countdown.remainingSeconds('not-a-date', Date.now()), countdown.COUNTDOWN_SECONDS);
+});
+
+test('creation order equals least-remaining order because every order shares one fixed countdown', () => {
+    const now = Date.parse('2030-01-01T00:10:00.000Z');
+    const orders = [
+        { id: 5, created_at: '2030-01-01T00:08:40.000Z' },
+        { id: 2, created_at: '2029-12-31T23:59:00.000Z' },
+        { id: 9, created_at: '2030-01-01T00:04:00.000Z' },
+        { id: 4, created_at: '2030-01-01T00:06:00.000Z' },
+    ];
+    const byPosition = orders.slice().sort((a, b) => countdown.compareOrderPosition(countdown.orderPositionKey(a), countdown.orderPositionKey(b)));
+    assert.deepEqual(byPosition.map((o) => o.id), countdown.sortOrdersByRemaining(orders, now).map((o) => o.id));
+});
+
+test('card positions stay fixed across staggered per-card timer ticks (previous flicker scenario)', () => {
+    // สถานการณ์เดิมที่ทำให้สลับ: การ์ดที่สร้างทีหลัง tick ก่อนภายในวินาทีเดียวกัน หลังข้ามขอบวินาที
+    const list = fakeList();
+    const orders = [
+        { id: 101, created_at: '2030-01-01T00:00:00.000Z' },
+        { id: 102, created_at: '2030-01-01T00:00:00.004Z' },
+    ];
+    const cards = orders.map((order) => { const card = fakeCard(order.id); countdown.placeCardInOrder(list, card, order); return { card, order }; });
+    const movesAfterPlacement = list.moves;
+    const start = Date.parse(orders[0].created_at);
+    const phases = { 101: 900, 102: 500 };
+    const ticks = [];
+    for (let s = 0; s < 5; s++) for (const { card, order } of cards) ticks.push({ t: start + s * 1000 + phases[order.id], card, order });
+    ticks.sort((a, b) => a.t - b.t);
+    for (const { t, card, order } of ticks) {
+        countdown.applyRemaining(card, countdown.remainingSeconds(order.created_at, t));
+        assert.deepEqual(list.children.map((c) => c.id), ['order-101', 'order-102']);
+    }
+    assert.equal(list.moves, movesAfterPlacement);
+});
+
+test('staff Kitchen and dashboard place cards once and never reorder on timer ticks', () => {
+    const sources = { staff: read('public/staff/kitchen.js'), dashboard: read('public/dashboard.html') };
+    for (const [name, source] of Object.entries(sources)) {
+        assert.match(source, /countdown\.placeCardInOrder\(document\.getElementById\('orderList'\), div, order\)/, `${name}: cards placed via shared helper`);
+        assert.doesNotMatch(source, /kitchenSequence|KitchenCardSequence|nextCardSequence|sortActive\w*Cards/, `${name}: per-tick sorting removed`);
+        const tickFn = source.match(/function update\w*OrderCard\(card, orderTime\) \{[\s\S]*?\n\s*\}/);
+        assert.ok(tickFn, `${name}: tick function exists`);
+        assert.doesNotMatch(tickFn[0], /sort|append|insertBefore|placeCard/, `${name}: tick must not move cards`);
+    }
+});
+
+test('removing an order clears its interval and drops the timer entry on both pages', () => {
+    const sources = { staff: read('public/staff/kitchen.js'), dashboard: read('public/dashboard.html') };
+    for (const [name, source] of Object.entries(sources)) {
+        assert.match(source, /function clear\w*OrderTimer\(id\) \{\s*if \(timers\[id\]\) clearInterval\(timers\[id\]\);\s*delete timers\[id\];\s*\}/, `${name}: timer cleanup helper`);
+        assert.match(source, /order_removed_from_kitchen[\s\S]{0,200}\.remove\(\);[\s\S]{0,40}clear\w*OrderTimer\(data\.id\)/, `${name}: removal clears timer`);
+    }
+});

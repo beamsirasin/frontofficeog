@@ -8,7 +8,6 @@ window.KitchenModule = (function () {
     const socket = StaffApp.socket;
     const timers = {};
     const countdown = window.KitchenCountdown;
-    let nextCardSequence = 0;
     let activated = false;
 
     const imgMap = {
@@ -33,26 +32,20 @@ window.KitchenModule = (function () {
         socket.emit('update_order', { id: id, table: tableNo, status: status });
     }
 
-    function sortActiveCards() {
-        const list = document.getElementById('orderList');
-        Array.from(list.children)
-            .sort((a, b) => {
-                const remainingDiff = Number(a.dataset.remainingSeconds) - Number(b.dataset.remainingSeconds);
-                return remainingDiff || (Number(a.dataset.kitchenSequence) - Number(b.dataset.kitchenSequence));
-            })
-            .forEach((card) => list.append(card));
+    function clearOrderTimer(id) {
+        if (timers[id]) clearInterval(timers[id]);
+        delete timers[id];
     }
 
+    // tick อัปเดตแค่เวลา/สีของการ์ดตัวเอง — ไม่จัดลำดับใหม่ (ลำดับคงที่ตั้งแต่ตอนวางการ์ด ดู placeCardInOrder)
     function updateOrderCard(card, orderTime) {
         if (!card || !card.isConnected) return;
         countdown.applyRemaining(card, countdown.remainingSeconds(orderTime));
-        sortActiveCards();
     }
 
     function renderOrderCard(order) {
         if (document.getElementById(`order-${order.id}`)) return; // กันการ์ดซ้ำ (เช่นตอน reconnect ชนกับ receive_order)
         const div = document.createElement('div');
-        div.dataset.kitchenSequence = String(nextCardSequence++);
         div.id = `order-${order.id}`;
         const badge = `<span class="bg-slate-200 text-slate-700 text-xs px-2 py-1 rounded border border-slate-300">${order.category === 'meat' ? 'หมู/เนื้อ' : 'ทะเล'}</span>`;
         div.className = 'kitchen-card bg-slate-50 border-slate-300 border-2 w-72 rounded shadow-lg p-3 flex flex-col relative';
@@ -78,16 +71,16 @@ window.KitchenModule = (function () {
                 StaffApp.showConfirm('ยืนยันยกเลิกออเดอร์นี้ใช่หรือไม่?', () => updateOrder(order.id, order.table_no, 'cancelled'));
             });
         }
-        document.getElementById('orderList').append(div);
+        countdown.placeCardInOrder(document.getElementById('orderList'), div, order);
         const tick = () => updateOrderCard(div, orderTime);
         tick();
+        clearOrderTimer(order.id);
         timers[order.id] = setInterval(tick, 1000);
     }
 
     async function loadOrders() {
         Object.values(timers).forEach(clearInterval);
         for (const k in timers) delete timers[k];
-        nextCardSequence = 0;
         document.getElementById('orderList').innerHTML = '';
         const res = await StaffApp.apiFetch('/api/orders');
         if (!res) return;
@@ -131,7 +124,7 @@ window.KitchenModule = (function () {
     socket.on('receive_order', (newOrder) => { if (document.getElementById('module-kitchen') && !document.getElementById('module-kitchen').classList.contains('hidden')) renderOrderCard(newOrder); });
     socket.on('order_removed_from_kitchen', (data) => {
         if (document.getElementById(`order-${data.id}`)) document.getElementById(`order-${data.id}`).remove();
-        if (timers[data.id]) clearInterval(timers[data.id]);
+        clearOrderTimer(data.id);
         if (activated) loadServedHistory();
     });
     socket.io.on('reconnect', () => { if (activated) { loadOrders(); loadServedHistory(); } });
